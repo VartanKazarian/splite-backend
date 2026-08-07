@@ -18,3 +18,8 @@ USER nodejs
 EXPOSE 3000
 
 CMD ["node", "src/server.js"]
+
+# Copy schema file for initialization if using multi-stage builds or container DBs
+COPY docs/schema.sql /docker-entrypoint-initdb.d/schema.sql
+
+
