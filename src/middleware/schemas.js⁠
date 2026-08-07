@@ -1,0 +1,19 @@
+const Joi = require('joi');
+
+const splitPaymentSchema = Joi.object({
+    tableId: Joi.string().required(),
+    amountMinorUnits: Joi.number().integer().positive().required(),
+    currency: Joi.string().valid('VES', 'USD', 'USDT').required()
+});
+
+function validateBody(schema) {
+    return (req, res, next) => {
+        const { error } = schema.validate(req.body);
+        if (error) {
+            return res.status(400).json({ error: error.details[0].message });
+        }
+        next();
+    };
+}
+
+module.exports = { splitPaymentSchema, validateBody };
