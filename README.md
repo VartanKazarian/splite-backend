@@ -59,25 +59,41 @@ placeholder secrets.
 | GET | `/api/v1/bills/:id` | staff |
 | POST | `/api/v1/bills/:id/void` | staff (`OWNER`, `MANAGER`) |
 | POST | `/api/v1/bills/:id/payments` | staff (`OWNER`, `MANAGER`, `CASHIER`) |
+| GET | `/api/v1/exchange-rate` | staff |
 
 Payments accept an `Idempotency-Key` header (or `idempotencyKey` in the body).
 Retrying with the same key replays the stored response instead of charging twice.
 
-List endpoints accept `limit` (1–100, default 50) and `offset`. Bills also take
-`status` and `tableId` filters. Every query is scoped to the caller's
-restaurant; an id belonging to another tenant reads as 404.
+## Exchange rate
 
-Monetary amounts are BIGINT minor units. Send `totalDueMinorUnits` as a
-**string** for values beyond 2^53 — a JSON number has already been rounded by
-the client's parser before it reaches the API. Integers are accepted and
-normalised to strings.
+`GET /api/v1/exchange-rate` returns the official USD reference rate published by
+the [Banco Central de Venezuela](https://www.bcv.org.ve/):
 
-Only a bill with no payments applied can be voided. Reversing money that has
-already moved is a refund, which is not yet modelled.
+```json
+{ "rate": 757.5406, "valueDate": "2026-08-10", "fetchedAt": "...", "source": "BCV", "stale": false }
+```
 
-There is deliberately no public registration endpoint: restaurants and their
-first owner are created by `npm run seed`. Whether signup is self-service or
-invite-only is still an open product decision.
+BCV publishes no API, so the rate is parsed from the `id="dolar"` block of their
+home page and cached for 15 minutes (their own `cache-control` is 5 minutes, and
+the figure changes at most once per business day).
+
+`valueDate` is **the date the rate applies to, not when it was fetched**. BCV
+posts the figure that takes effect on the next business day, so the page can be
+read at any hour — a rate read on a Saturday will normally carry Monday's date.
+Do not key anything on "today".
+
+If BCV is unreachable the last known rate is returned with `stale: true`. If
+there has never been a successful fetch, the endpoint returns **503** rather
+than inventing a number.
+
+> **TLS note.** `bcv.org.ve` serves an incomplete certificate chain — it presents
+> the wrong Sectigo intermediate, so the leaf cannot be verified against Node's
+> root store alone. `curl` and `openssl` mask this by fetching the missing
+> certificate themselves; Node does not. The correct intermediate is committed at
+> `certs/sectigo-public-server-auth-dv-r36.pem` and added to the trust list for
+> that request. Certificate verification is **never disabled**. That file is
+> deliberately exempted from the `*.pem` rule in `.gitignore`, and the image
+> copies it in; without it the lookup fails at runtime.
 
 ## Migrations
 

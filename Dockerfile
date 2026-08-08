@@ -21,6 +21,9 @@ COPY --chown=nodejs:nodejs package*.json ./
 COPY --chown=nodejs:nodejs src ./src
 COPY --chown=nodejs:nodejs migrations ./migrations
 COPY --chown=nodejs:nodejs scripts ./scripts
+# The BCV intermediate certificate; without it the exchange rate lookup fails
+# TLS verification inside the container. See src/config.js.
+COPY --chown=nodejs:nodejs certs ./certs
 
 USER nodejs
 EXPOSE 3000

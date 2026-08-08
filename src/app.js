@@ -12,7 +12,7 @@ const errorHandler = require('./middleware/errorHandler');
 const authRoutes = require('./routes/auth');
 const guestRoutes = require('./routes/guest');
 const billRoutes = require('./routes/bills');
-const tableRoutes = require('./routes/tables');
+const exchangeRateRoutes = require('./routes/exchangeRate');
 
 const app = express();
 
@@ -81,7 +81,7 @@ app.use('/api/v1/guest', rateLimit({ windowSeconds: 60, max: 30, keyPrefix: 'gue
 // bills and tables carry their own limiter, mounted after authentication so it
 // keys on the staff member rather than on a shared NAT address.
 app.use('/api/v1/bills', billRoutes);
-app.use('/api/v1/tables', tableRoutes);
+app.use('/api/v1/exchange-rate', exchangeRateRoutes);
 
 app.use((req, res) => res.status(404).json({ error: 'Not found' }));
 app.use(errorHandler);

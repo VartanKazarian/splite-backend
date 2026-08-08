@@ -8,3 +8,7 @@ coverage/
 npm-debug.log*
 *.pem
 *.key
+# A public CA certificate is not a secret, and this one has to ship with the
+# image or the BCV rate lookup fails TLS verification at runtime. Private keys
+# stay excluded by the rules above.
+!certs/*.pem
