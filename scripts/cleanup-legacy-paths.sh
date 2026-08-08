@@ -29,9 +29,7 @@ remove $'src/middleware/schemas.js⁠'
 remove '.gitiignore'
 
 echo
-echo "Remaining tracked paths containing invisible characters:"
-# Matched as raw UTF-8 bytes rather than \x{...} code points, which not every
-# grep build supports: U+2060-206F, U+200B-200F, U+FEFF.
-git ls-files -z | tr '\0' '\n' \
-  | LC_ALL=C grep -nP '\xE2\x81[\xA0-\xAF]|\xE2\x80[\x8B-\x8F]|\xEF\xBB\xBF' \
-  || echo "  none"
+# Checked in Node rather than with `grep -P`: BSD grep (macOS) has no -P, so the
+# previous pipeline exited 2 with "invalid option -- P" and the caller read that
+# as "no invisible characters found".
+node "$(dirname "${BASH_SOURCE[0]}")/check-invisible-paths.js"

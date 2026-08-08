@@ -34,11 +34,7 @@ jobs:
         continue-on-error: true
 
       - name: Reject invisible characters in tracked paths
-        run: |
-          if git ls-files -z | tr '\0' '\n' | LC_ALL=C grep -nP '\xE2\x81[\xA0-\xAF]|\xE2\x80[\x8B-\x8F]|\xEF\xBB\xBF'; then
-            echo "::error::Tracked path contains invisible Unicode characters"
-            exit 1
-          fi
+        run: npm run check:paths
 
       - name: Verify no secrets are committed
         run: |
