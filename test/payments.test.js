@@ -106,7 +106,10 @@ test('the display rate is locked on the first payment', async () => {
   const result = await processSplitPayment({
     restaurantId: 'r1', billId: 'bill-1', amountPaidMinorUnits: 378355, getRate: getRate(756.71)
   });
-  assert.equal(result.fxRate, '756.71');
+  // Normalised to the scale of bills.fx_rate NUMERIC(20,6), so the payment that
+  // locks the rate reports the same string as every later split, which reads it
+  // back from Postgres.
+  assert.equal(result.fxRate, '756.710000');
   assert.equal(result.fxSource, 'BCV');
   assert.equal(result.usdReference.totalDue, '10.00');
   assert.equal(result.usdReference.amountPaid, '5.00');

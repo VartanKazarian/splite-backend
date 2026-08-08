@@ -8,12 +8,23 @@ const { processSplitPayment } = require('../../src/services/locks');
 
 describe('payments against a real Postgres', { skip }, () => {
   let restaurant;
-  let table;
+  let tableSeq = 0;
 
   before(async () => {
     restaurant = await fixtures.createRestaurant();
-    table = await fixtures.createTable(restaurant.id);
   });
+
+  /**
+   * A bill on a table of its own.
+   *
+   * Migration 004 allows a table only one OPEN bill, and most cases here leave
+   * their bill open, so sharing one table would make the second insert collide
+   * with the invariant rather than exercise the payment path.
+   */
+  const freshBill = async (overrides = {}) => {
+    const table = await fixtures.createTable(restaurant.id, { name: `T${++tableSeq}` });
+    return fixtures.createBill({ restaurantId: restaurant.id, tableId: table.id, ...overrides });
+  };
 
   after(async () => {
     await fixtures.destroyRestaurant(restaurant?.id);
@@ -21,11 +32,7 @@ describe('payments against a real Postgres', { skip }, () => {
   });
 
   it('serialises concurrent splits so a bill cannot be overpaid', async () => {
-    const bill = await fixtures.createBill({
-      restaurantId: restaurant.id,
-      tableId: table.id,
-      totalDue: 10000
-    });
+    const bill = await freshBill({ totalDue: 10000 });
 
     // Five diners tap "pay my share" at once. Only three 3000-unit payments
     // fit inside a 10000 bill; the rest must be rejected, not clamped.
@@ -54,11 +61,7 @@ describe('payments against a real Postgres', { skip }, () => {
   });
 
   it('closes the bill when concurrent payments land exactly on the total', async () => {
-    const bill = await fixtures.createBill({
-      restaurantId: restaurant.id,
-      tableId: table.id,
-      totalDue: 9000
-    });
+    const bill = await freshBill({ totalDue: 9000 });
 
     const attempts = await Promise.allSettled(
       Array.from({ length: 3 }, () =>
@@ -78,11 +81,7 @@ describe('payments against a real Postgres', { skip }, () => {
   });
 
   it('enforces the overpayment ceiling in the database, not only in the service', async () => {
-    const bill = await fixtures.createBill({
-      restaurantId: restaurant.id,
-      tableId: table.id,
-      totalDue: 5000
-    });
+    const bill = await freshBill({ totalDue: 5000 });
 
     // Migration 002 adds CHECK (amount_paid <= total_due). Bypassing the
     // service entirely must still be refused, so an application bug or a
@@ -103,11 +102,7 @@ describe('payments against a real Postgres', { skip }, () => {
     // Number.MAX_SAFE_INTEGER is 9007199254740991. VES minor units reach this
     // range, and pg returns BIGINT as a string for exactly this reason.
     const totalDue = '9007199254740993';
-    const bill = await fixtures.createBill({
-      restaurantId: restaurant.id,
-      tableId: table.id,
-      totalDue
-    });
+    const bill = await freshBill({ totalDue });
 
     const result = await processSplitPayment({
       restaurantId: restaurant.id,
@@ -153,11 +148,7 @@ describe('payments against a real Postgres', { skip }, () => {
   });
 
   it('locks one display rate for the whole split, even under concurrency', async () => {
-    const bill = await fixtures.createBill({
-      restaurantId: restaurant.id,
-      tableId: table.id,
-      totalDue: 9000
-    });
+    const bill = await freshBill({ totalDue: 9000 });
 
     // Each diner's request resolves a slightly different rate, as it would
     // across a real dinner. The first payment to commit must win, and every
@@ -186,11 +177,7 @@ describe('payments against a real Postgres', { skip }, () => {
   });
 
   it('applies a payment even when no rate is available', async () => {
-    const bill = await fixtures.createBill({
-      restaurantId: restaurant.id,
-      tableId: table.id,
-      totalDue: 5000
-    });
+    const bill = await freshBill({ totalDue: 5000 });
 
     // An FX outage is presentational. Money must still move.
     const result = await processSplitPayment({
@@ -211,12 +198,7 @@ describe('payments against a real Postgres', { skip }, () => {
   it('refuses a non-VES bill currency at the database level', async () => {
     // Migration 003 constrains settlement to VES.
     await assert.rejects(
-      () => fixtures.createBill({
-        restaurantId: restaurant.id,
-        tableId: table.id,
-        totalDue: 1000,
-        currency: 'USD'
-      }),
+      () => freshBill({ totalDue: 1000, currency: 'USD' }),
       err => {
         assert.equal(err.code, '23514', 'check_violation');
         return true;
