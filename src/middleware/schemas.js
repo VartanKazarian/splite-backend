@@ -30,6 +30,52 @@ const splitPaymentSchema = Joi.object({
   idempotencyKey: Joi.string().trim().min(16).max(128).pattern(/^[A-Za-z0-9._:-]+$/).required()
 });
 
+/**
+ * BIGINT minor units.
+ *
+ * Accepted as a digit string so a total beyond 2^53 survives the request: a
+ * JSON number has already lost precision by the time it reaches us. Plain
+ * integers are still accepted for convenience and normalised to a string, so
+ * every call site downstream sees one type.
+ */
+const minorUnits = Joi.alternatives()
+  .try(
+    Joi.string().trim().pattern(/^[0-9]{1,18}$/),
+    Joi.number().integer().min(0).max(Number.MAX_SAFE_INTEGER)
+  )
+  .custom(value => String(value));
+
+const createTableSchema = Joi.object({
+  name: Joi.string().trim().min(1).max(50).required()
+});
+
+const updateTableSchema = Joi.object({
+  name: Joi.string().trim().min(1).max(50),
+  active: Joi.boolean()
+}).min(1);
+
+const createBillSchema = Joi.object({
+  tableId: uuid.required(),
+  totalDueMinorUnits: minorUnits.required(),
+  currency: Joi.string().valid('VES', 'USD', 'USDT').default('VES')
+});
+
+const paginationKeys = {
+  limit: Joi.number().integer().min(1).max(100).default(50),
+  offset: Joi.number().integer().min(0).default(0)
+};
+
+const listTablesQuerySchema = Joi.object({
+  ...paginationKeys,
+  active: Joi.boolean()
+});
+
+const listBillsQuerySchema = Joi.object({
+  ...paginationKeys,
+  status: Joi.string().valid('OPEN', 'CLOSED', 'VOID'),
+  tableId: uuid
+});
+
 const billIdParamSchema = Joi.object({ id: uuid.required() });
 const tableIdParamSchema = Joi.object({ tableId: uuid.required() });
 
@@ -45,6 +91,7 @@ function validate(schema, property) {
 
 const validateBody = schema => validate(schema, 'body');
 const validateParams = schema => validate(schema, 'params');
+const validateQuery = schema => validate(schema, 'query');
 
 module.exports = {
   registerSchema,
@@ -52,9 +99,15 @@ module.exports = {
   refreshSchema,
   guestSessionSchema,
   splitPaymentSchema,
+  createTableSchema,
+  updateTableSchema,
+  createBillSchema,
+  listTablesQuerySchema,
+  listBillsQuerySchema,
   billIdParamSchema,
   tableIdParamSchema,
   validate,
   validateBody,
-  validateParams
+  validateParams,
+  validateQuery
 };
