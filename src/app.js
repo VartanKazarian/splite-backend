@@ -78,6 +78,8 @@ app.use('/api/v1/auth', rateLimit({
   failClosed: config.rateLimit.failClosedOnAuth
 }), authRoutes);
 app.use('/api/v1/guest', rateLimit({ windowSeconds: 60, max: 30, keyPrefix: 'guest' }), guestRoutes);
+// bills and tables carry their own limiter, mounted after authentication so it
+// keys on the staff member rather than on a shared NAT address.
 app.use('/api/v1/bills', billRoutes);
 app.use('/api/v1/exchange-rate', exchangeRateRoutes);
 

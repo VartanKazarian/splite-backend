@@ -51,7 +51,13 @@ placeholder secrets.
 | POST | `/api/v1/guest/sessions` | signed QR token |
 | GET | `/api/v1/guest/tables/:tableId/qr` | staff (`OWNER`, `MANAGER`) |
 | POST | `/api/v1/guest/tables/:tableId/qr/rotate` | staff (`OWNER`, `MANAGER`) |
+| GET | `/api/v1/tables` | staff |
+| POST | `/api/v1/tables` | staff (`OWNER`, `MANAGER`) |
+| PATCH | `/api/v1/tables/:tableId` | staff (`OWNER`, `MANAGER`) |
+| GET | `/api/v1/bills` | staff |
+| POST | `/api/v1/bills` | staff (`OWNER`, `MANAGER`, `CASHIER`, `WAITER`) |
 | GET | `/api/v1/bills/:id` | staff |
+| POST | `/api/v1/bills/:id/void` | staff (`OWNER`, `MANAGER`) |
 | POST | `/api/v1/bills/:id/payments` | staff (`OWNER`, `MANAGER`, `CASHIER`) |
 | GET | `/api/v1/exchange-rate` | staff |
 
