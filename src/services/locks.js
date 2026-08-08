@@ -57,8 +57,6 @@ async function processSplitPayment({ restaurantId, billId, amountPaidMinorUnits,
     // Nullish rather than strict: pg sends null, a caller may send undefined.
     const existingRate = bill.fx_rate ?? null;
     const lockRate = existingRate === null && pending !== null;
-    const fxRate = lockRate ? pending.rate : existingRate;
-    const fxSource = lockRate ? pending.source : (bill.fx_source ?? null);
 
     const newStatus = newAmountPaid === totalDue ? 'CLOSED' : 'OPEN';
     await client.query(
@@ -72,6 +70,16 @@ async function processSplitPayment({ restaurantId, billId, amountPaidMinorUnits,
         WHERE id = $3 AND restaurant_id = $4`,
       [newAmountPaid.toString(), newStatus, bill.id, restaurantId, lockRate ? pending.rate : null, lockRate ? pending.source : null]
     );
+
+    // Read back the locked rate to ensure consistency across concurrent requests
+    const { rows: updatedRows } = await client.query(
+      `SELECT fx_rate, fx_source FROM bills WHERE id = $1 AND restaurant_id = $2`,
+      [billId, restaurantId]
+    );
+
+    const lockedBill = updatedRows[0];
+    const fxRate = lockedBill.fx_rate ?? null;
+    const fxSource = lockedBill.fx_source ?? null;
 
     const remaining = totalDue - newAmountPaid;
     return {
