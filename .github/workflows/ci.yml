@@ -1,30 +1,55 @@
-name: Continuous Integration
+name: CI
 
 on:
   push:
-    branches: [ main, master ]
+    branches: [main, master]
   pull_request:
-    branches: [ main, master ]
+    branches: [main, master]
+
+permissions:
+  contents: read
 
 jobs:
-  build-and-test:
+  test:
     runs-on: ubuntu-latest
-
-    strategy:
-      matrix:
-        node-version: [20.x]
-
     steps:
-    - uses: actions/checkout@v3
+      - uses: actions/checkout@v4
 
-    - name: Use Node.js ${{ matrix.node-version }}
-      uses: actions/setup-node@v3
-      with:
-        node-version: ${{ matrix.node-version }}
-        cache: 'npm'
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
 
-    - name: Install dependencies
-      run: npm ci
+      - name: Install dependencies
+        run: npm ci || npm install
 
-    - name: Run Docker build test
-      run: docker build . -t sobremesa-backend:test
+      - name: Syntax check
+        run: npm run lint
+
+      - name: Unit tests
+        run: npm test
+
+      - name: Dependency audit
+        run: npm audit --audit-level=high
+        continue-on-error: true
+
+      - name: Reject invisible characters in tracked paths
+        run: |
+          if git ls-files -z | tr '\0' '\n' | LC_ALL=C grep -nP '\xE2\x81[\xA0-\xAF]|\xE2\x80[\x8B-\x8F]|\xEF\xBB\xBF'; then
+            echo "::error::Tracked path contains invisible Unicode characters"
+            exit 1
+          fi
+
+      - name: Verify no secrets are committed
+        run: |
+          if git ls-files | grep -E '(^|/)\.env$'; then
+            echo "::error::.env must never be committed"
+            exit 1
+          fi
+
+  docker:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build image
+        run: docker build . -t splite-backend:test

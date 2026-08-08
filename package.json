@@ -1,25 +1,32 @@
 {
-  "name": "sobremesa-backend",
-  "version": "1.0.0",
-  "description": "Backend service for bill splitting in Venezuela",
+  "name": "splite-backend",
+  "version": "1.2.0-phase1",
+  "description": "Production-oriented backend foundation for Splite bill splitting in Venezuela",
   "main": "src/server.js",
+  "private": true,
   "scripts": {
     "start": "node src/server.js",
     "dev": "nodemon src/server.js",
-    "test": "node test/smoke.js"
+    "test": "node --test test/*.test.js",
+    "migrate": "node scripts/migrate.js",
+    "seed": "node scripts/seed.js",
+    "lint": "find src scripts test -name '*.js' -exec node --check {} \\;",
+    "audit": "npm audit --audit-level=high"
   },
   "dependencies": {
+    "argon2": "^0.41.1",
     "cors": "^2.8.5",
     "dotenv": "^16.4.5",
-    "express": "^4.19.2",
+    "express": "^4.21.2",
     "helmet": "^7.1.0",
-    "joi": "^17.12.2",
+    "ioredis": "^5.4.1",
+    "joi": "^17.13.3",
     "jsonwebtoken": "^9.0.2",
     "morgan": "^1.10.0",
-    "pg": "^8.11.3"
+    "pg": "^8.13.1"
   },
   "devDependencies": {
-    "nodemon": "^3.1.0"
+    "nodemon": "^3.1.7"
   },
   "engines": {
     "node": ">=20.0.0"
