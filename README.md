@@ -57,6 +57,7 @@ placeholder secrets.
 | POST | `/api/v1/tables` | staff (`OWNER`, `MANAGER`) |
 | PATCH | `/api/v1/tables/:tableId` | staff (`OWNER`, `MANAGER`) |
 | GET | `/api/v1/bills` | staff |
+| GET | `/api/v1/bills/tables/:tableId/open` | staff |
 | POST | `/api/v1/bills` | staff (`OWNER`, `MANAGER`, `CASHIER`, `WAITER`) |
 | GET | `/api/v1/bills/:id` | staff |
 | GET | `/api/v1/bills/:id/split?diners=n` | staff |
@@ -66,6 +67,23 @@ placeholder secrets.
 
 Payments accept an `Idempotency-Key` header (or `idempotencyKey` in the body).
 Retrying with the same key replays the stored response instead of charging twice.
+
+## Bill lifecycle and the one-open-bill rule
+
+A restaurant table has **at most one `OPEN` bill**, enforced at two levels:
+
+1. `POST /api/v1/bills` locks the table row with `FOR UPDATE`, checks for an
+   existing open bill, and only then inserts.
+2. A partial unique index on `(restaurant_id, table_id) WHERE status = 'OPEN'`
+   catches the race the application cannot see.
+
+A duplicate attempt returns `409` with `code: OPEN_BILL_EXISTS` and the existing
+bill id. `GET /api/v1/bills/tables/:tableId/open` resolves a table to its
+current bill, which is what makes a permanent physical table QR usable.
+
+Closing or voiding a bill releases the table for the next one; the partial index
+only covers `OPEN`, so history is retained. Migration 004 also adds a composite
+foreign key so a bill's table must belong to the same restaurant as the bill.
 
 ## Money model
 

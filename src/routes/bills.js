@@ -10,7 +10,8 @@ const {
   createBillSchema,
   listBillsQuerySchema,
   splitQuerySchema,
-  billIdParamSchema
+  billIdParamSchema,
+  tableIdParamSchema
 } = require('../middleware/schemas');
 const { processSplitPayment } = require('../services/locks');
 const { getUsdToVesRate } = require('../services/fx');
@@ -57,40 +58,102 @@ router.get('/', validateQuery(listBillsQuerySchema), async (req, res, next) => {
   } catch (err) { next(err); }
 });
 
+/**
+ * The current open bill for a table.
+ *
+ * A physical table QR is permanent, so a client that scans it needs a way to
+ * resolve "which bill is this table on right now". The one-open-bill invariant
+ * is what makes that answer unambiguous.
+ */
+router.get('/tables/:tableId/open', validateParams(tableIdParamSchema), async (req, res, next) => {
+  try {
+    const { rows } = await db.query(
+      `SELECT ${BILL_COLUMNS} FROM bills
+        WHERE restaurant_id = $1 AND table_id = $2 AND status = 'OPEN'`,
+      [req.user.restaurantId, req.params.tableId]
+    );
+    if (!rows.length) return res.status(404).json({ error: 'No open bill for this table' });
+
+    const bill = rows[0];
+    const remaining = (BigInt(bill.total_due) - BigInt(bill.amount_paid)).toString();
+    res.json({
+      ...bill,
+      remaining,
+      usdReference: {
+        totalDue: usdReference(bill.total_due, bill.fx_rate),
+        amountPaid: usdReference(bill.amount_paid, bill.fx_rate),
+        remaining: usdReference(remaining, bill.fx_rate)
+      }
+    });
+  } catch (err) { next(err); }
+});
+
 router.post(
   '/',
   requireRole('OWNER', 'MANAGER', 'CASHIER', 'WAITER'),
   validateBody(createBillSchema),
   async (req, res, next) => {
     try {
-      // The table is resolved inside the caller's tenant, so a table id
-      // belonging to another restaurant reads as 404 rather than creating a
-      // bill that points across tenants.
-      const table = await db.query(
-        'SELECT id FROM tables WHERE id = $1 AND restaurant_id = $2 AND active = true',
-        [req.body.tableId, req.user.restaurantId]
-      );
-      if (!table.rows.length) return res.status(404).json({ error: 'Table not found' });
+      const created = await db.withTransaction(async client => {
+        // The table row is locked for the duration, so two waiters opening a
+        // bill for the same table serialise here instead of racing between the
+        // check below and the insert.
+        //
+        // It is also resolved inside the caller's tenant, so a table id
+        // belonging to another restaurant reads as 404 rather than creating a
+        // bill that points across tenants.
+        const table = await client.query(
+          'SELECT id FROM tables WHERE id = $1 AND restaurant_id = $2 AND active = true FOR UPDATE',
+          [req.body.tableId, req.user.restaurantId]
+        );
+        if (!table.rows.length) {
+          throw Object.assign(new Error('Table not found'), { statusCode: 404 });
+        }
 
-      // Currency is fixed at VES; migration 003 enforces the same rule with a
-      // CHECK constraint.
-      const { rows } = await db.query(
-        `INSERT INTO bills (restaurant_id, table_id, total_due, currency)
-         VALUES ($1, $2, $3, 'VES')
-         RETURNING ${BILL_COLUMNS}`,
-        [req.user.restaurantId, req.body.tableId, req.body.totalDueMinorUnits]
-      );
+        const open = await client.query(
+          "SELECT id FROM bills WHERE restaurant_id = $1 AND table_id = $2 AND status = 'OPEN'",
+          [req.user.restaurantId, req.body.tableId]
+        );
+        if (open.rows.length) {
+          throw Object.assign(new Error('This table already has an open bill'), {
+            statusCode: 409,
+            code: 'OPEN_BILL_EXISTS',
+            billId: open.rows[0].id
+          });
+        }
+
+        // Currency is fixed at VES; migration 003 enforces the same rule with a
+        // CHECK constraint.
+        const { rows } = await client.query(
+          `INSERT INTO bills (restaurant_id, table_id, total_due, currency)
+           VALUES ($1, $2, $3, 'VES')
+           RETURNING ${BILL_COLUMNS}`,
+          [req.user.restaurantId, req.body.tableId, req.body.totalDueMinorUnits]
+        );
+        return rows[0];
+      });
 
       await logAudit({
         ...auditContext(req),
         action: 'BILL_CREATED',
         resourceType: 'bill',
-        resourceId: rows[0].id,
-        details: { tableId: req.body.tableId, totalDue: rows[0].total_due }
+        resourceId: created.id,
+        details: { tableId: req.body.tableId, totalDue: created.total_due }
       });
 
-      res.status(201).json(rows[0]);
-    } catch (err) { next(err); }
+      res.status(201).json(created);
+    } catch (err) {
+      // The partial unique index is the last line of defence: if a concurrent
+      // request committed first, the insert fails here rather than producing a
+      // second open bill for the table.
+      if (err.code === '23505' && String(err.constraint || '').includes('one_open_per_table')) {
+        return res.status(409).json({ error: 'This table already has an open bill', code: 'OPEN_BILL_EXISTS' });
+      }
+      if (err.code === 'OPEN_BILL_EXISTS') {
+        return res.status(409).json({ error: err.message, code: err.code, billId: err.billId });
+      }
+      next(err);
+    }
   }
 );
 

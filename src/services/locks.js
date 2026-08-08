@@ -1,6 +1,21 @@
 const db = require('../connectors/base');
 const { usdReference } = require('./split');
 
+// bills.fx_rate is NUMERIC(20,6). pg returns NUMERIC as a string carrying the
+// column's full scale ('756.710000'), while a rate that has just been resolved
+// upstream arrives as a JS number (756.71). Returning whichever happened to be
+// in hand meant the payment that locked the rate reported a different string
+// from every later split on the same bill, for the same underlying rate.
+// Normalising both to the column's scale keeps the response stable for the
+// lifetime of the bill.
+const RATE_SCALE_DECIMALS = 6;
+
+function formatRate(value) {
+  if (value === null || value === undefined) return null;
+  const rate = Number(value);
+  return Number.isFinite(rate) ? rate.toFixed(RATE_SCALE_DECIMALS) : null;
+}
+
 /**
  * Applies a partial payment to a bill. Settlement is always VES minor units.
  *
@@ -90,7 +105,7 @@ async function processSplitPayment({ restaurantId, billId, amountPaidMinorUnits,
       amountPaid: newAmountPaid.toString(),
       remaining: remaining.toString(),
       // Presentational only. Null when no verified rate was available.
-      fxRate: fxRate === null ? null : String(fxRate),
+      fxRate: formatRate(fxRate),
       fxSource,
       usdReference: {
         totalDue: usdReference(totalDue.toString(), fxRate),
