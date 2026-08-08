@@ -51,11 +51,33 @@ placeholder secrets.
 | POST | `/api/v1/guest/sessions` | signed QR token |
 | GET | `/api/v1/guest/tables/:tableId/qr` | staff (`OWNER`, `MANAGER`) |
 | POST | `/api/v1/guest/tables/:tableId/qr/rotate` | staff (`OWNER`, `MANAGER`) |
+| GET | `/api/v1/tables` | staff |
+| POST | `/api/v1/tables` | staff (`OWNER`, `MANAGER`) |
+| PATCH | `/api/v1/tables/:tableId` | staff (`OWNER`, `MANAGER`) |
+| GET | `/api/v1/bills` | staff |
+| POST | `/api/v1/bills` | staff (`OWNER`, `MANAGER`, `CASHIER`, `WAITER`) |
 | GET | `/api/v1/bills/:id` | staff |
+| POST | `/api/v1/bills/:id/void` | staff (`OWNER`, `MANAGER`) |
 | POST | `/api/v1/bills/:id/payments` | staff (`OWNER`, `MANAGER`, `CASHIER`) |
 
 Payments accept an `Idempotency-Key` header (or `idempotencyKey` in the body).
 Retrying with the same key replays the stored response instead of charging twice.
+
+List endpoints accept `limit` (1–100, default 50) and `offset`. Bills also take
+`status` and `tableId` filters. Every query is scoped to the caller's
+restaurant; an id belonging to another tenant reads as 404.
+
+Monetary amounts are BIGINT minor units. Send `totalDueMinorUnits` as a
+**string** for values beyond 2^53 — a JSON number has already been rounded by
+the client's parser before it reaches the API. Integers are accepted and
+normalised to strings.
+
+Only a bill with no payments applied can be voided. Reversing money that has
+already moved is a refund, which is not yet modelled.
+
+There is deliberately no public registration endpoint: restaurants and their
+first owner are created by `npm run seed`. Whether signup is self-service or
+invite-only is still an open product decision.
 
 ## Migrations
 
