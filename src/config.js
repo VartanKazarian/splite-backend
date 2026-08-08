@@ -87,7 +87,28 @@ module.exports = {
   redis: {
     url: process.env.REDIS_URL || 'redis://localhost:6379'
   },
-  exchangeRateApiUrl: process.env.EXCHANGE_RATE_API_URL || null,
+  exchangeRate: {
+    // BCV publishes the official USD reference rate as Drupal HTML; there is
+    // no JSON API. Overridable so a mirror or a fixture can be used instead.
+    url: process.env.EXCHANGE_RATE_API_URL || 'https://www.bcv.org.ve/',
+    // Their own cache-control is max-age=300, and the rate changes at most
+    // once per business day, so polling harder buys nothing.
+    cacheTtlSeconds: integer('EXCHANGE_RATE_CACHE_TTL_SECONDS', 900),
+    timeoutMs: integer('EXCHANGE_RATE_TIMEOUT_MS', 8000),
+    // bcv.org.ve serves an incomplete certificate chain: it presents the wrong
+    // Sectigo intermediate, so the leaf cannot be verified against Node's root
+    // store on its own. curl and openssl hide this by fetching the missing
+    // certificate themselves; Node does not. We ship the correct intermediate
+    // and add it to the trust list. Verification stays fully enabled.
+    extraCaFile: process.env.EXCHANGE_RATE_EXTRA_CA
+      || require('path').join(__dirname, '..', 'certs', 'sectigo-public-server-auth-dv-r36.pem'),
+    // Null on purpose. A hardcoded default is worse than no rate at all: the
+    // previous 36.5 was roughly 20x below the live value, so every degraded
+    // response would have quietly under-charged by a factor of twenty.
+    fallbackRate: process.env.EXCHANGE_RATE_FALLBACK
+      ? Number(process.env.EXCHANGE_RATE_FALLBACK)
+      : null
+  },
   rateLimit: {
     // Fail closed on authentication endpoints: a Redis outage must not
     // silently disable brute-force protection on the login surface.

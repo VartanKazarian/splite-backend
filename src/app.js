@@ -12,6 +12,7 @@ const errorHandler = require('./middleware/errorHandler');
 const authRoutes = require('./routes/auth');
 const guestRoutes = require('./routes/guest');
 const billRoutes = require('./routes/bills');
+const exchangeRateRoutes = require('./routes/exchangeRate');
 
 const app = express();
 
@@ -78,6 +79,7 @@ app.use('/api/v1/auth', rateLimit({
 }), authRoutes);
 app.use('/api/v1/guest', rateLimit({ windowSeconds: 60, max: 30, keyPrefix: 'guest' }), guestRoutes);
 app.use('/api/v1/bills', billRoutes);
+app.use('/api/v1/exchange-rate', exchangeRateRoutes);
 
 app.use((req, res) => res.status(404).json({ error: 'Not found' }));
 app.use(errorHandler);

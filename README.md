@@ -53,9 +53,41 @@ placeholder secrets.
 | POST | `/api/v1/guest/tables/:tableId/qr/rotate` | staff (`OWNER`, `MANAGER`) |
 | GET | `/api/v1/bills/:id` | staff |
 | POST | `/api/v1/bills/:id/payments` | staff (`OWNER`, `MANAGER`, `CASHIER`) |
+| GET | `/api/v1/exchange-rate` | staff |
 
 Payments accept an `Idempotency-Key` header (or `idempotencyKey` in the body).
 Retrying with the same key replays the stored response instead of charging twice.
+
+## Exchange rate
+
+`GET /api/v1/exchange-rate` returns the official USD reference rate published by
+the [Banco Central de Venezuela](https://www.bcv.org.ve/):
+
+```json
+{ "rate": 757.5406, "valueDate": "2026-08-10", "fetchedAt": "...", "source": "BCV", "stale": false }
+```
+
+BCV publishes no API, so the rate is parsed from the `id="dolar"` block of their
+home page and cached for 15 minutes (their own `cache-control` is 5 minutes, and
+the figure changes at most once per business day).
+
+`valueDate` is **the date the rate applies to, not when it was fetched**. BCV
+posts the figure that takes effect on the next business day, so the page can be
+read at any hour — a rate read on a Saturday will normally carry Monday's date.
+Do not key anything on "today".
+
+If BCV is unreachable the last known rate is returned with `stale: true`. If
+there has never been a successful fetch, the endpoint returns **503** rather
+than inventing a number.
+
+> **TLS note.** `bcv.org.ve` serves an incomplete certificate chain — it presents
+> the wrong Sectigo intermediate, so the leaf cannot be verified against Node's
+> root store alone. `curl` and `openssl` mask this by fetching the missing
+> certificate themselves; Node does not. The correct intermediate is committed at
+> `certs/sectigo-public-server-auth-dv-r36.pem` and added to the trust list for
+> that request. Certificate verification is **never disabled**. That file is
+> deliberately exempted from the `*.pem` rule in `.gitignore`, and the image
+> copies it in; without it the lookup fails at runtime.
 
 ## Migrations
 
