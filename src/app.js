@@ -13,6 +13,7 @@ const authRoutes = require('./routes/auth');
 const guestRoutes = require('./routes/guest');
 const billRoutes = require('./routes/bills');
 const exchangeRateRoutes = require('./routes/exchangeRate');
+const menuRoutes = require('./routes/menu');
 
 const app = express();
 
@@ -82,6 +83,9 @@ app.use('/api/v1/guest', rateLimit({ windowSeconds: 60, max: 30, keyPrefix: 'gue
 // keys on the staff member rather than on a shared NAT address.
 app.use('/api/v1/bills', billRoutes);
 app.use('/api/v1/exchange-rate', exchangeRateRoutes);
+// The public menu endpoint inside this router is intentionally unauthenticated,
+// so it relies on the app-level limiter above.
+app.use('/api/v1/menu', menuRoutes);
 
 app.use((req, res) => res.status(404).json({ error: 'Not found' }));
 app.use(errorHandler);
