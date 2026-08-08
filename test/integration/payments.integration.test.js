@@ -34,8 +34,7 @@ describe('payments against a real Postgres', { skip }, () => {
         processSplitPayment({
           restaurantId: restaurant.id,
           billId: bill.id,
-          amountPaidMinorUnits: 3000,
-          currency: 'VES'
+          amountPaidMinorUnits: 3000
         })
       )
     );
@@ -66,8 +65,7 @@ describe('payments against a real Postgres', { skip }, () => {
         processSplitPayment({
           restaurantId: restaurant.id,
           billId: bill.id,
-          amountPaidMinorUnits: 3000,
-          currency: 'VES'
+          amountPaidMinorUnits: 3000
         })
       )
     );
@@ -114,8 +112,7 @@ describe('payments against a real Postgres', { skip }, () => {
     const result = await processSplitPayment({
       restaurantId: restaurant.id,
       billId: bill.id,
-      amountPaidMinorUnits: 1,
-      currency: 'VES'
+      amountPaidMinorUnits: 1
     });
 
     assert.equal(result.totalDue, totalDue);
@@ -140,8 +137,7 @@ describe('payments against a real Postgres', { skip }, () => {
         () => processSplitPayment({
           restaurantId: restaurant.id, // caller's tenant, someone else's bill
           billId: otherBill.id,
-          amountPaidMinorUnits: 100,
-          currency: 'VES'
+          amountPaidMinorUnits: 100
         }),
         err => {
           assert.equal(err.statusCode, 404);
@@ -154,5 +150,77 @@ describe('payments against a real Postgres', { skip }, () => {
     } finally {
       await fixtures.destroyRestaurant(other.id);
     }
+  });
+
+  it('locks one display rate for the whole split, even under concurrency', async () => {
+    const bill = await fixtures.createBill({
+      restaurantId: restaurant.id,
+      tableId: table.id,
+      totalDue: 9000
+    });
+
+    // Each diner's request resolves a slightly different rate, as it would
+    // across a real dinner. The first payment to commit must win, and every
+    // later split must reuse that value rather than its own.
+    let nth = 0;
+    const rates = [756.71, 757.04, 757.88];
+    const attempts = await Promise.all(
+      Array.from({ length: 3 }, () =>
+        processSplitPayment({
+          restaurantId: restaurant.id,
+          billId: bill.id,
+          amountPaidMinorUnits: 3000,
+          getRate: async () => ({ rate: rates[nth++ % rates.length], source: 'TEST' })
+        })
+      )
+    );
+
+    const locked = new Set(attempts.map(a => a.fxRate));
+    assert.equal(locked.size, 1, 'all splits report the same locked rate');
+    assert.ok(rates.includes(Number([...locked][0])));
+
+    const { rows } = await db.query('SELECT fx_rate, fx_source, fx_locked_at FROM bills WHERE id = $1', [bill.id]);
+    assert.equal(Number(rows[0].fx_rate), Number([...locked][0]));
+    assert.equal(rows[0].fx_source, 'TEST');
+    assert.ok(rows[0].fx_locked_at, 'fx_locked_at is stamped on first payment');
+  });
+
+  it('applies a payment even when no rate is available', async () => {
+    const bill = await fixtures.createBill({
+      restaurantId: restaurant.id,
+      tableId: table.id,
+      totalDue: 5000
+    });
+
+    // An FX outage is presentational. Money must still move.
+    const result = await processSplitPayment({
+      restaurantId: restaurant.id,
+      billId: bill.id,
+      amountPaidMinorUnits: 2500,
+      getRate: async () => null
+    });
+
+    assert.equal(result.amountPaid, '2500');
+    assert.equal(result.fxRate, null);
+    assert.equal(result.usdReference.remaining, null);
+
+    const stored = await fixtures.readBill(bill.id);
+    assert.equal(stored.amount_paid, '2500');
+  });
+
+  it('refuses a non-VES bill currency at the database level', async () => {
+    // Migration 003 constrains settlement to VES.
+    await assert.rejects(
+      () => fixtures.createBill({
+        restaurantId: restaurant.id,
+        tableId: table.id,
+        totalDue: 1000,
+        currency: 'USD'
+      }),
+      err => {
+        assert.equal(err.code, '23514', 'check_violation');
+        return true;
+      }
+    );
   });
 });

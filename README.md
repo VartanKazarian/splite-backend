@@ -12,7 +12,9 @@ Security foundation for Splite, a Venezuela-focused bill-splitting API.
 - Redis-backed session mirror and rate limiting (fail-closed on the auth surface)
 - RBAC: `OWNER`, `MANAGER`, `CASHIER`, `WAITER`
 - Signed, expiring, rotatable QR tokens; hashed guest session tokens
-- Payment concurrency control via `SELECT ... FOR UPDATE` and exact BigInt arithmetic
+- VES-only settlement with exact BigInt arithmetic and largest-remainder splits
+- USD shown as a display reference at a rate locked on first payment, never guessed
+- Payment concurrency control via `SELECT ... FOR UPDATE`
 - Idempotency keys on money-moving endpoints
 - Audit logging with actor, tenant, IP and request id
 - Multi-stage Docker image running as a non-root user; hardened Compose stack
@@ -57,6 +59,7 @@ placeholder secrets.
 | GET | `/api/v1/bills` | staff |
 | POST | `/api/v1/bills` | staff (`OWNER`, `MANAGER`, `CASHIER`, `WAITER`) |
 | GET | `/api/v1/bills/:id` | staff |
+| GET | `/api/v1/bills/:id/split?diners=n` | staff |
 | POST | `/api/v1/bills/:id/void` | staff (`OWNER`, `MANAGER`) |
 | POST | `/api/v1/bills/:id/payments` | staff (`OWNER`, `MANAGER`, `CASHIER`) |
 | GET | `/api/v1/exchange-rate` | staff |
@@ -64,27 +67,51 @@ placeholder secrets.
 Payments accept an `Idempotency-Key` header (or `idempotencyKey` in the body).
 Retrying with the same key replays the stored response instead of charging twice.
 
+## Money model
+
+Settlement is **always VES**, in céntimos, stored as `BIGINT`. USD is a display
+reference only — it is never a payment currency. Migration 003 enforces this
+with `CHECK (currency = 'VES')`; previously USD and USDT were accepted and
+applied at face value against a bolívar balance.
+
+The USD rate is **locked on the first payment against a bill** and reused for
+every later split, so the figures on screen do not drift mid-meal. If no
+verified rate is available the bill locks none, the USD line is omitted, and
+**the payment still applies** — an FX outage is presentational, not financial.
+
+Splits use largest-remainder allocation (`src/services/split.js`) so the parts
+sum to exactly the total. Rounding each share independently would leave the last
+diner unable to pay under `CHECK (amount_paid <= total_due)`, or leave the bill
+permanently a few céntimos short of closing.
+
 ## Exchange rate
 
 `GET /api/v1/exchange-rate` returns the official USD reference rate published by
 the [Banco Central de Venezuela](https://www.bcv.org.ve/):
 
 ```json
-{ "rate": 757.5406, "valueDate": "2026-08-10", "fetchedAt": "...", "source": "BCV", "stale": false }
+{ "rate": 757.5406, "valueDate": "2026-08-10", "source": "BCV", "fetchedAt": "..." }
 ```
 
 BCV publishes no API, so the rate is parsed from the `id="dolar"` block of their
-home page and cached for 15 minutes (their own `cache-control` is 5 minutes, and
-the figure changes at most once per business day).
+home page (`src/connectors/bcv.js`) and cached for 15 minutes — their own
+`cache-control` is 5 minutes and the figure changes at most once per business
+day. Policy lives separately in `src/services/fx.js`, which is the single place
+that decides whether a rate is usable.
 
 `valueDate` is **the date the rate applies to, not when it was fetched**. BCV
 posts the figure that takes effect on the next business day, so the page can be
-read at any hour — a rate read on a Saturday will normally carry Monday's date.
-Do not key anything on "today".
+read at any hour — a rate read on a Saturday normally carries Monday's date. Do
+not key anything on "today".
 
-If BCV is unreachable the last known rate is returned with `stale: true`. If
-there has never been a successful fetch, the endpoint returns **503** rather
-than inventing a number.
+There is **no fallback rate anywhere**. A rate is rejected if it falls outside
+`FX_MIN_RATE`/`FX_MAX_RATE` or moves more than `FX_MAX_DEVIATION_PCT` from the
+last known good value, and a failure returns null rather than a stale or
+invented number. The endpoint answers **503** in that case; payments are
+unaffected either way.
+
+`fx_rates` keeps the rate history and doubles as the deviation baseline, so a
+restart does not lose the last known good value.
 
 > **TLS note.** `bcv.org.ve` serves an incomplete certificate chain — it presents
 > the wrong Sectigo intermediate, so the leaf cannot be verified against Node's
@@ -104,6 +131,10 @@ lock so concurrent deploys cannot race.
 `002_phase1_hardening.sql` adds a **globally unique staff email** index.
 Deduplicate `users.email` across restaurants before applying it to a database
 that already holds data.
+
+`003_ves_settlement.sql` constrains bills to VES and adds the locked-rate
+columns. It rewrites any non-VES bill currency to `VES`, so check that no live
+bill is mid-payment when you apply it.
 
 ## Production notes
 

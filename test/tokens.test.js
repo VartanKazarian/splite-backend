@@ -18,7 +18,12 @@ test('QR token rejects a tampered body', () => {
 
 test('QR token rejects a tampered signature', () => {
   const [body, sig] = qr().split('.');
-  assert.throws(() => verifyQrToken(`${body}.${sig.slice(0, -1)}A`), /Invalid QR signature/);
+  // Flip to a character the signature does not already end with. Hardcoding
+  // 'A' made this a no-op whenever the signature happened to end in 'A' --
+  // about one run in 64, since the payload carries a per-second timestamp.
+  const tampered = sig.slice(0, -1) + (sig.endsWith('A') ? 'B' : 'A');
+  assert.notEqual(tampered, sig);
+  assert.throws(() => verifyQrToken(`${body}.${tampered}`), /Invalid QR signature/);
 });
 
 test('QR token rejects an expired payload', () => {

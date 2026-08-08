@@ -9,16 +9,19 @@ const {
   splitPaymentSchema,
   createBillSchema,
   listBillsQuerySchema,
+  splitQuerySchema,
   billIdParamSchema
 } = require('../middleware/schemas');
 const { processSplitPayment } = require('../services/locks');
+const { getUsdToVesRate } = require('../services/fx');
+const { splitEvenly, usdReference } = require('../services/split');
 const { requestHash, begin, complete, abort } = require('../services/idempotency');
 const { logAudit, auditContext } = require('../services/audit');
 
 const router = express.Router();
 
-const BILL_COLUMNS =
-  'id, restaurant_id, table_id, total_due, amount_paid, currency, status, created_at, updated_at';
+const BILL_COLUMNS = `id, restaurant_id, table_id, total_due, amount_paid, currency, status,
+                      fx_rate, fx_source, fx_locked_at, created_at, updated_at`;
 
 router.use(authenticateToken);
 
@@ -69,11 +72,13 @@ router.post(
       );
       if (!table.rows.length) return res.status(404).json({ error: 'Table not found' });
 
+      // Currency is fixed at VES; migration 003 enforces the same rule with a
+      // CHECK constraint.
       const { rows } = await db.query(
         `INSERT INTO bills (restaurant_id, table_id, total_due, currency)
-         VALUES ($1, $2, $3, $4)
+         VALUES ($1, $2, $3, 'VES')
          RETURNING ${BILL_COLUMNS}`,
-        [req.user.restaurantId, req.body.tableId, req.body.totalDueMinorUnits, req.body.currency]
+        [req.user.restaurantId, req.body.tableId, req.body.totalDueMinorUnits]
       );
 
       await logAudit({
@@ -81,7 +86,7 @@ router.post(
         action: 'BILL_CREATED',
         resourceType: 'bill',
         resourceId: rows[0].id,
-        details: { tableId: req.body.tableId, totalDue: rows[0].total_due, currency: rows[0].currency }
+        details: { tableId: req.body.tableId, totalDue: rows[0].total_due }
       });
 
       res.status(201).json(rows[0]);
@@ -96,9 +101,48 @@ router.get('/:id', validateParams(billIdParamSchema), async (req, res, next) => 
       [req.params.id, req.user.restaurantId]
     );
     if (!rows.length) return res.status(404).json({ error: 'Bill not found' });
-    res.json(rows[0]);
+
+    const bill = rows[0];
+    const remaining = (BigInt(bill.total_due) - BigInt(bill.amount_paid)).toString();
+    res.json({
+      ...bill,
+      remaining,
+      // Presentational only; null until a rate is locked on the first payment.
+      usdReference: {
+        totalDue: usdReference(bill.total_due, bill.fx_rate),
+        amountPaid: usdReference(bill.amount_paid, bill.fx_rate),
+        remaining: usdReference(remaining, bill.fx_rate)
+      }
+    });
   } catch (err) { next(err); }
 });
+
+/** Suggested even split of the outstanding balance, exact to the céntimo. */
+router.get(
+  '/:id/split',
+  validateParams(billIdParamSchema),
+  validateQuery(splitQuerySchema),
+  async (req, res, next) => {
+    try {
+      const { rows } = await db.query(
+        'SELECT total_due, amount_paid, fx_rate FROM bills WHERE id = $1 AND restaurant_id = $2',
+        [req.params.id, req.user.restaurantId]
+      );
+      if (!rows.length) return res.status(404).json({ error: 'Bill not found' });
+
+      const outstanding = (BigInt(rows[0].total_due) - BigInt(rows[0].amount_paid)).toString();
+      const shares = splitEvenly(outstanding, req.query.diners);
+
+      res.json({
+        currency: 'VES',
+        outstanding,
+        diners: req.query.diners,
+        shares,
+        usdReference: shares.map(share => usdReference(share, rows[0].fx_rate))
+      });
+    } catch (err) { next(err); }
+  }
+);
 
 /**
  * Voids a bill that nobody has paid into.
@@ -168,7 +212,9 @@ router.post(
         restaurantId,
         billId: req.params.id,
         amountPaidMinorUnits: req.body.amountMinorUnits,
-        currency: req.body.currency
+        // Presentational: resolved only when this bill has no locked rate yet,
+        // and never permitted to block settlement.
+        getRate: getUsdToVesRate
       });
 
       // Store the response before replying, so a client retry that races the
@@ -180,7 +226,7 @@ router.post(
         action: 'PAYMENT_APPLIED',
         resourceType: 'bill',
         resourceId: req.params.id,
-        details: { amountMinorUnits: req.body.amountMinorUnits, currency: req.body.currency, status: result.status }
+        details: { amountMinorUnits: req.body.amountMinorUnits, currency: 'VES', status: result.status }
       });
 
       res.json(result);
