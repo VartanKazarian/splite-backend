@@ -104,7 +104,7 @@ test('the display rate is locked on the first payment', async () => {
   // 756 710 céntimos = 7567,10 Bs, which is exactly USD 10.00 at 756.71.
   stubBill(openBill({ total_due: '756710' }));
   const result = await processSplitPayment({
-    restaurantId: 'r1', billId: 'bill-1', amountPaidMinorUnits: 378355, getRate: getRate(756.71)
+    restaurantId: 'r1', billId: 'bill-1', amountPaidMinorUnits: 378355, getRate: getRate('756.71')
   });
   assert.equal(result.fxRate, '756.71');
   assert.equal(result.fxSource, 'BCV');
@@ -155,7 +155,7 @@ test('an exact even split closes the bill with nothing left over', async () => {
   let last;
   for (const share of splitEvenly('7567', 3)) {
     last = await processSplitPayment({
-      restaurantId: 'r1', billId: 'bill-1', amountPaidMinorUnits: Number(share), getRate: getRate(756.71)
+      restaurantId: 'r1', billId: 'bill-1', amountPaidMinorUnits: Number(share), getRate: getRate('756.71')
     });
   }
   assert.equal(last.status, 'CLOSED');
