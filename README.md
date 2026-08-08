@@ -64,6 +64,13 @@ placeholder secrets.
 | POST | `/api/v1/bills/:id/void` | staff (`OWNER`, `MANAGER`) |
 | POST | `/api/v1/bills/:id/payments` | staff (`OWNER`, `MANAGER`, `CASHIER`) |
 | GET | `/api/v1/exchange-rate` | staff |
+| GET | `/api/v1/menu/public/:restaurantId/products` | none |
+| GET | `/api/v1/menu/settings` | staff |
+| PATCH | `/api/v1/menu/settings/currency` | staff (`OWNER`, `MANAGER`) |
+| GET | `/api/v1/menu/products` | staff |
+| POST | `/api/v1/menu/products` | staff (`OWNER`, `MANAGER`) |
+| PATCH | `/api/v1/menu/products/:id` | staff (`OWNER`, `MANAGER`) |
+| DELETE | `/api/v1/menu/products/:id` | staff (`OWNER`, `MANAGER`) |
 
 Payments accept an `Idempotency-Key` header (or `idempotencyKey` in the body).
 Retrying with the same key replays the stored response instead of charging twice.
@@ -84,6 +91,25 @@ current bill, which is what makes a permanent physical table QR usable.
 Closing or voiding a bill releases the table for the next one; the partial index
 only covers `OPEN`, so history is retained. Migration 004 also adds a composite
 foreign key so a bill's table must belong to the same restaurant as the bill.
+
+## Menu and menu currency
+
+A restaurant prices its menu in `VES`, `USD` or `EUR`. This says only what the
+printed prices are denominated in — **Splite settlement is always VES** either
+way, and nothing here changes how a bill settles.
+
+A product's currency is copied from the restaurant at creation and is not
+accepted from the request, so a product can never disagree with the menu it
+belongs to. Changing the menu currency is refused with `409
+MENU_CURRENCY_MISMATCH` while any active product still uses the old one:
+converting prices automatically would mean guessing a rate on the restaurant's
+behalf, and leaving them would mean a menu quoting two currencies at once.
+
+Deleting a product deactivates it rather than removing the row, because a bill
+that already references it has to stay readable.
+
+`GET /api/v1/menu/public/:restaurantId/products` is the one unauthenticated
+endpoint here: a guest scanning a table QR has no staff credentials.
 
 ## Money model
 

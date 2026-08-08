@@ -85,8 +85,38 @@ const listBillsQuerySchema = Joi.object({
   tableId: uuid
 });
 
+const MENU_CURRENCIES = ['VES', 'USD', 'EUR'];
+
+const menuCurrencySchema = Joi.object({
+  currency: Joi.string().valid(...MENU_CURRENCIES).required()
+});
+
+const createProductSchema = Joi.object({
+  name: Joi.string().trim().min(1).max(160).required(),
+  description: Joi.string().trim().max(500).allow('', null),
+  // Minor units in the restaurant's menu currency. The currency itself is not
+  // accepted here: it is copied from the restaurant so a product can never
+  // disagree with the menu it belongs to.
+  priceMinorUnits: minorUnits.required(),
+  active: Joi.boolean().default(true)
+});
+
+const updateProductSchema = Joi.object({
+  name: Joi.string().trim().min(1).max(160),
+  description: Joi.string().trim().max(500).allow('', null),
+  priceMinorUnits: minorUnits,
+  active: Joi.boolean()
+}).min(1);
+
+const listProductsQuerySchema = Joi.object({
+  ...paginationKeys,
+  active: Joi.boolean()
+});
+
 const billIdParamSchema = Joi.object({ id: uuid.required() });
 const tableIdParamSchema = Joi.object({ tableId: uuid.required() });
+const productIdParamSchema = Joi.object({ id: uuid.required() });
+const restaurantIdParamSchema = Joi.object({ restaurantId: uuid.required() });
 
 function validate(schema, property) {
   return (req, res, next) => {
@@ -114,6 +144,13 @@ module.exports = {
   listTablesQuerySchema,
   listBillsQuerySchema,
   splitQuerySchema,
+  MENU_CURRENCIES,
+  menuCurrencySchema,
+  createProductSchema,
+  updateProductSchema,
+  listProductsQuerySchema,
+  productIdParamSchema,
+  restaurantIdParamSchema,
   billIdParamSchema,
   tableIdParamSchema,
   validate,
