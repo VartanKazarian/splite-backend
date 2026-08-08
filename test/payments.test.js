@@ -18,6 +18,19 @@ function stubBill(bill, { rate = null } = {}) {
       if (/^UPDATE/i.test(text.trim())) {
         bill.amount_paid = params[0];
         bill.status = params[1];
+        // Mirror the statement's COALESCE(fx_rate, $5): the rate is written
+        // only when the bill has none yet, so a later split cannot overwrite
+        // the rate an earlier one locked.
+        //
+        // The service reads these columns back after the UPDATE to report the
+        // committed value. A stub that acknowledged the write without applying
+        // it left that read returning undefined, so every locked rate came back
+        // null while the assertions still passed against the pre-read-back
+        // implementation.
+        if ((bill.fx_rate ?? null) === null && params[4] !== null && params[4] !== undefined) {
+          bill.fx_rate = params[4];
+          bill.fx_source = params[5];
+        }
         return { rowCount: 1 };
       }
       return { rows: [] };

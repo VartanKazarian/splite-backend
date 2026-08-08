@@ -17,11 +17,20 @@ jobs:
 
       - uses: actions/setup-node@v4
         with:
-          node-version: 20
+          node-version: 20.20.2
           cache: npm
 
       - name: Install dependencies
-        run: npm ci || npm install
+        # Deliberately no `|| npm install` fallback: that hides lockfile drift
+        # and lets CI silently resolve versions this repository never pinned,
+        # which is exactly how a suite passes locally and fails here.
+        run: npm ci
+
+      - name: Environment
+        run: |
+          node --version
+          npm --version
+          npm ls --depth=0 || true
 
       - name: Syntax check
         run: npm run lint
@@ -82,11 +91,14 @@ jobs:
 
       - uses: actions/setup-node@v4
         with:
-          node-version: 20
+          node-version: 20.20.2
           cache: npm
 
       - name: Install dependencies
-        run: npm ci || npm install
+        # Deliberately no `|| npm install` fallback: that hides lockfile drift
+        # and lets CI silently resolve versions this repository never pinned,
+        # which is exactly how a suite passes locally and fails here.
+        run: npm ci
 
       - name: Apply migrations
         run: npm run migrate
