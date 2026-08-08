@@ -1,0 +1,42 @@
+const { redis } = require('../connectors/redis');
+
+/**
+ * Fixed-window limiter backed by Redis.
+ *
+ * failClosed: when Redis is unavailable, reject instead of allowing through.
+ * Use it on authentication endpoints, where failing open would silently
+ * remove brute-force protection during a cache outage.
+ */
+function rateLimit({ windowSeconds = 60, max = 60, keyPrefix = 'rl', failClosed = false } = {}) {
+  return async (req, res, next) => {
+    const identity = req.user?.sub || req.ip || 'unknown';
+    const key = `${keyPrefix}:${identity}`;
+    try {
+      // INCR and TTL in one round trip. Reading the TTL back (rather than
+      // only setting it when count === 1) self-heals a key that lost its
+      // expiry, which would otherwise lock the caller out permanently.
+      const [[incrErr, count], [ttlErr, ttl]] = await redis.multi().incr(key).ttl(key).exec();
+      if (incrErr) throw incrErr;
+      if (ttlErr || ttl < 0) await redis.expire(key, windowSeconds);
+
+      const remaining = Math.max(0, max - count);
+      res.set('X-RateLimit-Limit', String(max));
+      res.set('X-RateLimit-Remaining', String(remaining));
+
+      if (count > max) {
+        res.set('Retry-After', String(windowSeconds));
+        return res.status(429).json({ error: 'Too many requests' });
+      }
+      next();
+    } catch (err) {
+      console.warn('[RateLimit]', err.message);
+      if (failClosed) {
+        res.set('Retry-After', String(windowSeconds));
+        return res.status(503).json({ error: 'Rate limiter unavailable' });
+      }
+      next();
+    }
+  };
+}
+
+module.exports = rateLimit;

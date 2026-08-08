@@ -2,35 +2,65 @@ services:
   api:
     build: .
     ports:
-      - "3000:3000"
+      - "127.0.0.1:3000:3000"
     environment:
-      - NODE_ENV=production
-      - DB_HOST=db
-      - DB_PORT=5432
-      - DB_USER=sobremesa
-      - DB_PASSWORD=sobremesa_pass
-      - DB_NAME=sobremesa_db
+      NODE_ENV: development
+      PORT: 3000
+      DATABASE_URL: postgres://splite:splite_dev_password@db:5432/splite_db
+      DB_SSL: "false"
+      REDIS_URL: redis://redis:6379
+      JWT_ACCESS_SECRET: dev-access-secret-at-least-32-characters
+      JWT_REFRESH_SECRET: dev-refresh-secret-at-least-32-characters
+      QR_SIGNING_SECRET: dev-qr-secret-at-least-32-characters-long
+      WEBHOOK_SECRET: dev-webhook-secret-at-least-32-characters
+      CORS_ORIGINS: http://localhost:5173,http://localhost:3000
     depends_on:
       db:
         condition: service_healthy
+      redis:
+        condition: service_healthy
     restart: unless-stopped
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    read_only: true
+    tmpfs:
+      - /tmp
 
+  # db and redis are deliberately not published to the host: they are reachable
+  # only on the compose network. Use `docker compose exec` for a shell.
   db:
     image: postgres:16-alpine
     environment:
-      POSTGRES_USER: sobremesa
-      POSTGRES_PASSWORD: sobremesa_pass
-      POSTGRES_DB: sobremesa_db
-    ports:
-      - "5432:5432"
+      POSTGRES_USER: splite
+      POSTGRES_PASSWORD: splite_dev_password
+      POSTGRES_DB: splite_db
     volumes:
       - pgdata:/var/lib/postgresql/data
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U sobremesa -d sobremesa_db"]
+      test: ["CMD-SHELL", "pg_isready -U splite -d splite_db"]
       interval: 5s
       timeout: 5s
-      retries: 5
+      retries: 10
     restart: unless-stopped
+    security_opt:
+      - no-new-privileges:true
+
+  redis:
+    image: redis:7-alpine
+    command: ["redis-server", "--appendonly", "yes", "--save", "60", "1"]
+    volumes:
+      - redisdata:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+    restart: unless-stopped
+    security_opt:
+      - no-new-privileges:true
 
 volumes:
   pgdata:
+  redisdata:
