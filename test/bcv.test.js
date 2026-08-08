@@ -3,7 +3,7 @@ const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const path = require('node:path');
 
-const { parseBcvPage, parseVenezuelanDecimal } = require('../src/services/exchangeRate');
+const { parseBcvPage, parseVenezuelanDecimal } = require('../src/connectors/bcv');
 
 // Captured verbatim from https://www.bcv.org.ve/ so the parser is tested
 // against real markup rather than an idealised version of it.
@@ -35,11 +35,6 @@ test('rejects a page that does not contain the dolar block', () => {
     () => parseBcvPage('<html><body>mantenimiento</body></html>'),
     /did not contain a USD rate/
   );
-});
-
-test('rejects an implausible rate rather than trusting the match', () => {
-  const zeroed = FIXTURE.replace('757,54060000', '0,00');
-  assert.throws(() => parseBcvPage(zeroed), /not plausible/);
 });
 
 test('does not scan past the dolar block for a rate', () => {

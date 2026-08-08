@@ -87,27 +87,31 @@ module.exports = {
   redis: {
     url: process.env.REDIS_URL || 'redis://localhost:6379'
   },
-  exchangeRate: {
-    // BCV publishes the official USD reference rate as Drupal HTML; there is
-    // no JSON API. Overridable so a mirror or a fixture can be used instead.
+  fx: {
+    // USD is a display reference only; settlement is always VES. Disabling
+    // this omits the USD line, it does not stop payments.
+    enabled: boolean('FX_ENABLED', true),
+    // BCV publishes the official rate as Drupal HTML; there is no JSON API.
+    // Overridable so a mirror or a fixture can be used instead.
     url: process.env.EXCHANGE_RATE_API_URL || 'https://www.bcv.org.ve/',
-    // Their own cache-control is max-age=300, and the rate changes at most
+    source: process.env.EXCHANGE_RATE_SOURCE || 'BCV',
+    // BCV's own cache-control is max-age=300 and the figure changes at most
     // once per business day, so polling harder buys nothing.
-    cacheTtlSeconds: integer('EXCHANGE_RATE_CACHE_TTL_SECONDS', 900),
-    timeoutMs: integer('EXCHANGE_RATE_TIMEOUT_MS', 8000),
+    ttlMs: integer('FX_CACHE_TTL_SECONDS', 900) * 1000,
+    timeoutMs: integer('FX_TIMEOUT_MS', 8000),
+    // Reject a rate that jumps more than this from the last known good value:
+    // a page that changes shape can yield a plausible but wrong number, and
+    // silently repricing every menu is worse than showing no USD line.
+    maxDeviationPct: Number(process.env.FX_MAX_DEVIATION_PCT || 5),
+    minRate: Number(process.env.FX_MIN_RATE || 1),
+    maxRate: Number(process.env.FX_MAX_RATE || 1e9),
     // bcv.org.ve serves an incomplete certificate chain: it presents the wrong
     // Sectigo intermediate, so the leaf cannot be verified against Node's root
     // store on its own. curl and openssl hide this by fetching the missing
     // certificate themselves; Node does not. We ship the correct intermediate
     // and add it to the trust list. Verification stays fully enabled.
     extraCaFile: process.env.EXCHANGE_RATE_EXTRA_CA
-      || require('path').join(__dirname, '..', 'certs', 'sectigo-public-server-auth-dv-r36.pem'),
-    // Null on purpose. A hardcoded default is worse than no rate at all: the
-    // previous 36.5 was roughly 20x below the live value, so every degraded
-    // response would have quietly under-charged by a factor of twenty.
-    fallbackRate: process.env.EXCHANGE_RATE_FALLBACK
-      ? Number(process.env.EXCHANGE_RATE_FALLBACK)
-      : null
+      || require('path').join(__dirname, '..', 'certs', 'sectigo-public-server-auth-dv-r36.pem')
   },
   rateLimit: {
     // Fail closed on authentication endpoints: a Redis outage must not

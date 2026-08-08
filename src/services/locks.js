@@ -1,13 +1,14 @@
 const db = require('../connectors/base');
+const { usdReference } = require('./split');
 
 /**
- * Applies a partial payment to a bill.
+ * Applies a partial payment to a bill. Settlement is always VES minor units.
  *
  * SELECT ... FOR UPDATE serialises concurrent splits on the same bill, so two
  * diners paying simultaneously cannot both read the same amount_paid. Every
  * clause is tenant-scoped; a bill id from another restaurant reads as 404.
  */
-async function processSplitPayment({ restaurantId, billId, amountPaidMinorUnits, currency }) {
+async function processSplitPayment({ restaurantId, billId, amountPaidMinorUnits, getRate }) {
   const amount = Number(amountPaidMinorUnits);
   if (!Number.isSafeInteger(amount) || amount <= 0) {
     const error = new Error('Invalid payment amount');
@@ -15,9 +16,14 @@ async function processSplitPayment({ restaurantId, billId, amountPaidMinorUnits,
     throw error;
   }
 
+  // Resolved before BEGIN so a network call never happens while holding a row
+  // lock, and only when this bill has no rate yet — an FX outage must not stop
+  // later splits on a bill whose rate is already locked.
+  const pending = await resolvePendingRate({ restaurantId, billId, getRate });
+
   return db.withTransaction(async client => {
     const { rows } = await client.query(
-      `SELECT id, restaurant_id, total_due, amount_paid, status, currency
+      `SELECT id, restaurant_id, total_due, amount_paid, status, currency, fx_rate, fx_source
          FROM bills
         WHERE id = $1 AND restaurant_id = $2
         FOR UPDATE`,
@@ -35,14 +41,9 @@ async function processSplitPayment({ restaurantId, billId, amountPaidMinorUnits,
       error.statusCode = 409;
       throw error;
     }
-    if (currency && currency !== bill.currency) {
-      const error = new Error(`Payment currency must match the bill currency (${bill.currency})`);
-      error.statusCode = 409;
-      throw error;
-    }
 
     // BIGINT arrives from pg as a string; BigInt keeps the arithmetic exact
-    // for totals beyond 2^53 minor units.
+    // for totals beyond 2^53 céntimos.
     const totalDue = BigInt(bill.total_due);
     const newAmountPaid = BigInt(bill.amount_paid) + BigInt(amount);
     if (newAmountPaid > totalDue) {
@@ -51,23 +52,61 @@ async function processSplitPayment({ restaurantId, billId, amountPaidMinorUnits,
       throw error;
     }
 
+    // Lock the display rate on the first payment. A concurrent first payment
+    // may have won the race, in which case its rate stands.
+    // Nullish rather than strict: pg sends null, a caller may send undefined.
+    const existingRate = bill.fx_rate ?? null;
+    const lockRate = existingRate === null && pending !== null;
+    const fxRate = lockRate ? pending.rate : existingRate;
+    const fxSource = lockRate ? pending.source : (bill.fx_source ?? null);
+
     const newStatus = newAmountPaid === totalDue ? 'CLOSED' : 'OPEN';
     await client.query(
       `UPDATE bills
-          SET amount_paid = $1, status = $2, updated_at = NOW()
+          SET amount_paid = $1,
+              status = $2,
+              updated_at = NOW(),
+              fx_rate = COALESCE(fx_rate, $5),
+              fx_source = COALESCE(fx_source, $6),
+              fx_locked_at = CASE WHEN fx_rate IS NULL AND $5::NUMERIC IS NOT NULL THEN NOW() ELSE fx_locked_at END
         WHERE id = $3 AND restaurant_id = $4`,
-      [newAmountPaid.toString(), newStatus, bill.id, restaurantId]
+      [newAmountPaid.toString(), newStatus, bill.id, restaurantId, lockRate ? pending.rate : null, lockRate ? pending.source : null]
     );
 
+    const remaining = totalDue - newAmountPaid;
     return {
       id: bill.id,
       status: newStatus,
+      currency: 'VES',
       totalDue: totalDue.toString(),
       amountPaid: newAmountPaid.toString(),
-      remaining: (totalDue - newAmountPaid).toString(),
-      currency: bill.currency
+      remaining: remaining.toString(),
+      // Presentational only. Null when no verified rate was available.
+      fxRate: fxRate === null ? null : String(fxRate),
+      fxSource,
+      usdReference: {
+        totalDue: usdReference(totalDue.toString(), fxRate),
+        amountPaid: usdReference(newAmountPaid.toString(), fxRate),
+        remaining: usdReference(remaining.toString(), fxRate)
+      }
     };
   });
+}
+
+async function resolvePendingRate({ restaurantId, billId, getRate }) {
+  if (typeof getRate !== 'function') return null;
+  try {
+    const { rows } = await db.query(
+      'SELECT fx_rate FROM bills WHERE id = $1 AND restaurant_id = $2',
+      [billId, restaurantId]
+    );
+    if (!rows.length || (rows[0].fx_rate ?? null) !== null) return null;
+    return await getRate();
+  } catch (err) {
+    // The USD reference is optional; never let it interrupt a payment.
+    console.warn('[Payment] Rate lookup skipped:', err.message);
+    return null;
+  }
 }
 
 module.exports = { processSplitPayment };

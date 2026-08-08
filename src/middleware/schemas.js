@@ -26,7 +26,10 @@ const splitPaymentSchema = Joi.object({
   // Minor units only. Capped below Number.MAX_SAFE_INTEGER so arithmetic in
   // the payment path can never silently lose precision.
   amountMinorUnits: Joi.number().integer().positive().max(Number.MAX_SAFE_INTEGER).required(),
-  currency: Joi.string().valid('VES', 'USD', 'USDT').required(),
+  // Settlement is VES only. USD and USDT were previously accepted and applied
+  // at face value against a bolívar balance. USD now appears in responses as a
+  // display reference, never as a payment amount.
+  currency: Joi.string().valid('VES').required(),
   idempotencyKey: Joi.string().trim().min(16).max(128).pattern(/^[A-Za-z0-9._:-]+$/).required()
 });
 
@@ -57,7 +60,13 @@ const updateTableSchema = Joi.object({
 const createBillSchema = Joi.object({
   tableId: uuid.required(),
   totalDueMinorUnits: minorUnits.required(),
-  currency: Joi.string().valid('VES', 'USD', 'USDT').default('VES')
+  // Bills are denominated in VES céntimos; migration 003 enforces the same
+  // rule at the database level.
+  currency: Joi.string().valid('VES').default('VES')
+});
+
+const splitQuerySchema = Joi.object({
+  diners: Joi.number().integer().min(1).max(50).required()
 });
 
 const paginationKeys = {
@@ -104,6 +113,7 @@ module.exports = {
   createBillSchema,
   listTablesQuerySchema,
   listBillsQuerySchema,
+  splitQuerySchema,
   billIdParamSchema,
   tableIdParamSchema,
   validate,
