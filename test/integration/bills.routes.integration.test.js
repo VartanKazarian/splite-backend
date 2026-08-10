@@ -234,6 +234,49 @@ describe('bill routes over HTTP', { skip }, () => {
     assert.equal(drift.rows.length, 0);
   });
 
+  it('accepts a payment of 2^53 + 1 céntimos over HTTP', async () => {
+    // The path this exercises is the one that was capped: HTTP string -> Joi
+    // -> BigInt -> Postgres BIGINT, with no Number() in between.
+    const total = '9007199254740993';
+    const bigTable = await newTable();
+    const created = await request('POST', '/api/v1/bills', {
+      body: { tableId: bigTable.id, totalDueMinorUnits: total }
+    });
+    assert.equal(created.status, 201, JSON.stringify(created.body));
+    assert.equal(created.body.total_due_ves, total);
+
+    const paid = await request('POST', `/api/v1/bills/${created.body.id}/payments`, {
+      body: {
+        billId: created.body.id,
+        amountMinorUnits: total,
+        currency: 'VES',
+        idempotencyKey: `big-${created.body.id}`
+      }
+    });
+    assert.equal(paid.status, 200, JSON.stringify(paid.body));
+    assert.equal(paid.body.amountPaid, total);
+    assert.equal(paid.body.remaining, '0');
+    assert.equal(paid.body.status, 'CLOSED');
+  });
+
+  it('refuses an amount that arrived as an already-rounded JSON number', async () => {
+    const roundedTable = await newTable();
+    const created = await request('POST', '/api/v1/bills', {
+      body: { tableId: roundedTable.id, totalDueMinorUnits: '10000' }
+    });
+
+    const refused = await request('POST', `/api/v1/bills/${created.body.id}/payments`, {
+      body: {
+        billId: created.body.id,
+        // A JSON number past 2^53: the client's parser already rounded it.
+        amountMinorUnits: 9007199254740993,
+        currency: 'VES',
+        idempotencyKey: `rounded-${created.body.id}`
+      }
+    });
+    assert.equal(refused.status, 400, 'banking a rounded figure is worse than refusing it');
+  });
+
   it('refuses a second open bill on the same table', async () => {
     const dupTable = await newTable();
     const first = await request('POST', '/api/v1/bills', {

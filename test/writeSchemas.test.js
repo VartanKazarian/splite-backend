@@ -82,3 +82,30 @@ test('list filters only accept known values', () => {
   assert.ok(fails(listBillsQuerySchema, { tableId: 'not-a-uuid' }));
   assert.equal(ok(listTablesQuerySchema, { active: 'true' }).active, true);
 });
+
+test('a payment amount is exact at any size the column holds', () => {
+  const { splitPaymentSchema } = require('../src/middleware/schemas');
+  const payment = amount => splitPaymentSchema.validate(
+    { billId: UUID, amountMinorUnits: amount, currency: 'VES', idempotencyKey: 'k0123456789abcdef' },
+    OPTIONS
+  );
+
+  // The previous schema coerced through Joi.number() before validating, so even
+  // this exact string was rounded and then rejected as unsafe — capping payments
+  // below 2^53 while the column and the arithmetic both went further.
+  assert.equal(payment('9007199254740993').value.amountMinorUnits, '9007199254740993');
+  assert.equal(payment(5000).value.amountMinorUnits, '5000', 'integers are still accepted');
+});
+
+test('a payment amount that already lost precision is refused', () => {
+  const { splitPaymentSchema } = require('../src/middleware/schemas');
+  const payment = amount => splitPaymentSchema.validate(
+    { billId: UUID, amountMinorUnits: amount, currency: 'VES', idempotencyKey: 'k0123456789abcdef' },
+    OPTIONS
+  );
+
+  // A JSON number past 2^53 was rounded by the client's parser before it
+  // arrived; banking whatever it became would be worse than refusing it.
+  assert.ok(payment(9007199254740993).error);
+  for (const bad of ['0', '-1', '1.5', 'abc', '']) assert.ok(payment(bad).error, `expected ${bad} refused`);
+});

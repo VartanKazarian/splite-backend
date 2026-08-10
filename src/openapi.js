@@ -127,10 +127,11 @@ const schemas = {
         description: 'Must equal the id in the path; a mismatch is a 400.'
       },
       amountMinorUnits: {
-        type: 'integer',
-        minimum: 1,
-        maximum: 9007199254740991,
-        description: 'VES céntimos.'
+        type: 'string',
+        pattern: '^[0-9]{1,18}$',
+        description:
+          'VES céntimos as a digit string, so a payment can be as large as the column holds. A JSON number is accepted for convenience but is rejected beyond 2^53, where it has already lost precision.',
+        examples: ['250000']
       },
       currency: {
         type: 'string',

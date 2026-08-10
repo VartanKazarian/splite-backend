@@ -385,9 +385,6 @@ From the working copy, onto the current model:
 - **`/health/ready` is an unauthenticated database round-trip**, deliberately
   ahead of the rate limiter so probes do not consume client budget. That also
   makes it free load for anyone who finds it.
-- **Joi caps `amountMinorUnits` at `MAX_SAFE_INTEGER`** while the column is
-  BIGINT, so the exact-arithmetic work is unreachable through the API at the top
-  of the range.
 
 ### Tooling
 

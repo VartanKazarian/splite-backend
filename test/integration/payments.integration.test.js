@@ -118,6 +118,33 @@ describe('payments against a real Postgres', { skip }, () => {
     assert.equal(stored.total_due_ves, totalDue, 'the total survives the round trip intact');
   });
 
+  it('settles a bill of 2^53 + 1 céntimos in a single payment', async () => {
+    // The whole amount, not a token payment on a large bill. Both the schema
+    // and the service used to cap at MAX_SAFE_INTEGER, so this exact figure
+    // could be owed but never paid.
+    const total = '9007199254740993';
+    const bill = await freshBill({ totalDue: total });
+
+    const result = await processSplitPayment({
+      restaurantId: restaurant.id,
+      billId: bill.id,
+      amountPaidMinorUnits: total
+    });
+
+    assert.equal(result.amountPaid, total);
+    assert.equal(result.remaining, '0');
+    assert.equal(result.status, 'CLOSED');
+
+    const stored = await fixtures.readBill(bill.id);
+    assert.equal(stored.amount_paid_ves, total, 'the settled amount survives the round trip exactly');
+
+    // And the ledger records the same figure, not a rounded one.
+    const { rows } = await db.query(
+      'SELECT amount_ves FROM payments WHERE bill_id = $1', [bill.id]
+    );
+    assert.deepEqual(rows.map(r => r.amount_ves), [total]);
+  });
+
   it('reads a bill from another restaurant as 404', async () => {
     const other = await fixtures.createRestaurant({ name: 'Other Tenant' });
     try {
