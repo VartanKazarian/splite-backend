@@ -3,10 +3,10 @@ const { usdReference } = require('./split');
 const config = require('../config');
 const { recordPayment } = require('./payments');
 
-// bills.fx_rate_ves_per_unit is NUMERIC(20,6). pg returns NUMERIC as a string
-// carrying the column's full scale, so normalising here keeps the reported rate
-// identical across every split on a bill.
-const RATE_SCALE_DECIMALS = 6;
+// bills.fx_rate_ves_per_unit is NUMERIC(20,8) — the precision BCV publishes.
+// pg returns NUMERIC as a string carrying the column's full scale, so
+// normalising here keeps the reported rate identical across every split.
+const RATE_SCALE_DECIMALS = 8;
 
 function formatRate(value) {
   if (value === null || value === undefined) return null;

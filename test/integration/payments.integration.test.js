@@ -150,7 +150,7 @@ describe('payments against a real Postgres', { skip }, () => {
   it('reports the same frozen rate for every split on a bill', async () => {
     // The rate is set when the bill is opened, so concurrency cannot produce
     // two different figures for one bill.
-    const bill = await freshBill({ totalDue: 9000, currency: 'USD', totalDueVes: 9000, fxRate: '756.710000' });
+    const bill = await freshBill({ totalDue: 9000, currency: 'USD', totalDueVes: 9000, fxRate: '756.71000000' });
 
     const attempts = await Promise.all(
       Array.from({ length: 3 }, () =>
@@ -159,7 +159,7 @@ describe('payments against a real Postgres', { skip }, () => {
     );
 
     assert.equal(new Set(attempts.map(a => a.fxRate)).size, 1);
-    assert.equal(attempts[0].fxRate, '756.710000');
+    assert.equal(attempts[0].fxRate, '756.71000000');
     assert.equal(attempts[0].displayCurrency, 'USD');
   });
 
