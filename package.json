@@ -11,7 +11,7 @@
     "test:integration": "LOG_LEVEL=silent node --test test/integration/*.test.js",
     "migrate": "node scripts/migrate.js",
     "seed": "node scripts/seed.js",
-    "lint": "find src scripts test -name '*.js' -exec node --check {} \\;",
+    "lint": "find src scripts test -name '*.js' -print0 | xargs -0 -n 1 node --check",
     "check:paths": "node scripts/check-invisible-paths.js",
     "audit": "npm audit --audit-level=high"
   },

@@ -25,19 +25,30 @@ async function createTable(restaurantId, { name = 'T1' } = {}) {
   return rows[0];
 }
 
-async function createBill({ restaurantId, tableId, totalDue, amountPaid = 0, currency = 'VES', status = 'OPEN' }) {
+async function createBill({
+  restaurantId, tableId, totalDue, amountPaid = 0, currency = 'VES', status = 'OPEN',
+  // Settlement is VES. A VES menu converts at identity, which is what every
+  // fixture wants unless it is specifically exercising a foreign-currency bill.
+  totalDueVes = null, fxRate = '1'
+}) {
   const { rows } = await db.query(
-    `INSERT INTO bills (restaurant_id, table_id, total_due, amount_paid, currency, status)
-     VALUES ($1, $2, $3, $4, $5, $6)
-     RETURNING id, total_due, amount_paid, currency, status`,
-    [restaurantId, tableId, String(totalDue), String(amountPaid), currency, status]
+    `INSERT INTO bills (restaurant_id, table_id, total_due, currency, status,
+                        total_due_ves, amount_paid_ves,
+                        fx_rate_ves_per_unit, fx_rate_source, fx_rate_as_of)
+     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, 'IDENTITY', NOW())
+     RETURNING id, total_due, currency, status, total_due_ves, amount_paid_ves, fx_rate_ves_per_unit`,
+    [
+      restaurantId, tableId, String(totalDue), currency, status,
+      String(totalDueVes ?? totalDue), String(amountPaid), fxRate
+    ]
   );
   return rows[0];
 }
 
 async function readBill(billId) {
   const { rows } = await db.query(
-    'SELECT id, total_due, amount_paid, currency, status FROM bills WHERE id = $1',
+    `SELECT id, total_due, currency, status, total_due_ves, amount_paid_ves, fx_rate_ves_per_unit
+       FROM bills WHERE id = $1`,
     [billId]
   );
   return rows[0];

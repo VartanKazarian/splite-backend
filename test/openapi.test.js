@@ -141,14 +141,18 @@ test('the payments contract is complete', () => {
 });
 
 test('settlement is documented as VES only', () => {
-  const payment = document.components.schemas.PaymentRequest;
-  assert.equal(payment.properties.currency.const, 'VES');
-  assert.equal(document.components.schemas.CreateBillRequest.properties.currency.const, 'VES');
+  assert.equal(document.components.schemas.PaymentRequest.properties.currency.const, 'VES');
+  assert.equal(document.components.schemas.PaymentResult.properties.currency.const, 'VES');
+
+  // A bill inherits the restaurant's menu currency, so the client does not
+  // choose one; the settlement column is what carries VES.
+  assert.equal(document.components.schemas.CreateBillRequest.properties.currency, undefined);
+  assert.ok(document.components.schemas.Bill.properties.total_due_ves);
 });
 
 test('monetary amounts are documented as strings, not numbers', () => {
   // A JSON number has already lost precision past 2^53 by the time it arrives.
-  for (const field of ['total_due', 'amount_paid', 'remaining']) {
+  for (const field of ['total_due', 'total_due_ves', 'amount_paid_ves', 'remaining_ves']) {
     assert.equal(document.components.schemas.Bill.properties[field].type, 'string', `Bill.${field}`);
   }
   assert.equal(document.components.schemas.PaymentResult.properties.amountPaid.type, 'string');

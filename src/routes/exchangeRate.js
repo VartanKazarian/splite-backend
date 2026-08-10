@@ -1,11 +1,11 @@
 const express = require('express');
 const { authenticateToken } = require('../middleware/auth');
-const { getUsdToVesRate } = require('../services/fx');
+const { getRates } = require('../services/fx');
 
 const router = express.Router();
 
 /**
- * Official BCV USD reference rate.
+ * Official BCV reference rates, USD and EUR, published together.
  *
  * Settlement is always VES, so this is a display aid. It returns 503 when no
  * verified rate is available rather than guessing — but note that a payment
@@ -18,16 +18,20 @@ const router = express.Router();
  */
 router.get('/', authenticateToken, async (req, res, next) => {
   try {
-    const rate = await getUsdToVesRate();
-    if (!rate) {
-      return res.status(503).json({ error: 'Exchange rate is unavailable' });
+    const rates = await getRates();
+    if (Object.keys(rates).length === 0) {
+      return res.status(503).json({ error: 'No exchange rate is available' });
     }
     res.set('Cache-Control', 'public, max-age=60');
     res.json({
-      rate: rate.rate,
-      valueDate: rate.valueDate,
-      source: rate.source,
-      fetchedAt: rate.fetchedAt instanceof Date ? rate.fetchedAt.toISOString() : rate.fetchedAt
+      // BCV publishes USD and EUR on the same page with the same value date; a
+      // restaurant may price its menu in either.
+      rates: Object.fromEntries(Object.entries(rates).map(([currency, r]) => [currency, {
+        rate: r.rate,
+        valueDate: r.valueDate,
+        source: r.source,
+        fetchedAt: r.fetchedAt instanceof Date ? r.fetchedAt.toISOString() : r.fetchedAt
+      }]))
     });
   } catch (err) { next(err); }
 });

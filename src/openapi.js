@@ -63,14 +63,22 @@ const schemas = {
       id: { type: 'string', format: 'uuid' },
       restaurant_id: { type: 'string', format: 'uuid' },
       table_id: { type: 'string', format: 'uuid' },
-      total_due: minorUnits,
-      amount_paid: minorUnits,
-      remaining: minorUnits,
-      currency: { type: 'string', const: 'VES' },
       status: { type: 'string', enum: ['OPEN', 'CLOSED', 'VOID'] },
-      fx_rate: { type: ['string', 'null'], description: 'Display rate locked on the first payment.' },
-      fx_source: { type: ['string', 'null'] },
-      fx_locked_at: { type: ['string', 'null'], format: 'date-time' },
+      total_due: { ...minorUnits, description: 'Subtotal in the menu currency, for display.' },
+      currency: {
+        type: 'string', enum: ['VES', 'USD', 'EUR'],
+        description: 'The currency the menu quoted. Settlement is always VES.'
+      },
+      total_due_ves: { ...minorUnits, description: 'Authoritative amount to settle.' },
+      amount_paid_ves: { ...minorUnits, description: 'Authoritative amount settled so far.' },
+      remaining_ves: minorUnits,
+      fx_rate_ves_per_unit: {
+        type: ['string', 'null'],
+        description: 'Rate frozen when the bill was opened, so the quoted total cannot move while diners eat.'
+      },
+      fx_rate_source: { type: ['string', 'null'] },
+      fx_value_date: { type: ['string', 'null'], format: 'date' },
+      calculation_version: { type: 'integer' },
       usdReference: ref('UsdReference'),
       created_at: { type: 'string', format: 'date-time' },
       updated_at: { type: 'string', format: 'date-time' }
@@ -102,8 +110,10 @@ const schemas = {
     required: ['tableId', 'totalDueMinorUnits'],
     properties: {
       tableId: { type: 'string', format: 'uuid' },
-      totalDueMinorUnits: minorUnits,
-      currency: { type: 'string', const: 'VES', default: 'VES' }
+      totalDueMinorUnits: {
+        ...minorUnits,
+        description: 'Minor units in the restaurant menu currency, which the bill inherits.'
+      }
     }
   },
 
@@ -141,11 +151,13 @@ const schemas = {
     type: 'object',
     properties: {
       id: { type: 'string', format: 'uuid' },
+      paymentId: { type: 'string', format: 'uuid', description: 'The ledger row this payment created.' },
       status: { type: 'string', enum: ['OPEN', 'CLOSED'] },
       currency: { type: 'string', const: 'VES' },
       totalDue: minorUnits,
       amountPaid: minorUnits,
       remaining: minorUnits,
+      displayCurrency: { type: 'string', enum: ['VES', 'USD', 'EUR'] },
       fxRate: { type: ['string', 'null'] },
       fxSource: { type: ['string', 'null'] },
       usdReference: ref('UsdReference')
@@ -342,15 +354,24 @@ const schemas = {
   ExchangeRate: {
     type: 'object',
     properties: {
-      rate: { type: 'number', examples: [757.5406] },
-      valueDate: {
-        type: ['string', 'null'],
-        format: 'date',
-        description:
-          'The day the rate applies to, from BCV Fecha Valor. BCV publishes around 16:30 Caracas for the next business day, so this is not the fetch date.'
-      },
-      source: { type: 'string', examples: ['BCV'] },
-      fetchedAt: { type: ['string', 'null'], format: 'date-time' }
+      rates: {
+        type: 'object',
+        description: 'VES per unit of each supported currency. BCV publishes USD and EUR together.',
+        additionalProperties: {
+          type: 'object',
+          properties: {
+            rate: { type: 'number', examples: [757.5406] },
+            valueDate: {
+              type: ['string', 'null'],
+              format: 'date',
+              description:
+                'The day the rate applies to, from BCV Fecha Valor. BCV publishes around 16:30 Caracas for the next business day, so this is not the fetch date.'
+            },
+            source: { type: 'string', examples: ['BCV'] },
+            fetchedAt: { type: ['string', 'null'], format: 'date-time' }
+          }
+        }
+      }
     }
   },
 
@@ -748,8 +769,8 @@ const paths = {
         'different payload, or while the first request is still in flight, is a 409.',
         '',
         '**Concurrency.** The bill row is locked for the duration, so simultaneous splits serialise',
-        'and cannot overpay. The display rate is locked on the first payment and reused for every',
-        'later split, so on-screen figures do not drift mid-meal.',
+        'and cannot overpay. The display rate was frozen when the bill was opened, so every',
+        'split reports the same figure and nothing drifts mid-meal.',
         '',
         '**FX is never load-bearing.** If no verified rate is available the payment still applies and',
         'the USD reference is null.',
@@ -791,7 +812,7 @@ const paths = {
   '/api/v1/exchange-rate': {
     get: {
       tags: ['Exchange rate'],
-      summary: 'Official BCV USD reference rate',
+      summary: 'Official BCV reference rates (USD and EUR)',
       description:
         'Presentational. Returns 503 rather than a stale or invented rate when none is in force; payments are unaffected either way.',
       security: staff,

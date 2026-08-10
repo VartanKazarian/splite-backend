@@ -59,10 +59,10 @@ const updateTableSchema = Joi.object({
 
 const createBillSchema = Joi.object({
   tableId: uuid.required(),
-  totalDueMinorUnits: minorUnits.required(),
-  // Bills are denominated in VES céntimos; migration 003 enforces the same
-  // rule at the database level.
-  currency: Joi.string().valid('VES').default('VES')
+  // Minor units in the restaurant's menu currency. The currency itself is not
+  // accepted here: it comes from the restaurant, so a bill cannot be opened in
+  // a currency the menu does not use.
+  totalDueMinorUnits: minorUnits.required()
 });
 
 const splitQuerySchema = Joi.object({

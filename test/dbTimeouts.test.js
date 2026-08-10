@@ -12,7 +12,7 @@ test.afterEach(() => { db.withTransaction = originalTransaction; db.query = orig
 /** Captures the options withTransaction is called with. */
 function captureTransactionOptions(bill) {
   const seen = { options: null, statements: [] };
-  db.query = async () => ({ rows: bill ? [{ fx_rate: bill.fx_rate ?? null }] : [] });
+  db.query = async () => ({ rows: bill ? [bill] : [] });
   db.withTransaction = async (fn, options) => {
     seen.options = options;
     return fn({
@@ -22,7 +22,7 @@ function captureTransactionOptions(bill) {
         if (/^INSERT INTO payment_transitions/i.test(text.trim())) return { rows: [] };
         if (/^SELECT/i.test(text.trim())) return { rows: bill ? [bill] : [] };
         if (/^UPDATE/i.test(text.trim())) {
-          bill.amount_paid = params[0];
+          bill.amount_paid_ves = params[0];
           bill.status = params[1];
           return { rowCount: 1 };
         }
@@ -34,8 +34,9 @@ function captureTransactionOptions(bill) {
 }
 
 const openBill = (overrides = {}) => ({
-  id: 'bill-1', restaurant_id: 'r1', total_due: '10000', amount_paid: '0',
-  status: 'OPEN', currency: 'VES', ...overrides
+  id: 'bill-1', restaurant_id: 'r1', status: 'OPEN', currency: 'VES',
+  total_due: '10000', total_due_ves: '10000', amount_paid_ves: '0',
+  fx_rate_ves_per_unit: '1.000000', fx_rate_source: 'IDENTITY', ...overrides
 });
 
 test('the pool sets a server-side statement timeout, not just a connect timeout', () => {
@@ -75,37 +76,22 @@ test('the payment budget is the larger of the two', () => {
   );
 });
 
-test('the FX lookup happens before the transaction opens', async () => {
+test('the payment path makes no external call inside the transaction', async () => {
   // The slow part of a Venezuelan payment is the external rail, not the SQL.
-  // Resolving it inside the transaction would hold a row lock across a network
-  // call and make the statement budget a function of somebody else's uptime.
-  const order = [];
-  const bill = openBill();
+  // The rate is now frozen when the bill is opened, so the payment path has no
+  // FX dependency at all -- there is no longer an ordering to get wrong.
+  const fx = require('../src/services/fx');
+  const realGet = fx.getUsdToVesRate;
+  let fxCalls = 0;
+  fx.getUsdToVesRate = async () => { fxCalls += 1; return null; };
 
-  db.query = async () => { order.push('rate-preread'); return { rows: [{ fx_rate: null }] }; };
-  db.withTransaction = async (fn) => {
-    order.push('begin');
-    return fn({
-      query: async (text, params) => {
-        if (/^INSERT INTO payments/i.test(text.trim())) return { rows: [{ id: 'payment-1' }] };
-        if (/^INSERT INTO payment_transitions/i.test(text.trim())) return { rows: [] };
-        if (/^SELECT/i.test(text.trim())) return { rows: [bill] };
-        if (/^UPDATE/i.test(text.trim())) { bill.amount_paid = params[0]; bill.status = params[1]; return { rowCount: 1 }; }
-        return { rows: [] };
-      }
-    });
-  };
+  try {
+    const seen = captureTransactionOptions(openBill());
+    await processSplitPayment({ restaurantId: 'r1', billId: 'bill-1', amountPaidMinorUnits: 2500 });
 
-  await processSplitPayment({
-    restaurantId: 'r1',
-    billId: 'bill-1',
-    amountPaidMinorUnits: 2500,
-    getRate: async () => { order.push('fx-fetch'); return { rate: 757.5406, source: 'BCV' }; }
-  });
-
-  assert.deepEqual(
-    order.slice(0, 3),
-    ['rate-preread', 'fx-fetch', 'begin'],
-    'the rate is resolved before BEGIN, never while holding the lock'
-  );
+    assert.equal(fxCalls, 0, 'no rate lookup happens during a payment');
+    assert.ok(seen.statements.length > 0, 'the transaction still did its work');
+  } finally {
+    fx.getUsdToVesRate = realGet;
+  }
 });

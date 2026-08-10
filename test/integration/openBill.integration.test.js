@@ -42,7 +42,7 @@ describe('one open bill per table', { skip }, () => {
       "SELECT id FROM bills WHERE restaurant_id = $1 AND table_id = $2 AND status = 'OPEN'",
       [restaurant.id, table.id]
     );
-    await db.query("UPDATE bills SET status = 'CLOSED', amount_paid = total_due WHERE id = $1", [rows[0].id]);
+    await db.query("UPDATE bills SET status = 'CLOSED', amount_paid_ves = total_due_ves WHERE id = $1", [rows[0].id]);
 
     // A partial index only covers status = 'OPEN', so closing releases the slot
     // while the closed bill stays on the table's history.
@@ -79,8 +79,9 @@ describe('one open bill per table', { skip }, () => {
       // two restaurant_id columns together until migration 004.
       await assert.rejects(
         () => db.query(
-          `INSERT INTO bills (restaurant_id, table_id, total_due, currency)
-           VALUES ($1, $2, $3, 'VES')`,
+          `INSERT INTO bills (restaurant_id, table_id, total_due, currency,
+                              total_due_ves, fx_rate_ves_per_unit, fx_rate_source)
+           VALUES ($1, $2, $3, 'VES', $3, 1, 'IDENTITY')`,
           [restaurant.id, otherTable.id, '100']
         ),
         err => {

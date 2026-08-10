@@ -42,11 +42,13 @@ test('bill totals reject negatives, fractions and values past BIGINT', () => {
   assert.ok(fails(createBillSchema, { tableId: UUID, totalDueMinorUnits: 'abc' }));
 });
 
-test('a bill requires a uuid table id and defaults to VES', () => {
-  assert.equal(ok(createBillSchema, { tableId: UUID, totalDueMinorUnits: 1 }).currency, 'VES');
+test('a bill requires a uuid table id and cannot choose its own currency', () => {
+  // The currency comes from the restaurant's menu, so a client cannot open a
+  // bill in one the menu does not use.
+  const value = ok(createBillSchema, { tableId: UUID, totalDueMinorUnits: 1, currency: 'EUR' });
+  assert.equal(value.currency, undefined, 'currency is stripped rather than honoured');
   assert.ok(fails(createBillSchema, { tableId: 'not-a-uuid', totalDueMinorUnits: 1 }));
   assert.ok(fails(createBillSchema, { totalDueMinorUnits: 1 }));
-  assert.ok(fails(createBillSchema, { tableId: UUID, totalDueMinorUnits: 1, currency: 'EUR' }));
 });
 
 test('table names are trimmed and bounded', () => {

@@ -14,16 +14,22 @@ const {
   tableIdParamSchema
 } = require('../middleware/schemas');
 const { processSplitPayment } = require('../services/locks');
-const { getUsdToVesRate } = require('../services/fx');
+const { getRateFor } = require('../services/fx');
 const { splitEvenly, usdReference } = require('../services/split');
+const { parseRate, applyRate, toMinor } = require('../services/money');
 const { requestHash, begin, complete, abort } = require('../services/idempotency');
 const { logAudit, auditContext } = require('../services/audit');
 const { logger } = require('../connectors/logger');
 
 const router = express.Router();
 
-const BILL_COLUMNS = `id, restaurant_id, table_id, total_due, amount_paid, currency, status,
-                      fx_rate, fx_source, fx_locked_at, created_at, updated_at`;
+// total_due and currency are what the menu quoted; total_due_ves and
+// amount_paid_ves are what Splite settles. The rate is frozen at bill creation.
+const BILL_COLUMNS = `id, restaurant_id, table_id, status,
+                      total_due, currency,
+                      total_due_ves, amount_paid_ves,
+                      fx_rate_ves_per_unit, fx_rate_source, fx_value_date,
+                      calculation_version, created_at, updated_at`;
 
 router.use(authenticateToken);
 
@@ -31,6 +37,59 @@ router.use(authenticateToken);
 // app-level limiter runs before any auth middleware, which leaves it keyed on
 // IP alone — behind carrier NAT that is one shared bucket for many staff.
 router.use(rateLimit({ windowSeconds: 60, max: 60, keyPrefix: 'bills' }));
+
+/**
+ * Adds the derived figures to a bill row.
+ *
+ * The outstanding balance is computed rather than stored: two maintained
+ * counters for one quantity is the drift the payment ledger exists to remove.
+ */
+function present(bill) {
+  const remainingVes = (BigInt(bill.total_due_ves) - BigInt(bill.amount_paid_ves)).toString();
+  const rate = bill.fx_rate_ves_per_unit ?? null;
+  return {
+    ...bill,
+    remaining_ves: remainingVes,
+    usdReference: {
+      totalDue: usdReference(bill.total_due_ves, rate),
+      amountPaid: usdReference(bill.amount_paid_ves, rate),
+      remaining: usdReference(remainingVes, rate)
+    }
+  };
+}
+
+/**
+ * Freezes the rate the bill will settle at.
+ *
+ * Taken when the bill is opened, not when it is first paid, so the total a
+ * diner is quoted cannot move underneath them while they eat. A VES menu needs
+ * no conversion and is recorded as an identity rate rather than a null, so
+ * every bill can state what it settled at.
+ */
+async function snapshotFx(menuCurrency, totalDueMinorUnits) {
+  if (menuCurrency === 'VES') {
+    return { totalDueVes: String(totalDueMinorUnits), rate: '1', source: 'IDENTITY', valueDate: null };
+  }
+
+  const fx = await getRateFor(menuCurrency);
+  if (!fx) {
+    // Fail closed: a foreign-currency bill without a rate has no settleable
+    // total, and inventing one is what the FX service exists to prevent. This
+    // can only stop a bill being opened; payments on existing bills use the
+    // rate already frozen on them.
+    const error = new Error(`No exchange rate is available for ${menuCurrency}, so the bill cannot be opened`);
+    error.statusCode = 503;
+    throw error;
+  }
+
+  const scaled = parseRate(fx.rate);
+  return {
+    totalDueVes: applyRate(toMinor(totalDueMinorUnits), scaled, 'Bill total in VES').toString(),
+    rate: String(fx.rate),
+    source: fx.source,
+    valueDate: fx.valueDate ?? null
+  };
+}
 
 router.get('/', validateQuery(listBillsQuerySchema), async (req, res, next) => {
   try {
@@ -75,17 +134,7 @@ router.get('/tables/:tableId/open', validateParams(tableIdParamSchema), async (r
     );
     if (!rows.length) return res.status(404).json({ error: 'No open bill for this table' });
 
-    const bill = rows[0];
-    const remaining = (BigInt(bill.total_due) - BigInt(bill.amount_paid)).toString();
-    res.json({
-      ...bill,
-      remaining,
-      usdReference: {
-        totalDue: usdReference(bill.total_due, bill.fx_rate),
-        amountPaid: usdReference(bill.amount_paid, bill.fx_rate),
-        remaining: usdReference(remaining, bill.fx_rate)
-      }
-    });
+    res.json(present(rows[0]));
   } catch (err) { next(err); }
 });
 
@@ -123,13 +172,25 @@ router.post(
           });
         }
 
-        // Currency is fixed at VES; migration 003 enforces the same rule with a
-        // CHECK constraint.
+        // The bill is denominated in whatever the menu quotes, and the rate it
+        // will settle at is frozen here.
+        const restaurant = await client.query(
+          'SELECT menu_currency FROM restaurants WHERE id = $1',
+          [req.user.restaurantId]
+        );
+        const menuCurrency = restaurant.rows[0]?.menu_currency ?? 'VES';
+        const fx = await snapshotFx(menuCurrency, req.body.totalDueMinorUnits);
+
         const { rows } = await client.query(
-          `INSERT INTO bills (restaurant_id, table_id, total_due, currency)
-           VALUES ($1, $2, $3, 'VES')
+          `INSERT INTO bills (restaurant_id, table_id, total_due, currency,
+                              total_due_ves, fx_rate_ves_per_unit, fx_rate_source,
+                              fx_value_date, fx_rate_as_of)
+           VALUES ($1, $2, $3, $4, $5, $6, $7, $8, NOW())
            RETURNING ${BILL_COLUMNS}`,
-          [req.user.restaurantId, req.body.tableId, req.body.totalDueMinorUnits]
+          [
+            req.user.restaurantId, req.body.tableId, req.body.totalDueMinorUnits, menuCurrency,
+            fx.totalDueVes, fx.rate, fx.source, fx.valueDate
+          ]
         );
         return rows[0];
       });
@@ -139,10 +200,15 @@ router.post(
         action: 'BILL_CREATED',
         resourceType: 'bill',
         resourceId: created.id,
-        details: { tableId: req.body.tableId, totalDue: created.total_due }
+        details: {
+          tableId: req.body.tableId,
+          totalDue: created.total_due,
+          currency: created.currency,
+          totalDueVes: created.total_due_ves
+        }
       });
 
-      res.status(201).json(created);
+      res.status(201).json(present(created));
     } catch (err) {
       // The partial unique index is the last line of defence: if a concurrent
       // request committed first, the insert fails here rather than producing a
@@ -166,18 +232,7 @@ router.get('/:id', validateParams(billIdParamSchema), async (req, res, next) => 
     );
     if (!rows.length) return res.status(404).json({ error: 'Bill not found' });
 
-    const bill = rows[0];
-    const remaining = (BigInt(bill.total_due) - BigInt(bill.amount_paid)).toString();
-    res.json({
-      ...bill,
-      remaining,
-      // Presentational only; null until a rate is locked on the first payment.
-      usdReference: {
-        totalDue: usdReference(bill.total_due, bill.fx_rate),
-        amountPaid: usdReference(bill.amount_paid, bill.fx_rate),
-        remaining: usdReference(remaining, bill.fx_rate)
-      }
-    });
+    res.json(present(rows[0]));
   } catch (err) { next(err); }
 });
 
@@ -189,12 +244,12 @@ router.get(
   async (req, res, next) => {
     try {
       const { rows } = await db.query(
-        'SELECT total_due, amount_paid, fx_rate FROM bills WHERE id = $1 AND restaurant_id = $2',
+        'SELECT total_due_ves, amount_paid_ves, fx_rate_ves_per_unit FROM bills WHERE id = $1 AND restaurant_id = $2',
         [req.params.id, req.user.restaurantId]
       );
       if (!rows.length) return res.status(404).json({ error: 'Bill not found' });
 
-      const outstanding = (BigInt(rows[0].total_due) - BigInt(rows[0].amount_paid)).toString();
+      const outstanding = (BigInt(rows[0].total_due_ves) - BigInt(rows[0].amount_paid_ves)).toString();
       const shares = splitEvenly(outstanding, req.query.diners);
 
       res.json({
@@ -202,7 +257,7 @@ router.get(
         outstanding,
         diners: req.query.diners,
         shares,
-        usdReference: shares.map(share => usdReference(share, rows[0].fx_rate))
+        usdReference: shares.map(share => usdReference(share, rows[0].fx_rate_ves_per_unit))
       });
     } catch (err) { next(err); }
   }
@@ -223,19 +278,19 @@ router.post(
       const { rows } = await db.query(
         `UPDATE bills
             SET status = 'VOID'
-          WHERE id = $1 AND restaurant_id = $2 AND status = 'OPEN' AND amount_paid = 0
+          WHERE id = $1 AND restaurant_id = $2 AND status = 'OPEN' AND amount_paid_ves = 0
         RETURNING ${BILL_COLUMNS}`,
         [req.params.id, req.user.restaurantId]
       );
 
       if (!rows.length) {
         const existing = await db.query(
-          'SELECT status, amount_paid FROM bills WHERE id = $1 AND restaurant_id = $2',
+          'SELECT status, amount_paid_ves FROM bills WHERE id = $1 AND restaurant_id = $2',
           [req.params.id, req.user.restaurantId]
         );
         if (!existing.rows.length) return res.status(404).json({ error: 'Bill not found' });
         return res.status(409).json({
-          error: existing.rows[0].amount_paid !== '0'
+          error: existing.rows[0].amount_paid_ves !== '0'
             ? 'A bill with payments applied cannot be voided'
             : `A ${existing.rows[0].status} bill cannot be voided`
         });
@@ -276,9 +331,6 @@ router.post(
         restaurantId,
         billId: req.params.id,
         amountPaidMinorUnits: req.body.amountMinorUnits,
-        // Presentational: resolved only when this bill has no locked rate yet,
-        // and never permitted to block settlement.
-        getRate: getUsdToVesRate,
         // Recorded on the ledger row so a payment can be traced back to the
         // request and the person who took it.
         idempotencyKey: key,
