@@ -1,6 +1,7 @@
 const db = require('../connectors/base');
 const { usdReference } = require('./split');
 const { logger } = require('../connectors/logger');
+const config = require('../config');
 
 // bills.fx_rate is NUMERIC(20,6). pg returns NUMERIC as a string carrying the
 // column's full scale ('756.710000'), while a rate that has just been resolved
@@ -37,6 +38,14 @@ async function processSplitPayment({ restaurantId, billId, amountPaidMinorUnits,
   // later splits on a bill whose rate is already locked.
   const pending = await resolvePendingRate({ restaurantId, billId, getRate });
 
+  // The payment path runs on its own statement budget. The work itself is a
+  // locked read and two writes, but several diners paying the same bill at once
+  // serialise on SELECT ... FOR UPDATE, and time spent waiting for that lock
+  // counts toward statement_timeout just like time spent executing.
+  //
+  // Note what is deliberately *not* inside this transaction: resolving the FX
+  // rate above. A slow external call must never be made while holding a row
+  // lock, which is why no provider timeout needs to be accommodated here.
   return db.withTransaction(async client => {
     const { rows } = await client.query(
       `SELECT id, restaurant_id, total_due, amount_paid, status, currency, fx_rate, fx_source
@@ -114,7 +123,7 @@ async function processSplitPayment({ restaurantId, billId, amountPaidMinorUnits,
         remaining: usdReference(remaining.toString(), fxRate)
       }
     };
-  });
+  }, { statementTimeoutMs: config.db.paymentStatementTimeoutMs });
 }
 
 async function resolvePendingRate({ restaurantId, billId, getRate }) {

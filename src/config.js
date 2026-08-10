@@ -82,7 +82,34 @@ module.exports = {
     password: process.env.DB_PASSWORD,
     database: process.env.DB_NAME || 'splite_db',
     ssl: boolean('DB_SSL', isProduction),
-    poolMax: integer('DB_POOL_MAX', 20)
+    poolMax: integer('DB_POOL_MAX', 20),
+
+    // These solve different problems and none substitutes for another.
+    //
+    // connectionTimeoutMs bounds how long we wait to *obtain* a pooled
+    // connection. It says nothing about how long a query may then run for.
+    connectionTimeoutMs: integer('DB_CONNECTION_TIMEOUT_MS', 5000),
+    idleTimeoutMs: integer('DB_IDLE_TIMEOUT_MS', 30000),
+
+    // statement_timeout bounds a single statement, server-side, so Postgres
+    // cancels it rather than the client merely giving up while the query keeps
+    // burning a backend.
+    statementTimeoutMs: integer('DB_STATEMENT_TIMEOUT_MS', 5000),
+
+    // A transaction left open holds its row locks. processSplitPayment takes
+    // SELECT ... FOR UPDATE on a bill, so a client that stalls mid-transaction
+    // blocks every other diner paying that bill until the connection dies.
+    // This bounds that to something finite.
+    idleInTransactionTimeoutMs: integer('DB_IDLE_IN_TRANSACTION_TIMEOUT_MS', 10000),
+
+    // The payment path gets its own, larger budget.
+    //
+    // Not because the queries are slow -- they are a locked read and two
+    // writes -- but because *waiting for the lock counts toward
+    // statement_timeout*. Several diners paying at once queue behind each
+    // other, so the last one in a busy split can legitimately spend most of
+    // its budget blocked rather than working.
+    paymentStatementTimeoutMs: integer('DB_PAYMENT_STATEMENT_TIMEOUT_MS', 15000)
   },
   redis: {
     url: process.env.REDIS_URL || 'redis://localhost:6379'
