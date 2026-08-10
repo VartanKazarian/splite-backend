@@ -7,6 +7,7 @@ const config = require('./config');
 const db = require('./connectors/base');
 const { redis } = require('./connectors/redis');
 const requestId = require('./middleware/requestId');
+const { isShuttingDown } = require('./lifecycle');
 const { logger } = require('./connectors/logger');
 const rateLimit = require('./middleware/rateLimit');
 const errorHandler = require('./middleware/errorHandler');
@@ -51,6 +52,14 @@ app.use(cors({
 // consumes a client's request budget and never fails because Redis is down.
 app.get('/health/live', (req, res) => res.json({ status: 'ok' }));
 app.get('/health/ready', async (req, res) => {
+  // Readiness fails the moment a shutdown starts, so the load balancer stops
+  // sending new requests while in-flight ones drain. Liveness deliberately
+  // keeps answering 200: failing it would have the orchestrator kill the
+  // process outright instead of letting it finish.
+  if (isShuttingDown()) {
+    return res.status(503).json({ status: 'shutting_down' });
+  }
+
   const checks = await Promise.allSettled([db.query('SELECT 1'), redis.ping()]);
   const ready = checks.every(c => c.status === 'fulfilled');
   res.status(ready ? 200 : 503).json({
