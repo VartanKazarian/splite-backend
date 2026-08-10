@@ -125,3 +125,54 @@ test('returns null when FX is disabled, without touching the provider', async ()
   assert.equal(await fx.getUsdToVesRate(), null);
   assert.equal(called, false);
 });
+
+test('uses a publication whose value date has already arrived', async () => {
+  const today = fx.caracasToday();
+  provide(async () => ({ rate: 757.5406, valueDate: today }));
+
+  const result = await fx.getUsdToVesRate();
+  assert.equal(result.rate, 757.5406);
+  assert.equal(result.valueDate, today);
+});
+
+test('does not price off a publication that is not in force yet', async () => {
+  // BCV publishes around 16:30 Caracas for the next business day. Between then
+  // and midnight the page shows tomorrow's rate; charging it today would apply
+  // a rate that has not taken effect.
+  provide(async () => ({ rate: 900, valueDate: '2999-01-01' }));
+  db.query = async (sql) => {
+    if (/INSERT INTO fx_rates/.test(sql)) return { rows: [] };
+    if (/value_date <=/.test(sql)) {
+      return { rows: [{ rate: '757.540600', source: 'BCV', value_date: '2026-08-09' }] };
+    }
+    return { rows: [] };
+  };
+
+  const result = await fx.getUsdToVesRate();
+  assert.equal(result.rate, 757.5406, 'the rate in force is served, not the one published for tomorrow');
+  assert.equal(result.valueDate, '2026-08-09');
+});
+
+test('returns null when the only known rate is not in force yet', async () => {
+  provide(async () => ({ rate: 900, valueDate: '2999-01-01' }));
+  db.query = async (sql) => {
+    if (/INSERT INTO fx_rates/.test(sql)) return { rows: [] };
+    return { rows: [] }; // nothing on record has taken effect
+  };
+
+  assert.equal(await fx.getUsdToVesRate(), null);
+});
+
+test('records the value date alongside the rate', async () => {
+  const today = fx.caracasToday();
+  let persisted = null;
+  provide(async () => ({ rate: 757.5406, valueDate: today }));
+  db.query = async (sql, params) => {
+    if (/INSERT INTO fx_rates/.test(sql)) persisted = params;
+    return { rows: [] };
+  };
+
+  await fx.getUsdToVesRate();
+  assert.ok(persisted, 'the rate was written to fx_rates');
+  assert.equal(persisted[4], today, 'value_date is stored, not just fetched_at');
+});
