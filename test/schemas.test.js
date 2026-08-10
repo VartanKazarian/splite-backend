@@ -8,7 +8,9 @@ const validPayment = { billId: UUID, amountMinorUnits: 1500, currency: 'VES', id
 test('payment schema accepts a well-formed body', () => {
   const { error, value } = splitPaymentSchema.validate(validPayment);
   assert.equal(error, undefined);
-  assert.equal(value.amountMinorUnits, 1500);
+  // Normalised to a digit string, so every call site downstream sees one type
+  // and an amount past 2^53 survives the request intact.
+  assert.equal(value.amountMinorUnits, '1500');
 });
 
 test('payment schema rejects non-positive and fractional amounts', () => {

@@ -21,18 +21,6 @@ const guestSessionSchema = Joi.object({
   qrToken: Joi.string().min(20).max(4096).required()
 });
 
-const splitPaymentSchema = Joi.object({
-  billId: uuid.required(),
-  // Minor units only. Capped below Number.MAX_SAFE_INTEGER so arithmetic in
-  // the payment path can never silently lose precision.
-  amountMinorUnits: Joi.number().integer().positive().max(Number.MAX_SAFE_INTEGER).required(),
-  // Settlement is VES only. USD and USDT were previously accepted and applied
-  // at face value against a bolívar balance. USD now appears in responses as a
-  // display reference, never as a payment amount.
-  currency: Joi.string().valid('VES').required(),
-  idempotencyKey: Joi.string().trim().min(16).max(128).pattern(/^[A-Za-z0-9._:-]+$/).required()
-});
-
 /**
  * BIGINT minor units.
  *
@@ -47,6 +35,30 @@ const minorUnits = Joi.alternatives()
     Joi.number().integer().min(0).max(Number.MAX_SAFE_INTEGER)
   )
   .custom(value => String(value));
+
+/**
+ * The same, but strictly greater than zero.
+ *
+ * A payment of nothing is not a payment; the ledger would record a row that
+ * moved no money.
+ */
+const positiveMinorUnits = minorUnits.custom((value, helpers) =>
+  (BigInt(value) > 0n ? value : helpers.error('any.invalid')), 'positive amount');
+
+const splitPaymentSchema = Joi.object({
+  billId: uuid.required(),
+  // A digit string, so a payment can be as large as the BIGINT column holds.
+  // Joi.number() coerced the value before validating it, which meant even the
+  // exact string "9007199254740993" was rounded and then rejected as unsafe --
+  // capping payments below 2^53 while the column and the arithmetic both went
+  // further.
+  amountMinorUnits: positiveMinorUnits.required(),
+  // Settlement is VES only. USD and USDT were previously accepted and applied
+  // at face value against a bolívar balance. USD now appears in responses as a
+  // display reference, never as a payment amount.
+  currency: Joi.string().valid('VES').required(),
+  idempotencyKey: Joi.string().trim().min(16).max(128).pattern(/^[A-Za-z0-9._:-]+$/).required()
+});
 
 const createTableSchema = Joi.object({
   name: Joi.string().trim().min(1).max(50).required()
@@ -138,6 +150,8 @@ module.exports = {
   refreshSchema,
   guestSessionSchema,
   splitPaymentSchema,
+  minorUnits,
+  positiveMinorUnits,
   createTableSchema,
   updateTableSchema,
   createBillSchema,

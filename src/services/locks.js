@@ -8,9 +8,41 @@ const { recordPayment } = require('./payments');
 // normalising here keeps the reported rate identical across every split.
 const RATE_SCALE_DECIMALS = 8;
 
+/**
+ * The payment amount, as an exact BigInt, or null if it is not one.
+ *
+ * A JSON number beyond 2^53 has already lost precision by the time it arrives,
+ * so it is refused rather than banked as whatever it rounded to. A digit string
+ * is exact at any size the BIGINT column can hold, which is the whole reason
+ * amounts cross the wire as strings.
+ */
+function toPaymentAmount(value) {
+  if (typeof value === 'number' && !Number.isSafeInteger(value)) return null;
+  let amount;
+  try {
+    amount = BigInt(value);
+  } catch {
+    return null; // non-integer, or not a number at all
+  }
+  return amount > 0n ? amount : null;
+}
+
 function formatRate(value) {
   if (value === null || value === undefined) return null;
-  const rate = Number(value);
+
+  // Pad the digits pg actually returned rather than round-tripping through a
+  // double. NUMERIC(20,8) can carry more significant digits than a double holds
+  // exactly, and the point of storing the published rate is that it stays the
+  // published rate.
+  const text = String(value).trim();
+  const decimal = /^(-?\d+)(?:\.(\d*))?$/.exec(text);
+  if (decimal) {
+    const [, whole, fraction = ''] = decimal;
+    return `${whole}.${(fraction + '0'.repeat(RATE_SCALE_DECIMALS)).slice(0, RATE_SCALE_DECIMALS)}`;
+  }
+
+  // Exponential notation and anything else: fall back rather than return junk.
+  const rate = Number(text);
   return Number.isFinite(rate) ? rate.toFixed(RATE_SCALE_DECIMALS) : null;
 }
 
@@ -35,8 +67,8 @@ async function processSplitPayment({
   payer = { type: 'STAFF', id: null },
   tendered = null
 }) {
-  const amount = Number(amountPaidMinorUnits);
-  if (!Number.isSafeInteger(amount) || amount <= 0) {
+  const amount = toPaymentAmount(amountPaidMinorUnits);
+  if (amount === null) {
     const error = new Error('Invalid payment amount');
     error.statusCode = 400;
     throw error;
@@ -71,7 +103,7 @@ async function processSplitPayment({
     // BIGINT arrives from pg as a string; BigInt keeps the arithmetic exact for
     // totals beyond 2^53 céntimos.
     const totalDue = BigInt(bill.total_due_ves);
-    const newAmountPaid = BigInt(bill.amount_paid_ves) + BigInt(amount);
+    const newAmountPaid = BigInt(bill.amount_paid_ves) + amount;
     if (newAmountPaid > totalDue) {
       const error = new Error('Payment exceeds remaining bill balance');
       error.statusCode = 409;

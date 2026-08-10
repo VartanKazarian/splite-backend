@@ -156,6 +156,10 @@ test('monetary amounts are documented as strings, not numbers', () => {
     assert.equal(document.components.schemas.Bill.properties[field].type, 'string', `Bill.${field}`);
   }
   assert.equal(document.components.schemas.PaymentResult.properties.amountPaid.type, 'string');
+
+  // The request side matters just as much: an integer here caps what can be
+  // paid at 2^53 regardless of what the column holds.
+  assert.equal(document.components.schemas.PaymentRequest.properties.amountMinorUnits.type, 'string');
 });
 
 test('every $ref resolves', () => {
