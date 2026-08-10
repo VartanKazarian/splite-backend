@@ -25,6 +25,15 @@
 --    amount_paid_ves and the bill's frozen rate, which is deterministic.
 
 -- ---------------------------------------------------------------------------
+-- 0. Drop the dependent view first
+--
+-- 007's payment_ledger_drift selects bills.amount_paid, and Postgres refuses to
+-- drop a column a view depends on. It is recreated against the settlement
+-- columns at the end of this migration.
+
+DROP VIEW IF EXISTS payment_ledger_drift;
+
+-- ---------------------------------------------------------------------------
 -- 1. The menu currency
 
 ALTER TABLE bills DROP CONSTRAINT IF EXISTS bills_currency_check;
@@ -108,9 +117,8 @@ COMMENT ON COLUMN bills.amount_paid_ves IS
   'Authoritative amount settled so far, always VES céntimos. Cache of the payment ledger.';
 
 -- ---------------------------------------------------------------------------
--- 5. The drift view follows settlement
+-- 5. The drift view, recreated against the settlement columns
 
-DROP VIEW IF EXISTS payment_ledger_drift;
 CREATE VIEW payment_ledger_drift AS
 SELECT
   b.id                                   AS bill_id,
