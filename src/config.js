@@ -140,6 +140,14 @@ module.exports = {
     extraCaFile: process.env.EXCHANGE_RATE_EXTRA_CA
       || require('path').join(__dirname, '..', 'certs', 'sectigo-public-server-auth-dv-r36.pem')
   },
+  docs: {
+    // The spec is a contract that frontends and payment providers consume, so
+    // it is served by default. It documents shapes and status codes, not
+    // secrets, and the API surface is not itself confidential. Set
+    // DOCS_ENABLED=false to withhold it and distribute openapi.json out of band
+    // instead.
+    enabled: boolean('DOCS_ENABLED', true)
+  },
   log: {
     // debug in development, info in production. `silent` is honoured too, which
     // the test suite uses to keep output readable.

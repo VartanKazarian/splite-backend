@@ -2,12 +2,14 @@ const express = require('express');
 const helmet = require('helmet');
 const cors = require('cors');
 const pinoHttp = require('pino-http');
+const swaggerUi = require('swagger-ui-express');
 
 const config = require('./config');
 const db = require('./connectors/base');
 const { redis } = require('./connectors/redis');
 const requestId = require('./middleware/requestId');
 const { isShuttingDown } = require('./lifecycle');
+const openapi = require('./openapi');
 const { logger } = require('./connectors/logger');
 const rateLimit = require('./middleware/rateLimit');
 const errorHandler = require('./middleware/errorHandler');
@@ -16,6 +18,7 @@ const guestRoutes = require('./routes/guest');
 const billRoutes = require('./routes/bills');
 const exchangeRateRoutes = require('./routes/exchangeRate');
 const menuRoutes = require('./routes/menu');
+const tableRoutes = require('./routes/tables');
 
 const app = express();
 
@@ -113,6 +116,20 @@ app.use('/api/v1/guest', rateLimit({ windowSeconds: 60, max: 30, keyPrefix: 'gue
 // bills and tables carry their own limiter, mounted after authentication so it
 // keys on the staff member rather than on a shared NAT address.
 app.use('/api/v1/bills', billRoutes);
+// The machine-readable contract, and a browsable view of it. Mounted after the
+// body parsers but before the routes so it is never shadowed by a wildcard.
+if (openapi.enabled) {
+  app.get('/openapi.json', (req, res) => {
+    res.set('Cache-Control', 'public, max-age=300');
+    res.json(openapi.document);
+  });
+  app.use('/docs', swaggerUi.serve, swaggerUi.setup(openapi.document, {
+    customSiteTitle: 'Splite API',
+    swaggerOptions: { displayRequestDuration: true }
+  }));
+}
+
+app.use('/api/v1/tables', tableRoutes);
 app.use('/api/v1/exchange-rate', exchangeRateRoutes);
 // The public menu endpoint inside this router is intentionally unauthenticated,
 // so it relies on the app-level limiter above.
