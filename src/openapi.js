@@ -63,14 +63,22 @@ const schemas = {
       id: { type: 'string', format: 'uuid' },
       restaurant_id: { type: 'string', format: 'uuid' },
       table_id: { type: 'string', format: 'uuid' },
-      total_due: minorUnits,
-      amount_paid: minorUnits,
-      remaining: minorUnits,
-      currency: { type: 'string', const: 'VES' },
       status: { type: 'string', enum: ['OPEN', 'CLOSED', 'VOID'] },
-      fx_rate: { type: ['string', 'null'], description: 'Display rate locked on the first payment.' },
-      fx_source: { type: ['string', 'null'] },
-      fx_locked_at: { type: ['string', 'null'], format: 'date-time' },
+      total_due: { ...minorUnits, description: 'Subtotal in the menu currency, for display.' },
+      currency: {
+        type: 'string', enum: ['VES', 'USD', 'EUR'],
+        description: 'The currency the menu quoted. Settlement is always VES.'
+      },
+      total_due_ves: { ...minorUnits, description: 'Authoritative amount to settle.' },
+      amount_paid_ves: { ...minorUnits, description: 'Authoritative amount settled so far.' },
+      remaining_ves: minorUnits,
+      fx_rate_ves_per_unit: {
+        type: ['string', 'null'],
+        description: 'Rate frozen when the bill was opened, so the quoted total cannot move while diners eat.'
+      },
+      fx_rate_source: { type: ['string', 'null'] },
+      fx_value_date: { type: ['string', 'null'], format: 'date' },
+      calculation_version: { type: 'integer' },
       usdReference: ref('UsdReference'),
       created_at: { type: 'string', format: 'date-time' },
       updated_at: { type: 'string', format: 'date-time' }
@@ -102,8 +110,10 @@ const schemas = {
     required: ['tableId', 'totalDueMinorUnits'],
     properties: {
       tableId: { type: 'string', format: 'uuid' },
-      totalDueMinorUnits: minorUnits,
-      currency: { type: 'string', const: 'VES', default: 'VES' }
+      totalDueMinorUnits: {
+        ...minorUnits,
+        description: 'Minor units in the restaurant menu currency, which the bill inherits.'
+      }
     }
   },
 
@@ -141,11 +151,13 @@ const schemas = {
     type: 'object',
     properties: {
       id: { type: 'string', format: 'uuid' },
+      paymentId: { type: 'string', format: 'uuid', description: 'The ledger row this payment created.' },
       status: { type: 'string', enum: ['OPEN', 'CLOSED'] },
       currency: { type: 'string', const: 'VES' },
       totalDue: minorUnits,
       amountPaid: minorUnits,
       remaining: minorUnits,
+      displayCurrency: { type: 'string', enum: ['VES', 'USD', 'EUR'] },
       fxRate: { type: ['string', 'null'] },
       fxSource: { type: ['string', 'null'] },
       usdReference: ref('UsdReference')

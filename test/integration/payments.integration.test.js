@@ -56,7 +56,7 @@ describe('payments against a real Postgres', { skip }, () => {
     }
 
     const stored = await fixtures.readBill(bill.id);
-    assert.equal(stored.amount_paid, '9000');
+    assert.equal(stored.amount_paid_ves, '9000');
     assert.equal(stored.status, 'OPEN', 'a partially paid bill stays open');
   });
 
@@ -76,18 +76,18 @@ describe('payments against a real Postgres', { skip }, () => {
     assert.equal(attempts.filter(a => a.status === 'fulfilled').length, 3);
 
     const stored = await fixtures.readBill(bill.id);
-    assert.equal(stored.amount_paid, '9000');
+    assert.equal(stored.amount_paid_ves, '9000');
     assert.equal(stored.status, 'CLOSED');
   });
 
   it('enforces the overpayment ceiling in the database, not only in the service', async () => {
     const bill = await freshBill({ totalDue: 5000 });
 
-    // Migration 002 adds CHECK (amount_paid <= total_due). Bypassing the
-    // service entirely must still be refused, so an application bug or a
-    // manual query cannot produce an overpaid row.
+    // 008 moved CHECK (amount_paid <= total_due) onto the settlement columns.
+    // Bypassing the service entirely must still be refused, so an application
+    // bug or a manual query cannot produce an overpaid row.
     await assert.rejects(
-      () => db.query('UPDATE bills SET amount_paid = $1 WHERE id = $2', ['5001', bill.id]),
+      () => db.query('UPDATE bills SET amount_paid_ves = $1 WHERE id = $2', ['5001', bill.id]),
       err => {
         assert.equal(err.code, '23514', 'check_violation');
         return true;
@@ -95,7 +95,7 @@ describe('payments against a real Postgres', { skip }, () => {
     );
 
     const stored = await fixtures.readBill(bill.id);
-    assert.equal(stored.amount_paid, '0');
+    assert.equal(stored.amount_paid_ves, '0');
   });
 
   it('keeps amounts exact beyond 2^53 minor units', async () => {
@@ -115,7 +115,7 @@ describe('payments against a real Postgres', { skip }, () => {
     assert.equal(result.remaining, '9007199254740992');
 
     const stored = await fixtures.readBill(bill.id);
-    assert.equal(stored.total_due, totalDue, 'the total survives the round trip intact');
+    assert.equal(stored.total_due_ves, totalDue, 'the total survives the round trip intact');
   });
 
   it('reads a bill from another restaurant as 404', async () => {
@@ -141,68 +141,59 @@ describe('payments against a real Postgres', { skip }, () => {
       );
 
       const stored = await fixtures.readBill(otherBill.id);
-      assert.equal(stored.amount_paid, '0', 'the other tenant\'s bill is untouched');
+      assert.equal(stored.amount_paid_ves, '0', 'the other tenant\'s bill is untouched');
     } finally {
       await fixtures.destroyRestaurant(other.id);
     }
   });
 
-  it('locks one display rate for the whole split, even under concurrency', async () => {
-    const bill = await freshBill({ totalDue: 9000 });
+  it('reports the same frozen rate for every split on a bill', async () => {
+    // The rate is set when the bill is opened, so concurrency cannot produce
+    // two different figures for one bill.
+    const bill = await freshBill({ totalDue: 9000, currency: 'USD', totalDueVes: 9000, fxRate: '756.710000' });
 
-    // Each diner's request resolves a slightly different rate, as it would
-    // across a real dinner. The first payment to commit must win, and every
-    // later split must reuse that value rather than its own.
-    let nth = 0;
-    const rates = [756.71, 757.04, 757.88];
     const attempts = await Promise.all(
       Array.from({ length: 3 }, () =>
-        processSplitPayment({
-          restaurantId: restaurant.id,
-          billId: bill.id,
-          amountPaidMinorUnits: 3000,
-          getRate: async () => ({ rate: rates[nth++ % rates.length], source: 'TEST' })
-        })
+        processSplitPayment({ restaurantId: restaurant.id, billId: bill.id, amountPaidMinorUnits: 3000 })
       )
     );
 
-    const locked = new Set(attempts.map(a => a.fxRate));
-    assert.equal(locked.size, 1, 'all splits report the same locked rate');
-    assert.ok(rates.includes(Number([...locked][0])));
-
-    const { rows } = await db.query('SELECT fx_rate, fx_source, fx_locked_at FROM bills WHERE id = $1', [bill.id]);
-    assert.equal(Number(rows[0].fx_rate), Number([...locked][0]));
-    assert.equal(rows[0].fx_source, 'TEST');
-    assert.ok(rows[0].fx_locked_at, 'fx_locked_at is stamped on first payment');
+    assert.equal(new Set(attempts.map(a => a.fxRate)).size, 1);
+    assert.equal(attempts[0].fxRate, '756.710000');
+    assert.equal(attempts[0].displayCurrency, 'USD');
   });
 
-  it('applies a payment even when no rate is available', async () => {
+  it('settles a VES bill at the identity rate', async () => {
+    // A VES menu needs no conversion, and is recorded as an identity rate
+    // rather than a null so every bill can state what it settled at.
     const bill = await freshBill({ totalDue: 5000 });
 
-    // An FX outage is presentational. Money must still move.
     const result = await processSplitPayment({
       restaurantId: restaurant.id,
       billId: bill.id,
-      amountPaidMinorUnits: 2500,
-      getRate: async () => null
+      amountPaidMinorUnits: 2500
     });
 
     assert.equal(result.amountPaid, '2500');
-    assert.equal(result.fxRate, null);
-    assert.equal(result.usdReference.remaining, null);
+    assert.equal(result.displayCurrency, 'VES');
+    assert.equal(Number(result.fxRate), 1);
 
     const stored = await fixtures.readBill(bill.id);
-    assert.equal(stored.amount_paid, '2500');
+    assert.equal(stored.amount_paid_ves, '2500');
   });
 
-  it('refuses a non-VES bill currency at the database level', async () => {
-    // Migration 003 constrains settlement to VES.
+  it('refuses a menu currency outside the supported set', async () => {
+    // 008 replaced the VES-only rule: bills.currency is now the menu currency,
+    // and total_due_ves is what settlement uses.
+    const table = await fixtures.createTable(restaurant.id, { name: `X${++tableSeq}` });
     await assert.rejects(
-      () => freshBill({ totalDue: 1000, currency: 'USD' }),
+      () => fixtures.createBill({
+        restaurantId: restaurant.id, tableId: table.id, totalDue: 1000, currency: 'GBP'
+      }),
       err => {
         assert.equal(err.code, '23514', 'check_violation');
         return true;
       }
     );
   });
-});
+

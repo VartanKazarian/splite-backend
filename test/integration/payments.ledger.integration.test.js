@@ -55,7 +55,7 @@ describe('payment ledger', { skip }, () => {
     }
 
     const stored = await fixtures.readBill(bill.id);
-    assert.equal(stored.amount_paid, '9000');
+    assert.equal(stored.amount_paid_ves, '9000');
     assert.equal(stored.status, 'CLOSED');
 
     // The view exists precisely so this is checkable rather than assumed.
@@ -74,7 +74,7 @@ describe('payment ledger', { skip }, () => {
     // payment must leave neither behind.
     const ledger = await listForBill(db, { restaurantId: restaurant.id, billId: bill.id });
     assert.equal(ledger.length, 0);
-    assert.equal((await fixtures.readBill(bill.id)).amount_paid, '0');
+    assert.equal((await fixtures.readBill(bill.id)).amount_paid_ves, '0');
   });
 
   it('refuses two payments under one idempotency key', async () => {
