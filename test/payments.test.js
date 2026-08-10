@@ -147,12 +147,12 @@ test('the USD reference comes from the rate frozen on the bill', async () => {
   // 756 710 céntimos = 7567,10 Bs, which is USD 10.00 at 756.71.
   stubBill(openBill({
     currency: 'USD', total_due: '1000', total_due_ves: '756710',
-    fx_rate_ves_per_unit: '756.710000', fx_rate_source: 'BCV'
+    fx_rate_ves_per_unit: '756.71000000', fx_rate_source: 'BCV'
   }));
 
   const result = await processSplitPayment({ restaurantId: 'r1', billId: 'bill-1', amountPaidMinorUnits: 378355 });
 
-  assert.equal(result.fxRate, '756.710000');
+  assert.equal(result.fxRate, '756.71000000');
   assert.equal(result.fxSource, 'BCV');
   assert.equal(result.displayCurrency, 'USD');
   assert.equal(result.usdReference.totalDue, '10.00');
@@ -163,7 +163,7 @@ test('the USD reference comes from the rate frozen on the bill', async () => {
 test('every split on a bill reports the same frozen rate', async () => {
   const bill = openBill({
     currency: 'USD', total_due_ves: '756710',
-    fx_rate_ves_per_unit: '756.710000', fx_rate_source: 'BCV'
+    fx_rate_ves_per_unit: '756.71000000', fx_rate_source: 'BCV'
   });
   stubBill(bill);
 

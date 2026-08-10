@@ -243,6 +243,20 @@ lookup is resolved before `BEGIN` for exactly that reason, and there is a test
 asserting the ordering so it stays that way. When a payment provider is wired
 up, its call belongs outside the transaction too.
 
+## Running the integration tests locally
+
+They need a real Postgres and Redis. Neither requires Docker or admin rights:
+
+```bash
+npm run db:local          # start Postgres 16 + Redis on 55432 / 56379
+npm run test:integration:local
+npm run db:local:stop
+```
+
+The first run downloads user-space binaries into `~/.local`. `db:local` also
+creates the database and applies every migration, so a schema change is
+verified before it reaches CI rather than after.
+
 ## Logging
 
 Every log line is a JSON object on stdout, carrying the request context:
@@ -378,9 +392,11 @@ From the working copy, onto the current model:
 ### Tooling
 
 - **`npm audit` cannot fail the build** (`continue-on-error: true`).
-- **`lint` is not a linter.** `find … -exec node --check` returns *find's* exit
-  code, so a syntax error does not fail CI, and `node --check` only parses.
-  There is no ESLint.
+- **There is still no ESLint.** `lint` now pipes through `xargs -n 1 node --check`
+  so a syntax error does fail the build — it previously used `find -exec`, which
+  returns *find's* exit code and let an unparseable test file reach CI — but
+  `node --check` only parses. No rule about unused variables, shadowing or
+  accidental globals is enforced.
 - **`scripts/` still uses `console.*`.** Only `src/` was converted to structured
   logging; the migrate and seed CLIs were left alone deliberately, but a deploy
   step arguably deserves structured output too.
