@@ -3,7 +3,7 @@
  *
  * Dividing 7567 céntimos three ways leaves a remainder. Rounding each share
  * independently makes the parts sum to something other than the total, which
- * under `CHECK (amount_paid <= total_due)` means the last diner physically
+ * under `CHECK (amount_paid_ves <= total_due_ves)` means the last diner physically
  * cannot pay, and under an equality check the bill never closes.
  *
  * Largest-remainder (Hare quota) allocation: floor every share, then hand the

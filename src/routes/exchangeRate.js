@@ -5,7 +5,7 @@ const { getRates } = require('../services/fx');
 const router = express.Router();
 
 /**
- * Official BCV USD reference rate.
+ * Official BCV reference rates, USD and EUR, published together.
  *
  * Settlement is always VES, so this is a display aid. It returns 503 when no
  * verified rate is available rather than guessing — but note that a payment

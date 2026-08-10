@@ -4,7 +4,7 @@ const { getContext } = require('../connectors/logger');
  * The payment ledger.
  *
  * Every write here happens on a caller-supplied client, never on the pool, so
- * the ledger row, its transition and the `bills.amount_paid` cache all land in
+ * the ledger row, its transition and the `bills.amount_paid_ves` cache all land in
  * one transaction. A payment recorded outside the transaction that moved the
  * money would be exactly the drift this table exists to make impossible.
  */

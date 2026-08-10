@@ -13,7 +13,7 @@ Security foundation for Splite, a Venezuela-focused bill-splitting API.
 - RBAC: `OWNER`, `MANAGER`, `CASHIER`, `WAITER`
 - Signed, expiring, rotatable QR tokens; hashed guest session tokens
 - VES-only settlement with exact BigInt arithmetic and largest-remainder splits
-- USD shown as a display reference at a rate locked on first payment, never guessed
+- Menus priced in VES, USD or EUR; the settlement rate frozen when the bill opens, never guessed
 - Payment concurrency control via `SELECT ... FOR UPDATE`
 - Idempotency keys on money-moving endpoints
 - Audit logging with actor, tenant, IP and request id
@@ -113,10 +113,12 @@ reference only — it is never a payment currency. Migration 003 enforces this
 with `CHECK (currency = 'VES')`; previously USD and USDT were accepted and
 applied at face value against a bolívar balance.
 
-The USD rate is **locked on the first payment against a bill** and reused for
-every later split, so the figures on screen do not drift mid-meal. If no
-verified rate is available the bill locks none, the USD line is omitted, and
-**the payment still applies** — an FX outage is presentational, not financial.
+The exchange rate is **frozen when the bill is opened** and reused for every
+later split, so the total a diner is quoted cannot move while they eat.
+`total_due_ves`/`amount_paid_ves` are the authoritative settlement pair; the
+menu-currency figure is display. An FX outage can stop a *foreign-currency bill
+being opened* (503, fail closed), but it can never reach a payment — payments
+use the rate already frozen on the bill and make no FX call at all.
 
 Splits use largest-remainder allocation (`src/services/split.js`) so the parts
 sum to exactly the total. Rounding each share independently would leave the last
@@ -125,11 +127,16 @@ permanently a few céntimos short of closing.
 
 ## Exchange rate
 
-`GET /api/v1/exchange-rate` returns the official USD reference rate published by
+`GET /api/v1/exchange-rate` returns the official reference rates published by
 the [Banco Central de Venezuela](https://www.bcv.org.ve/):
 
 ```json
-{ "rate": 757.5406, "valueDate": "2026-08-10", "source": "BCV", "fetchedAt": "..." }
+{
+  "rates": {
+    "USD": { "rate": 757.5406, "valueDate": "2026-08-10", "source": "BCV" },
+    "EUR": { "rate": 875.2169568, "valueDate": "2026-08-10", "source": "BCV" }
+  }
+}
 ```
 
 BCV publishes no API, so the rate is parsed from the `id="dolar"` block of their
@@ -317,11 +324,10 @@ yet.
 
 From the working copy, onto the current model:
 
-- Bill line items with the FX snapshot taken at bill creation. This carries the
-  currency reconciliation: dropping `CHECK (currency = 'VES')` so
-  `bills.currency` can hold the menu currency, moving settlement onto
-  `total_due_ves`, and retiring `fx_rate`/`fx_source`/`fx_locked_at` in favour of
-  a rate snapshotted when the bill opens rather than on first payment.
+- Bill line items. The ground under them is done — migration 008 moved
+  settlement onto `total_due_ves`/`amount_paid_ves`, made `bills.currency` the
+  menu currency (VES/USD/EUR), and snapshots the rate when the bill opens —
+  so `bill_items` with immutable price snapshots is the next PR.
 - Service charge, VAT and tip, rebuilt on `services/money.js` rather than the
   incoming `Number`/`Math.round` arithmetic.
 - The split engine (FULL, ITEMS, EQUAL, CUSTOM) with participant claim tokens.

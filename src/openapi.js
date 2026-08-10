@@ -769,8 +769,8 @@ const paths = {
         'different payload, or while the first request is still in flight, is a 409.',
         '',
         '**Concurrency.** The bill row is locked for the duration, so simultaneous splits serialise',
-        'and cannot overpay. The display rate is locked on the first payment and reused for every',
-        'later split, so on-screen figures do not drift mid-meal.',
+        'and cannot overpay. The display rate was frozen when the bill was opened, so every',
+        'split reports the same figure and nothing drifts mid-meal.',
         '',
         '**FX is never load-bearing.** If no verified rate is available the payment still applies and',
         'the USD reference is null.',
@@ -812,7 +812,7 @@ const paths = {
   '/api/v1/exchange-rate': {
     get: {
       tags: ['Exchange rate'],
-      summary: 'Official BCV USD reference rate',
+      summary: 'Official BCV reference rates (USD and EUR)',
       description:
         'Presentational. Returns 503 rather than a stale or invented rate when none is in force; payments are unaffected either way.',
       security: staff,
