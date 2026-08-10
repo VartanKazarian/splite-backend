@@ -180,6 +180,42 @@ that already holds data.
 columns. It rewrites any non-VES bill currency to `VES`, so check that no live
 bill is mid-payment when you apply it.
 
+## Database timeouts
+
+Four settings that are often confused for one another:
+
+| Setting | Bounds |
+| --- | --- |
+| `DB_CONNECTION_TIMEOUT_MS` | waiting to **obtain** a pooled connection |
+| `DB_STATEMENT_TIMEOUT_MS` | how long **one statement** may run |
+| `DB_IDLE_IN_TRANSACTION_TIMEOUT_MS` | a transaction that has stopped progressing |
+| `DB_PAYMENT_STATEMENT_TIMEOUT_MS` | the payment path's own statement budget |
+
+A connection timeout says nothing about query duration, so the first two are not
+alternatives. `statement_timeout` is set server-side, so Postgres cancels the
+query itself; a client-side `query_timeout` would only stop node-pg waiting
+while the backend carried on holding locks.
+
+`idle_in_transaction_session_timeout` matters here specifically because
+`processSplitPayment` takes `SELECT ... FOR UPDATE` on a bill. A client that
+stalls between `BEGIN` and `COMMIT` holds that lock, blocking every other diner
+paying the same bill until the TCP connection dies.
+
+**Payments get a larger budget deliberately.** Not because the queries are slow
+— they are a locked read and two writes — but because *waiting for the lock
+counts toward `statement_timeout`*. Several diners paying at once serialise, so
+the last one in a busy split can spend most of its budget blocked rather than
+working. `withTransaction(fn, { statementTimeoutMs })` applies it with
+`SET LOCAL`, which reverts on commit so an enlarged budget cannot leak onto the
+next caller to borrow that pooled connection.
+
+One thing this deliberately does **not** try to solve: slow Venezuelan payment
+rails. Bank confirmation latency is not database time, and the fix is to keep it
+out of the transaction rather than to raise a SQL timeout to cover it. The FX
+lookup is resolved before `BEGIN` for exactly that reason, and there is a test
+asserting the ordering so it stays that way. When a payment provider is wired
+up, its call belongs outside the transaction too.
+
 ## Logging
 
 Every log line is a JSON object on stdout, carrying the request context:
