@@ -1,5 +1,6 @@
 const { Pool } = require('pg');
 const config = require('../config');
+const { logger } = require('./logger');
 
 const shared = {
   max: config.db.poolMax,
@@ -26,7 +27,7 @@ const pool = new Pool(
       }
 );
 
-pool.on('error', err => console.error('[Postgres pool]', err.message));
+pool.on('error', err => logger.error({ event: 'POSTGRES_POOL_ERROR', err }, 'Postgres pool error'));
 
 /**
  * Runs fn inside a transaction and always releases the client.
@@ -41,7 +42,7 @@ async function withTransaction(fn) {
     return result;
   } catch (error) {
     try { await client.query('ROLLBACK'); } catch (rollbackError) {
-      console.error('[Postgres rollback]', rollbackError.message);
+      logger.error({ event: 'POSTGRES_ROLLBACK_FAILED', err: rollbackError }, 'Rollback failed');
     }
     throw error;
   } finally {

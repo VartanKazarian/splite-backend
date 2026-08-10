@@ -1,4 +1,5 @@
 const { redis } = require('../connectors/redis');
+const { logger } = require('../connectors/logger');
 
 /**
  * Fixed-window limiter backed by Redis.
@@ -29,7 +30,7 @@ function rateLimit({ windowSeconds = 60, max = 60, keyPrefix = 'rl', failClosed 
       }
       next();
     } catch (err) {
-      console.warn('[RateLimit]', err.message);
+      logger.warn({ event: 'RATE_LIMIT_BACKEND_UNAVAILABLE', keyPrefix, failClosed, err }, 'Rate limiter backend unavailable');
       if (failClosed) {
         res.set('Retry-After', String(windowSeconds));
         return res.status(503).json({ error: 'Rate limiter unavailable' });

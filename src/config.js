@@ -113,6 +113,11 @@ module.exports = {
     extraCaFile: process.env.EXCHANGE_RATE_EXTRA_CA
       || require('path').join(__dirname, '..', 'certs', 'sectigo-public-server-auth-dv-r36.pem')
   },
+  log: {
+    // debug in development, info in production. `silent` is honoured too, which
+    // the test suite uses to keep output readable.
+    level: process.env.LOG_LEVEL || (isProduction ? 'info' : 'debug')
+  },
   rateLimit: {
     // Fail closed on authentication endpoints: a Redis outage must not
     // silently disable brute-force protection on the login surface.

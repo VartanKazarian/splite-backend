@@ -2,6 +2,7 @@ const crypto = require('crypto');
 const config = require('../config');
 const { redis } = require('../connectors/redis');
 const { safeEqual } = require('../utils/tokens');
+const { logger } = require('../connectors/logger');
 
 /**
  * Verifies HMAC-signed provider webhooks.
@@ -47,7 +48,7 @@ function verifyWebhookSignature({ replayProtection = true } = {}) {
       } catch (err) {
         // Fail closed: without the replay store we cannot guarantee
         // exactly-once handling of a money-moving callback.
-        console.error('[WebhookReplay]', err.message);
+        logger.error({ event: 'WEBHOOK_REPLAY_STORE_UNAVAILABLE', err }, 'Webhook replay store unavailable');
         return res.status(503).json({ error: 'Webhook replay protection unavailable' });
       }
     }

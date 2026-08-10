@@ -1,4 +1,5 @@
 const db = require('../connectors/base');
+const { logger } = require('../connectors/logger');
 
 /**
  * Audit writes are best-effort: an audit failure must never fail the business
@@ -33,7 +34,7 @@ async function logAudit({
       ]
     );
   } catch (err) {
-    console.error('[Audit Log Error]', { action, message: err.message });
+    logger.error({ event: 'AUDIT_WRITE_FAILED', auditAction: action, err }, 'Audit write failed');
   }
 }
 

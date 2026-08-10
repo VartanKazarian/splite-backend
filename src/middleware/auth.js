@@ -1,4 +1,5 @@
 const { verifyAccessToken } = require('../utils/tokens');
+const { addContext } = require('../connectors/logger');
 
 function authenticateToken(req, res, next) {
   const header = req.get('authorization') || '';
@@ -13,6 +14,9 @@ function authenticateToken(req, res, next) {
       return res.status(401).json({ error: 'Invalid access token' });
     }
     req.user = claims;
+    // Every later log line for this request now carries who and which tenant,
+    // which is what makes a per-restaurant view of failures possible at all.
+    addContext({ userId: claims.sub, restaurantId: claims.restaurantId, role: claims.role });
     next();
   } catch {
     return res.status(401).json({ error: 'Invalid or expired token' });

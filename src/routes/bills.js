@@ -18,6 +18,7 @@ const { getUsdToVesRate } = require('../services/fx');
 const { splitEvenly, usdReference } = require('../services/split');
 const { requestHash, begin, complete, abort } = require('../services/idempotency');
 const { logAudit, auditContext } = require('../services/audit');
+const { logger } = require('../connectors/logger');
 
 const router = express.Router();
 
@@ -298,7 +299,7 @@ router.post(
       // belongs to somebody else's in-flight request.
       if (claimed) {
         try { await abort({ restaurantId, key }); } catch (abortErr) {
-          console.error('[Idempotency abort]', abortErr.message);
+          logger.error({ event: 'IDEMPOTENCY_ABORT_FAILED', billId: req.params.id, err: abortErr }, 'Idempotency abort failed');
         }
       }
       await logAudit({
