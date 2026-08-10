@@ -180,6 +180,31 @@ that already holds data.
 columns. It rewrites any non-VES bill currency to `VES`, so check that no live
 bill is mid-payment when you apply it.
 
+## Process lifecycle
+
+An unhandled rejection and an uncaught exception are both **fatal**: log at
+`fatal`, drain, exit non-zero, let the orchestrator start a clean process.
+
+Registering a listener for `unhandledRejection` overrides Node's own default,
+which since v15 is to throw and terminate. A listener that only logged did not
+merely fail to act — it disabled the runtime's crash behaviour and left the
+process running on state nobody had reasoned about. For this service that
+matters: a rejection can surface after a bill's row lock is taken but before the
+transaction resolves, or between applying a payment and storing its idempotency
+response. Continuing means serving further payments from a process whose
+in-flight guarantees are already unknown.
+
+**Exit codes are load-bearing.** A signal exits `0` because stopping was
+intentional; anything fatal exits `1`. Exiting `0` after a crash reads as a
+clean stop, so `restart: on-failure` would leave the service down and
+Kubernetes would not record a failure. A forced exit after the drain timeout is
+also `1` — something refused to let go.
+
+**Readiness fails immediately** once a shutdown begins, so a load balancer stops
+routing new requests while in-flight ones finish. Liveness deliberately keeps
+answering `200`: failing it would have the orchestrator kill the process
+outright instead of letting it drain.
+
 ## Database timeouts
 
 Four settings that are often confused for one another:
