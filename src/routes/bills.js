@@ -144,6 +144,25 @@ router.post(
   validateBody(createBillSchema),
   async (req, res, next) => {
     try {
+      // Everything that can touch the network happens before BEGIN.
+      //
+      // snapshotFx may fetch from BCV, and this used to run inside the
+      // transaction, after the table row was locked: an 8-second upstream
+      // stalled every other request for that table, held a pooled connection,
+      // and left the transaction idle long enough for
+      // idle_in_transaction_session_timeout to terminate the session outright.
+      //
+      // Reading menu_currency outside the transaction means it could change
+      // between here and the insert. That race is benign — the bill would use
+      // a currency that was correct moments earlier — and changing it is
+      // already refused while any active product disagrees.
+      const restaurant = await db.query(
+        'SELECT menu_currency FROM restaurants WHERE id = $1',
+        [req.user.restaurantId]
+      );
+      const menuCurrency = restaurant.rows[0]?.menu_currency ?? 'VES';
+      const fx = await snapshotFx(menuCurrency, req.body.totalDueMinorUnits);
+
       const created = await db.withTransaction(async client => {
         // The table row is locked for the duration, so two waiters opening a
         // bill for the same table serialise here instead of racing between the
@@ -172,15 +191,8 @@ router.post(
           });
         }
 
-        // The bill is denominated in whatever the menu quotes, and the rate it
-        // will settle at is frozen here.
-        const restaurant = await client.query(
-          'SELECT menu_currency FROM restaurants WHERE id = $1',
-          [req.user.restaurantId]
-        );
-        const menuCurrency = restaurant.rows[0]?.menu_currency ?? 'VES';
-        const fx = await snapshotFx(menuCurrency, req.body.totalDueMinorUnits);
-
+        // The bill is denominated in whatever the menu quotes, at the rate
+        // frozen above, before this transaction opened.
         const { rows } = await client.query(
           `INSERT INTO bills (restaurant_id, table_id, total_due, currency,
                               total_due_ves, fx_rate_ves_per_unit, fx_rate_source,

@@ -277,6 +277,76 @@ describe('bill routes over HTTP', { skip }, () => {
     assert.equal(refused.status, 400, 'banking a rounded figure is worse than refusing it');
   });
 
+  it('resolves the exchange rate before opening a transaction', async () => {
+    // The constraint: no external network call while a database transaction is
+    // holding a business lock. This used to fetch from BCV *after* locking the
+    // table row, so a slow upstream stalled every other request for that table,
+    // held a pooled connection, and could leave the transaction idle long
+    // enough for idle_in_transaction_session_timeout to terminate the session.
+    const order = [];
+    const realWithTransaction = db.withTransaction;
+    const realFetch = bcv.fetchRates;
+
+    fx.__reset();
+    bcv.fetchRates = async () => {
+      order.push('fx-start');
+      await new Promise(r => setTimeout(r, 50));
+      order.push('fx-end');
+      return { rates: { USD: USD_RATE, EUR: EUR_RATE }, valueDate: caracasToday() };
+    };
+    db.withTransaction = (...args) => {
+      order.push('tx-begin');
+      return realWithTransaction(...args);
+    };
+
+    try {
+      const usd = await usdRestaurant('USD');
+      const usdTable = await fixtures.createTable(usd.id, { name: 'ORDER1' });
+      order.length = 0; // ignore the setup's own queries
+
+      const created = await request('POST', '/api/v1/bills', {
+        body: { tableId: usdTable.id, totalDueMinorUnits: '1000' },
+        token: usd.token
+      });
+      assert.equal(created.status, 201, JSON.stringify(created.body));
+    } finally {
+      db.withTransaction = realWithTransaction;
+      bcv.fetchRates = realFetch;
+      fx.__reset();
+    }
+
+    assert.deepEqual(
+      order,
+      ['fx-start', 'fx-end', 'tx-begin'],
+      'the rate must be resolved before BEGIN, never while holding the lock'
+    );
+  });
+
+  it('opens a VES bill without any rate lookup at all', async () => {
+    // A VES menu needs no conversion, so it must not reach the network even
+    // once — the identity rate is recorded without asking BCV anything.
+    let fetched = false;
+    const realFetch = bcv.fetchRates;
+    fx.__reset();
+    bcv.fetchRates = async () => {
+      fetched = true;
+      return { rates: { USD: USD_RATE, EUR: EUR_RATE }, valueDate: caracasToday() };
+    };
+
+    try {
+      const vesTable = await newTable();
+      const created = await request('POST', '/api/v1/bills', {
+        body: { tableId: vesTable.id, totalDueMinorUnits: '4200' }
+      });
+      assert.equal(created.status, 201, JSON.stringify(created.body));
+      assert.equal(created.body.fx_rate_source, 'IDENTITY');
+      assert.equal(fetched, false, 'a VES bill made no upstream call');
+    } finally {
+      bcv.fetchRates = realFetch;
+      fx.__reset();
+    }
+  });
+
   it('refuses a second open bill on the same table', async () => {
     const dupTable = await newTable();
     const first = await request('POST', '/api/v1/bills', {
