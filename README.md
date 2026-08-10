@@ -43,37 +43,32 @@ placeholder secrets.
 
 ## API
 
-| Method | Path | Auth |
-| --- | --- | --- |
-| GET | `/health/live` | none |
-| GET | `/health/ready` | none |
-| POST | `/api/v1/auth/login` | none |
-| POST | `/api/v1/auth/refresh` | refresh token |
-| POST | `/api/v1/auth/logout` | refresh token |
-| POST | `/api/v1/guest/sessions` | signed QR token |
-| GET | `/api/v1/guest/tables/:tableId/qr` | staff (`OWNER`, `MANAGER`) |
-| POST | `/api/v1/guest/tables/:tableId/qr/rotate` | staff (`OWNER`, `MANAGER`) |
-| GET | `/api/v1/tables` | staff |
-| POST | `/api/v1/tables` | staff (`OWNER`, `MANAGER`) |
-| PATCH | `/api/v1/tables/:tableId` | staff (`OWNER`, `MANAGER`) |
-| GET | `/api/v1/bills` | staff |
-| GET | `/api/v1/bills/tables/:tableId/open` | staff |
-| POST | `/api/v1/bills` | staff (`OWNER`, `MANAGER`, `CASHIER`, `WAITER`) |
-| GET | `/api/v1/bills/:id` | staff |
-| GET | `/api/v1/bills/:id/split?diners=n` | staff |
-| POST | `/api/v1/bills/:id/void` | staff (`OWNER`, `MANAGER`) |
-| POST | `/api/v1/bills/:id/payments` | staff (`OWNER`, `MANAGER`, `CASHIER`) |
-| GET | `/api/v1/exchange-rate` | staff |
-| GET | `/api/v1/menu/public/:restaurantId/products` | none |
-| GET | `/api/v1/menu/settings` | staff |
-| PATCH | `/api/v1/menu/settings/currency` | staff (`OWNER`, `MANAGER`) |
-| GET | `/api/v1/menu/products` | staff |
-| POST | `/api/v1/menu/products` | staff (`OWNER`, `MANAGER`) |
-| PATCH | `/api/v1/menu/products/:id` | staff (`OWNER`, `MANAGER`) |
-| DELETE | `/api/v1/menu/products/:id` | staff (`OWNER`, `MANAGER`) |
+The API is described by an **OpenAPI 3.1 document**, which is the contract:
 
-Payments accept an `Idempotency-Key` header (or `idempotencyKey` in the body).
-Retrying with the same key replays the stored response instead of charging twice.
+| | |
+| --- | --- |
+| `GET /openapi.json` | the machine-readable document |
+| `GET /docs` | Swagger UI |
+
+`test/openapi.test.js` fails the build if a mounted route is missing from the
+document, or the document promises a route the app does not serve. It also
+enforces that every operation declares its authentication, names its roles in
+`x-required-roles`, and documents the error responses a client must handle
+(`400/401/403/404/409/429/500`, as applicable).
+
+The endpoint table that used to live here has been removed rather than kept
+alongside the spec. It had already drifted: three `/api/v1/tables` endpoints were
+documented for several commits while the router was not mounted at all, and
+`GET /api/v1/tables` returned 404. Two hand-maintained lists disagree eventually;
+one generated contract with a test behind it does not.
+
+Set `DOCS_ENABLED=false` to withhold both endpoints and distribute
+`openapi.json` out of band instead.
+
+Monetary amounts cross the wire as **strings**, because a JSON number has
+already lost precision past 2^53 by the time it arrives. Payments accept an
+`Idempotency-Key` header (or `idempotencyKey` in the body); replaying a
+completed key returns the stored response instead of charging twice.
 
 ## Bill lifecycle and the one-open-bill rule
 
@@ -298,11 +293,111 @@ seeing payment failures this week" is a query rather than a grep.
 5. Run `npm run migrate` as a controlled deployment step, not on process boot.
 6. Commit `package-lock.json`; the image build and CI both depend on it for reproducibility.
 
-## Still open (Phase 2)
+## Open points
 
-- Payment provider integration and reconciliation
-- Webhook route wiring (`src/middleware/webhookSignature.js` is ready but unmounted)
-- Guest-facing bill read/split endpoints on top of `authenticateGuest`
-- Account lockout and MFA for staff logins
-- Scheduled purge of expired `idempotency_keys` and `refresh_sessions`
-- Integration tests against a live Postgres and Redis
+Everything known to be incomplete, in rough priority order. Nothing here is a
+surprise waiting to be found; it is the list of things deliberately not done
+yet.
+
+### Blocking real use
+
+- **No payments ledger.** `bills.amount_paid` is an aggregate counter. There is
+  no `payments` table, so there is no record of who paid what, when, under which
+  idempotency key, or against which provider reference — and therefore no
+  reconciliation, refunds, or dispute trail. A provider webhook has nothing to
+  map an external payment id onto, so this blocks the webhook work below.
+- **No bill line items.** A bill carries a total and nothing else, so a
+  restaurant cannot be told what was ordered. This is also the prerequisite for
+  any reporting.
+- **No onboarding.** Restaurants and their first owner are created by
+  `npm run seed`. Whether signup is self-service or invite-only is an open
+  product decision.
+
+### Port still outstanding
+
+From the working copy, onto the current model:
+
+- Bill line items with the FX snapshot taken at bill creation. This carries the
+  currency reconciliation: dropping `CHECK (currency = 'VES')` so
+  `bills.currency` can hold the menu currency, moving settlement onto
+  `total_due_ves`, and retiring `fx_rate`/`fx_source`/`fx_locked_at` in favour of
+  a rate snapshotted when the bill opens rather than on first payment.
+- Service charge, VAT and tip, rebuilt on `services/money.js` rather than the
+  incoming `Number`/`Math.round` arithmetic.
+- The split engine (FULL, ITEMS, EQUAL, CUSTOM) with participant claim tokens.
+- POS settlement: HMAC request signing, timestamp and nonce replay protection,
+  and an external-reference idempotency key.
+- Guest sessions bound to the current bill. The incoming version moves them from
+  Redis into a `guest_sessions` table keyed on `bill_id`; that is a model change,
+  not an addition, and has not been adopted.
+
+### Phase 2, not started
+
+- **Webhook route wiring.** `src/middleware/webhookSignature.js` is complete —
+  HMAC over the raw body, a two-sided timestamp window, Redis-backed replay
+  protection that fails closed — but it is not mounted on any route. It needs the
+  payments ledger first, so a callback has something to reconcile against.
+- **Guest-facing bill read.** `authenticateGuest` exists in
+  `services/guest.js` and is never mounted. Guests can obtain a session from a
+  table QR but cannot yet read the bill it belongs to.
+- **Staff account lockout.** The rate limiter is per-IP, not per-account, so
+  distributed attempts against one account are not slowed. MFA for staff logins
+  is also unstarted.
+- **Scheduled purges.** `idempotency_keys` has a `purgeExpired()` that nothing
+  calls; `refresh_sessions` and `fx_rates` accumulate revoked and superseded rows
+  indefinitely. All three need a scheduled job.
+
+### Security and correctness
+
+- **The Redis refresh mirror is write-only.** `services/auth.js` writes
+  `refresh:<jti>` on login and deletes it on revocation, but nothing ever reads
+  it. The comment claims it makes revocation immediate without a database read;
+  it delivers none of that. Either wire it into verification or delete it.
+- **Reuse detection does not clear the mirrors it revokes.** The bulk revoke in
+  `refresh()` skips the Redis keys, unlike `revokeAllSessionsForUser`. Harmless
+  only while the mirror is unread.
+- **Access tokens cannot be revoked** within their 15-minute life. Acceptable at
+  that TTL, but it means "revoke" only ever affects refresh tokens.
+- **The app-level rate limiter cannot key on a user.** It is mounted before any
+  authentication, so `req.user?.sub` is always undefined and the bucket is
+  per-IP. Behind carrier NAT that is one bucket for many people. The bills router
+  works around this with its own limiter mounted after auth.
+- **`/health/ready` is an unauthenticated database round-trip**, deliberately
+  ahead of the rate limiter so probes do not consume client budget. That also
+  makes it free load for anyone who finds it.
+- **Joi caps `amountMinorUnits` at `MAX_SAFE_INTEGER`** while the column is
+  BIGINT, so the exact-arithmetic work is unreachable through the API at the top
+  of the range.
+
+### Tooling
+
+- **`npm audit` cannot fail the build** (`continue-on-error: true`).
+- **`lint` is not a linter.** `find … -exec node --check` returns *find's* exit
+  code, so a syntax error does not fail CI, and `node --check` only parses.
+  There is no ESLint.
+- **`scripts/` still uses `console.*`.** Only `src/` was converted to structured
+  logging; the migrate and seed CLIs were left alone deliberately, but a deploy
+  step arguably deserves structured output too.
+- **Dead code:** `requireTenant`, `revokeAllSessionsForUser` and
+  `registerSchema` are exported and never used.
+
+### Numbers that are guesses
+
+These are placeholders chosen without data, and should be set from observed
+behaviour once there is traffic:
+
+- `DB_PAYMENT_STATEMENT_TIMEOUT_MS=15000` — a guess at how much lock contention
+  a busy split produces.
+- `SHUTDOWN_TIMEOUT_MS` is hardcoded at 10s. If a payment rail is ever called
+  inside a request handler, this must exceed the longest in-flight request or
+  shutdown will sever payments mid-flight.
+- `FX_MAX_DEVIATION_PCT=5` — rejects a rate that moves more than 5% from the
+  last known good one. A genuine devaluation beyond that needs a human.
+
+### Accepted, not fixed
+
+- The old development secrets (`dev_jwt_secret`, `dev_webhook_secret`) remain in
+  public git history. They were never deployed, so nothing was ever signed with
+  them; rotating would not remove them from history, and rewriting history would
+  break every clone. Any secret that touches a real deploy must be rotated in the
+  hosting provider, not here.
