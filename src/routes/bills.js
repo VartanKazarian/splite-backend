@@ -14,7 +14,7 @@ const {
   tableIdParamSchema
 } = require('../middleware/schemas');
 const { processSplitPayment } = require('../services/locks');
-const { getUsdToVesRate } = require('../services/fx');
+const { getRateFor } = require('../services/fx');
 const { splitEvenly, usdReference } = require('../services/split');
 const { parseRate, applyRate, toMinor } = require('../services/money');
 const { requestHash, begin, complete, abort } = require('../services/idempotency');
@@ -68,28 +68,16 @@ function present(bill) {
  */
 async function snapshotFx(menuCurrency, totalDueMinorUnits) {
   if (menuCurrency === 'VES') {
-    return {
-      totalDueVes: String(totalDueMinorUnits),
-      rate: '1',
-      source: 'IDENTITY',
-      valueDate: null
-    };
+    return { totalDueVes: String(totalDueMinorUnits), rate: '1', source: 'IDENTITY', valueDate: null };
   }
 
-  if (menuCurrency !== 'USD') {
-    // Only a USD rate is published by the BCV connector today. Opening a EUR
-    // bill would mean inventing a conversion, so it is refused rather than
-    // guessed.
-    const error = new Error(`No exchange rate source is configured for ${menuCurrency} menus`);
-    error.statusCode = 503;
-    throw error;
-  }
-
-  const fx = await getUsdToVesRate();
+  const fx = await getRateFor(menuCurrency);
   if (!fx) {
     // Fail closed: a foreign-currency bill without a rate has no settleable
-    // total, and inventing one is what the FX service exists to prevent.
-    const error = new Error('Exchange rate is unavailable, so a non-VES bill cannot be opened');
+    // total, and inventing one is what the FX service exists to prevent. This
+    // can only stop a bill being opened; payments on existing bills use the
+    // rate already frozen on them.
+    const error = new Error(`No exchange rate is available for ${menuCurrency}, so the bill cannot be opened`);
     error.statusCode = 503;
     throw error;
   }

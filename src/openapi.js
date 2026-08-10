@@ -354,15 +354,24 @@ const schemas = {
   ExchangeRate: {
     type: 'object',
     properties: {
-      rate: { type: 'number', examples: [757.5406] },
-      valueDate: {
-        type: ['string', 'null'],
-        format: 'date',
-        description:
-          'The day the rate applies to, from BCV Fecha Valor. BCV publishes around 16:30 Caracas for the next business day, so this is not the fetch date.'
-      },
-      source: { type: 'string', examples: ['BCV'] },
-      fetchedAt: { type: ['string', 'null'], format: 'date-time' }
+      rates: {
+        type: 'object',
+        description: 'VES per unit of each supported currency. BCV publishes USD and EUR together.',
+        additionalProperties: {
+          type: 'object',
+          properties: {
+            rate: { type: 'number', examples: [757.5406] },
+            valueDate: {
+              type: ['string', 'null'],
+              format: 'date',
+              description:
+                'The day the rate applies to, from BCV Fecha Valor. BCV publishes around 16:30 Caracas for the next business day, so this is not the fetch date.'
+            },
+            source: { type: 'string', examples: ['BCV'] },
+            fetchedAt: { type: ['string', 'null'], format: 'date-time' }
+          }
+        }
+      }
     }
   },
 

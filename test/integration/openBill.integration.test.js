@@ -79,8 +79,9 @@ describe('one open bill per table', { skip }, () => {
       // two restaurant_id columns together until migration 004.
       await assert.rejects(
         () => db.query(
-          `INSERT INTO bills (restaurant_id, table_id, total_due, currency)
-           VALUES ($1, $2, $3, 'VES')`,
+          `INSERT INTO bills (restaurant_id, table_id, total_due, currency,
+                              total_due_ves, fx_rate_ves_per_unit, fx_rate_source)
+           VALUES ($1, $2, $3, 'VES', $3, 1, 'IDENTITY')`,
           [restaurant.id, otherTable.id, '100']
         ),
         err => {

@@ -7,12 +7,21 @@ const { parseBcvPage, parseVenezuelanDecimal } = require('../src/connectors/bcv'
 
 // Captured verbatim from https://www.bcv.org.ve/ so the parser is tested
 // against real markup rather than an idealised version of it.
-const FIXTURE = fs.readFileSync(path.join(__dirname, 'fixtures', 'bcv-dolar.html'), 'utf8');
+const FIXTURE = fs.readFileSync(path.join(__dirname, 'fixtures', 'bcv-rates.html'), 'utf8');
 
-test('parses the USD rate and value date out of the real BCV markup', () => {
-  const { rate, valueDate } = parseBcvPage(FIXTURE);
-  assert.equal(rate, 757.5406);
+test('parses both published rates and the value date out of the real BCV markup', () => {
+  const { rates, valueDate } = parseBcvPage(FIXTURE);
+  assert.equal(rates.USD, 757.5406);
+  assert.equal(rates.EUR, 875.2169568);
   assert.equal(valueDate, '2026-08-10');
+});
+
+test('does not confuse one currency block for another', () => {
+  // The page carries yuan, lira and rublo blocks too. A lookahead that ran on
+  // past its own block would attach a plausible number to the wrong currency.
+  const { rates } = parseBcvPage(FIXTURE);
+  assert.notEqual(rates.USD, rates.EUR);
+  assert.deepEqual(Object.keys(rates).sort(), ['EUR', 'USD']);
 });
 
 test('reads Venezuelan number formatting, which inverts JS conventions', () => {
@@ -23,32 +32,28 @@ test('reads Venezuelan number formatting, which inverts JS conventions', () => {
   assert.equal(parseVenezuelanDecimal('36,50'), 36.5);
 });
 
-test('the value date is the date the rate applies to, not the fetch time', () => {
-  // BCV publishes ahead: this page was fetched on 2026-08-08 and carries a
-  // value date of Monday the 10th. Anything keyed on "today" would be wrong.
-  const { valueDate } = parseBcvPage(FIXTURE);
-  assert.equal(valueDate, '2026-08-10');
+test('the value date is the date the rates apply to, not the fetch time', () => {
+  // BCV publishes ahead, so anything keyed on "today" would be wrong.
+  assert.equal(parseBcvPage(FIXTURE).valueDate, '2026-08-10');
 });
 
-test('rejects a page that does not contain the dolar block', () => {
+test('rejects a page that contains no rate at all', () => {
   assert.throws(
     () => parseBcvPage('<html><body>mantenimiento</body></html>'),
-    /did not contain a USD rate/
+    /did not contain any rate/
   );
 });
 
-test('does not scan past the dolar block for a rate', () => {
-  // A page where the block is gone but other <strong> elements remain must
-  // fail, not silently pick up an unrelated number.
+test('does not scan past a missing block for a rate', () => {
   const html = '<div id="otra"></div><strong class="strong-tb">999,00</strong>';
-  assert.throws(() => parseBcvPage(html), /did not contain a USD rate/);
+  assert.throws(() => parseBcvPage(html), /did not contain any rate/);
 });
 
-test('still returns the rate when the value date is missing', () => {
+test('still returns the rates when the value date is missing', () => {
   const withoutDate = FIXTURE.replace(/Fecha\s+Valor:/i, 'Fecha:');
-  const { rate, valueDate } = parseBcvPage(withoutDate);
-  assert.equal(rate, 757.5406);
-  assert.equal(valueDate, null, 'the rate is still correct without a parseable date');
+  const { rates, valueDate } = parseBcvPage(withoutDate);
+  assert.equal(rates.USD, 757.5406);
+  assert.equal(valueDate, null, 'the rates are still correct without a parseable date');
 });
 
 test('the bundled BCV intermediate is present, correct and unexpired', () => {
@@ -67,10 +72,3 @@ test('the bundled BCV intermediate is present, correct and unexpired', () => {
   assert.ok(new Date(cert.validTo) > new Date(), `bundled intermediate expired on ${cert.validTo}`);
 });
 
-test('handles the euro block being present without confusing it for USD', () => {
-  const html = `
-    <div id="euro"><strong class="strong-tb">881,12000000</strong></div>
-    ${FIXTURE}
-  `;
-  assert.equal(parseBcvPage(html).rate, 757.5406);
-});
