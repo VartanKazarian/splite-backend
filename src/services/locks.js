@@ -1,5 +1,6 @@
 const db = require('../connectors/base');
 const { usdReference } = require('./split');
+const { logger } = require('../connectors/logger');
 
 // bills.fx_rate is NUMERIC(20,6). pg returns NUMERIC as a string carrying the
 // column's full scale ('756.710000'), while a rate that has just been resolved
@@ -127,7 +128,7 @@ async function resolvePendingRate({ restaurantId, billId, getRate }) {
     return await getRate();
   } catch (err) {
     // The USD reference is optional; never let it interrupt a payment.
-    console.warn('[Payment] Rate lookup skipped:', err.message);
+    logger.warn({ event: 'FX_LOOKUP_SKIPPED', billId, err }, 'Rate lookup skipped; payment continues');
     return null;
   }
 }

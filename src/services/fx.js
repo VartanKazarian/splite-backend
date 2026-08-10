@@ -2,6 +2,7 @@ const db = require('../connectors/base');
 const config = require('../config');
 // Namespace import so the provider can be stubbed in tests without network.
 const bcv = require('../connectors/bcv');
+const { logger } = require('../connectors/logger');
 
 /**
  * USD -> VES reference rate.
@@ -46,7 +47,7 @@ async function loadBaseline() {
     if (rows.length) lastGood = Number(rows[0].rate);
   } catch (err) {
     // A missing table or an unreachable database must not break the USD line.
-    console.warn('[FX] Could not load rate baseline:', err.message);
+    logger.warn({ event: 'FX_BASELINE_UNAVAILABLE', err }, 'Could not load rate baseline');
   }
 }
 
@@ -62,7 +63,7 @@ async function persist(rate, source, valueDate) {
       [source, 'USD', 'VES', rate, valueDate]
     );
   } catch (err) {
-    console.warn('[FX] Could not persist rate:', err.message);
+    logger.warn({ event: 'FX_PERSIST_FAILED', valueDate, err }, 'Could not persist rate');
   }
 }
 
@@ -159,8 +160,9 @@ async function getUsdToVesRate() {
         // The only rate available is one that has not taken effect. Returning
         // it would be wrong, and inventing one is what this service exists to
         // prevent, so the USD line is omitted until the publication lands.
-        console.warn(
-          `[FX] Latest publication is for ${published.valueDate}, which is not yet in force, and no earlier rate is on record`
+        logger.warn(
+          { event: 'FX_NOT_YET_IN_FORCE', valueDate: published.valueDate },
+          'Latest publication is not in force yet and no earlier rate is on record'
         );
         return null;
       }
@@ -169,7 +171,7 @@ async function getUsdToVesRate() {
     } catch (err) {
       // Deliberately not falling back to `cache`: serving a stale rate as if it
       // were current is the exact failure mode this service exists to prevent.
-      console.error('[FX] Rate unavailable:', err.message);
+      logger.error({ event: 'FX_UNAVAILABLE', err }, 'Rate unavailable');
       return null;
     } finally {
       inFlight = null;

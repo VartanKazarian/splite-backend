@@ -1,12 +1,13 @@
 const express = require('express');
 const helmet = require('helmet');
 const cors = require('cors');
-const morgan = require('morgan');
+const pinoHttp = require('pino-http');
 
 const config = require('./config');
 const db = require('./connectors/base');
 const { redis } = require('./connectors/redis');
 const requestId = require('./middleware/requestId');
+const { logger } = require('./connectors/logger');
 const rateLimit = require('./middleware/rateLimit');
 const errorHandler = require('./middleware/errorHandler');
 const authRoutes = require('./routes/auth');
@@ -64,11 +65,32 @@ app.get('/health/ready', async (req, res) => {
 app.use(express.json({ limit: '256kb', verify: (req, res, buf) => { req.rawBody = buf.toString('utf8'); } }));
 app.use(express.urlencoded({ extended: false, limit: '32kb' }));
 
-morgan.token('id', req => req.id);
-app.use(morgan(
-  config.isProduction ? ':id :remote-addr :method :url :status :response-time ms' : 'dev',
-  { skip: req => req.path.startsWith('/health') }
-));
+/**
+ * Access logging.
+ *
+ * Morgan emitted a formatted string, so the request id it carried could not be
+ * correlated with anything a service logged, and nothing else in a line was
+ * queryable. Every request now produces one JSON object sharing the same
+ * requestId, restaurantId and userId as the logs emitted while handling it.
+ */
+app.use(pinoHttp({
+  logger,
+  // The context already carries these; repeating them per line is noise.
+  customProps: () => ({ event: 'REQUEST_COMPLETED' }),
+  // 4xx is the caller's problem, 5xx is ours; the error handler logs the
+  // detail, so this is only the access record.
+  customLogLevel: (req, res, err) => {
+    if (err || res.statusCode >= 500) return 'error';
+    if (res.statusCode >= 400) return 'warn';
+    return 'info';
+  },
+  // Probes would otherwise dominate the log volume.
+  autoLogging: { ignore: req => req.url.startsWith('/health') },
+  serializers: {
+    req: req => ({ method: req.method, url: req.url, remoteAddress: req.remoteAddress }),
+    res: res => ({ statusCode: res.statusCode })
+  }
+}));
 
 app.use(rateLimit({ windowSeconds: 60, max: 120, keyPrefix: 'api' }));
 

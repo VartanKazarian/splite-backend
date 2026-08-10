@@ -1,18 +1,29 @@
+const { logger } = require('../connectors/logger');
+
 // eslint-disable-next-line no-unused-vars -- Express identifies error handlers by arity (4 args).
 function errorHandler(err, req, res, next) {
   const statusCode = Number.isInteger(err.statusCode) && err.statusCode >= 400 && err.statusCode < 600
     ? err.statusCode
     : 500;
 
-  const log = statusCode >= 500 ? console.error : console.warn;
-  log('[Error]', {
-    requestId: req.id,
-    method: req.method,
-    path: req.originalUrl,
-    status: statusCode,
-    message: err.message,
-    stack: process.env.NODE_ENV === 'production' ? undefined : err.stack
-  });
+  // A 4xx is the caller's problem and routine; a 5xx is ours and is not.
+  // Splitting them keeps an alert on `level >= 50` meaningful instead of
+  // firing on every malformed request.
+  const level = statusCode >= 500 ? 'error' : 'warn';
+
+  // requestId, restaurantId and userId arrive from the request context, so they
+  // do not need repeating here. The stack rides on `err`, which pino serialises
+  // and redacts; it is not echoed to the client either way.
+  logger[level](
+    {
+      event: 'REQUEST_FAILED',
+      method: req.method,
+      path: req.originalUrl,
+      status: statusCode,
+      err
+    },
+    err.message
+  );
 
   if (res.headersSent) return next(err);
 

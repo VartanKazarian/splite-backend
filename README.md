@@ -180,6 +180,54 @@ that already holds data.
 columns. It rewrites any non-VES bill currency to `VES`, so check that no live
 bill is mid-payment when you apply it.
 
+## Logging
+
+Every log line is a JSON object on stdout, carrying the request context:
+
+```json
+{
+  "level": 50,
+  "time": "2026-08-10T18:22:31.004Z",
+  "service": "splite-api",
+  "requestId": "0f3c...",
+  "restaurantId": "9a1e...",
+  "userId": "44c2...",
+  "event": "REQUEST_FAILED",
+  "err": { "type": "Error", "message": "..." }
+}
+```
+
+`requestId`, `restaurantId`, `userId` and `role` are held in an
+`AsyncLocalStorage` context opened by the request-id middleware and filled in by
+`authenticateToken`, then merged into every line by pino's `mixin`. A service
+therefore logs without being handed a request object and without threading a
+correlation id through call signatures that have no other use for it.
+
+Levels: `50`/`error` is ours to fix, `40`/`warn` is usually the caller's, `30`
+/`info` is the access record. An alert on `level >= 50` is meaningful because a
+malformed request logs at 40, not 50. Health probes are not logged at all.
+
+Secrets are redacted by path (`REDACT_PATHS` in `src/connectors/logger.js`).
+That includes `rawHeaders`, which is a flat `[name, value, ...]` array and so
+cannot be filtered by key, and `res.req` — a response exposes the request that
+produced it, which is how the `Authorization` header reached the access log
+before this was added.
+
+Set `LOG_LEVEL` to override; the suite runs at `silent`.
+
+### Reporting
+
+These logs are for operating the service, not for reporting to restaurants.
+Anything a restaurant should see — items ordered, prices, payments taken, how
+many diners split a bill — belongs in the database, where `bills`, `bill_items`
+and `audit_logs` are durable, queryable and already tenant-scoped. Logs are
+sampled, expired and shipped off-box; they are the wrong system of record for a
+number a restaurant might reconcile against.
+
+What the structured events do give you is the operational half of that picture:
+because every line carries `restaurantId` and a stable `event`, "which tenant is
+seeing payment failures this week" is a query rather than a grep.
+
 ## Production notes
 
 1. Use `DATABASE_URL` with TLS. Set `DB_SSL_REJECT_UNAUTHORIZED=true` once you pin your provider's CA.

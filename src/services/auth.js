@@ -5,6 +5,7 @@ const { redis } = require('../connectors/redis');
 const config = require('../config');
 const { signAccessToken, signRefreshToken, verifyRefreshToken, hashToken } = require('../utils/tokens');
 const { logAudit } = require('./audit');
+const { logger } = require('../connectors/logger');
 
 const ARGON2_OPTIONS = { type: argon2.argon2id, memoryCost: 19456, timeCost: 2, parallelism: 1 };
 
@@ -47,7 +48,7 @@ async function issueSession(user, meta = {}, client = db) {
   try {
     await redis.set(`refresh:${jti}`, '1', 'EX', ttl);
   } catch (err) {
-    console.warn('[Auth] Redis session mirror failed', err.message);
+    logger.warn({ event: 'SESSION_MIRROR_FAILED', err }, 'Redis session mirror failed');
   }
 
   return {

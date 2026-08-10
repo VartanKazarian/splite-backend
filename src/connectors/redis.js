@@ -1,5 +1,6 @@
 const Redis = require('ioredis');
 const config = require('../config');
+const { logger } = require('./logger');
 
 const redis = new Redis(config.redis.url, {
   maxRetriesPerRequest: 2,
@@ -7,7 +8,7 @@ const redis = new Redis(config.redis.url, {
   lazyConnect: true
 });
 
-redis.on('error', err => console.error('[Redis]', err.message));
+redis.on('error', err => logger.error({ event: 'REDIS_ERROR', err }, 'Redis error'));
 
 async function connectRedis() {
   if (redis.status === 'wait' || redis.status === 'end') await redis.connect();

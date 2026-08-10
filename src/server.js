@@ -2,6 +2,7 @@ const app = require('./app');
 const config = require('./config');
 const db = require('./connectors/base');
 const { connectRedis, closeRedis } = require('./connectors/redis');
+const { logger } = require('./connectors/logger');
 
 const SHUTDOWN_TIMEOUT_MS = 10000;
 
@@ -12,17 +13,17 @@ async function start() {
   await connectRedis();
 
   const server = app.listen(config.port, () => {
-    console.log(`Splite API listening on :${config.port} (${config.env})`);
+    logger.info({ event: 'SERVER_STARTED', port: config.port }, 'Splite API listening');
   });
 
   let shuttingDown = false;
   const shutdown = async signal => {
     if (shuttingDown) return;
     shuttingDown = true;
-    console.log(`${signal}: draining connections`);
+    logger.info({ event: 'SHUTDOWN_STARTED', signal }, 'Draining connections');
 
     const force = setTimeout(() => {
-      console.error('Graceful shutdown timed out, forcing exit');
+      logger.error({ event: 'SHUTDOWN_TIMED_OUT' }, 'Graceful shutdown timed out, forcing exit');
       process.exit(1);
     }, SHUTDOWN_TIMEOUT_MS).unref();
 
@@ -39,10 +40,10 @@ async function start() {
   process.on('SIGTERM', () => shutdown('SIGTERM'));
   process.on('SIGINT', () => shutdown('SIGINT'));
   process.on('unhandledRejection', reason => {
-    console.error('[UnhandledRejection]', reason instanceof Error ? reason.message : reason);
+    logger.error({ event: 'UNHANDLED_REJECTION', err: reason instanceof Error ? reason : new Error(String(reason)) }, 'Unhandled rejection');
   });
   process.on('uncaughtException', err => {
-    console.error('[UncaughtException]', err.message, err.stack);
+    logger.fatal({ event: 'UNCAUGHT_EXCEPTION', err }, 'Uncaught exception');
     shutdown('uncaughtException');
   });
 
@@ -51,7 +52,7 @@ async function start() {
 
 if (require.main === module) {
   start().catch(err => {
-    console.error('[Startup]', err.message);
+    logger.fatal({ event: 'STARTUP_FAILED', err }, 'Startup failed');
     process.exit(1);
   });
 }
