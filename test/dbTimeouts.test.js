@@ -18,6 +18,8 @@ function captureTransactionOptions(bill) {
     return fn({
       query: async (text, params) => {
         seen.statements.push(text.trim().split('\n')[0].trim());
+        if (/^INSERT INTO payments/i.test(text.trim())) return { rows: [{ id: 'payment-1' }] };
+        if (/^INSERT INTO payment_transitions/i.test(text.trim())) return { rows: [] };
         if (/^SELECT/i.test(text.trim())) return { rows: bill ? [bill] : [] };
         if (/^UPDATE/i.test(text.trim())) {
           bill.amount_paid = params[0];
@@ -85,6 +87,8 @@ test('the FX lookup happens before the transaction opens', async () => {
     order.push('begin');
     return fn({
       query: async (text, params) => {
+        if (/^INSERT INTO payments/i.test(text.trim())) return { rows: [{ id: 'payment-1' }] };
+        if (/^INSERT INTO payment_transitions/i.test(text.trim())) return { rows: [] };
         if (/^SELECT/i.test(text.trim())) return { rows: [bill] };
         if (/^UPDATE/i.test(text.trim())) { bill.amount_paid = params[0]; bill.status = params[1]; return { rowCount: 1 }; }
         return { rows: [] };

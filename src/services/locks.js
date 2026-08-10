@@ -2,6 +2,7 @@ const db = require('../connectors/base');
 const { usdReference } = require('./split');
 const { logger } = require('../connectors/logger');
 const config = require('../config');
+const { recordPayment } = require('./payments');
 
 // bills.fx_rate is NUMERIC(20,6). pg returns NUMERIC as a string carrying the
 // column's full scale ('756.710000'), while a rate that has just been resolved
@@ -25,7 +26,19 @@ function formatRate(value) {
  * diners paying simultaneously cannot both read the same amount_paid. Every
  * clause is tenant-scoped; a bill id from another restaurant reads as 404.
  */
-async function processSplitPayment({ restaurantId, billId, amountPaidMinorUnits, getRate }) {
+async function processSplitPayment({
+  restaurantId,
+  billId,
+  amountPaidMinorUnits,
+  getRate,
+  // Ledger context. Defaulted so existing callers keep working, but every real
+  // payment should supply them: a ledger row that cannot say who paid or under
+  // which key is most of the reason the ledger exists.
+  idempotencyKey = null,
+  paymentMethod = 'SPLITE',
+  payer = { type: 'STAFF', id: null },
+  tendered = null
+}) {
   const amount = Number(amountPaidMinorUnits);
   if (!Number.isSafeInteger(amount) || amount <= 0) {
     const error = new Error('Invalid payment amount');
@@ -96,6 +109,22 @@ async function processSplitPayment({ restaurantId, billId, amountPaidMinorUnits,
       [newAmountPaid.toString(), newStatus, bill.id, restaurantId, lockRate ? pending.rate : null, lockRate ? pending.source : null]
     );
 
+    // The ledger row is written inside this transaction, alongside the cache it
+    // is the source of truth for. If either fails, neither happens: a payment
+    // recorded without moving the balance, or a balance moved without a
+    // payment, is precisely the drift `payment_ledger_drift` exists to detect.
+    const payment = await recordPayment(client, {
+      restaurantId,
+      billId: bill.id,
+      amountVes: amount,
+      status: 'SUCCEEDED',
+      paymentMethod,
+      idempotencyKey,
+      payerType: payer?.type ?? 'STAFF',
+      payerId: payer?.id ?? null,
+      tendered
+    });
+
     // Read back the locked rate to ensure consistency across concurrent requests
     const { rows: updatedRows } = await client.query(
       `SELECT fx_rate, fx_source FROM bills WHERE id = $1 AND restaurant_id = $2`,
@@ -109,6 +138,7 @@ async function processSplitPayment({ restaurantId, billId, amountPaidMinorUnits,
     const remaining = totalDue - newAmountPaid;
     return {
       id: bill.id,
+      paymentId: payment.id,
       status: newStatus,
       currency: 'VES',
       totalDue: totalDue.toString(),
