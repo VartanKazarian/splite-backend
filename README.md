@@ -108,10 +108,12 @@ endpoint here: a guest scanning a table QR has no staff credentials.
 
 ## Money model
 
-Settlement is **always VES**, in céntimos, stored as `BIGINT`. USD is a display
-reference only — it is never a payment currency. Migration 003 enforces this
-with `CHECK (currency = 'VES')`; previously USD and USDT were accepted and
-applied at face value against a bolívar balance.
+Settlement is **always VES**, in céntimos, stored as `BIGINT`. A menu may be
+priced in VES, USD or EUR, but those are what the prices were *quoted* in —
+never what is charged. `bills.currency` carries the menu currency and
+`total_due_ves`/`amount_paid_ves` carry settlement (migration 008); migration
+003 had briefly constrained `currency` itself to VES, when USD and USDT were
+being applied at face value against a bolívar balance.
 
 The exchange rate is **frozen when the bill is opened** and reused for every
 later split, so the total a diner is quoted cannot move while they eat.
@@ -122,8 +124,8 @@ use the rate already frozen on the bill and make no FX call at all.
 
 Splits use largest-remainder allocation (`src/services/split.js`) so the parts
 sum to exactly the total. Rounding each share independently would leave the last
-diner unable to pay under `CHECK (amount_paid <= total_due)`, or leave the bill
-permanently a few céntimos short of closing.
+diner unable to pay under `CHECK (amount_paid_ves <= total_due_ves)`, or leave
+the bill permanently a few céntimos short of closing.
 
 ## Exchange rate
 
@@ -139,8 +141,9 @@ the [Banco Central de Venezuela](https://www.bcv.org.ve/):
 }
 ```
 
-BCV publishes no API, so the rate is parsed from the `id="dolar"` block of their
-home page (`src/connectors/bcv.js`) and cached for 15 minutes — their own
+BCV publishes no API, so each rate is parsed from its own block on their home
+page — `id="dolar"` and `id="euro"` (`src/connectors/bcv.js`) — in a single
+request, and cached for 15 minutes. Their own
 `cache-control` is 5 minutes and the figure changes at most once per business
 day. Policy lives separately in `src/services/fx.js`, which is the single place
 that decides whether a rate is usable.
@@ -238,24 +241,22 @@ next caller to borrow that pooled connection.
 
 One thing this deliberately does **not** try to solve: slow Venezuelan payment
 rails. Bank confirmation latency is not database time, and the fix is to keep it
-out of the transaction rather than to raise a SQL timeout to cover it. The FX
-lookup is resolved before `BEGIN` for exactly that reason, and there is a test
-asserting the ordering so it stays that way. When a payment provider is wired
-up, its call belongs outside the transaction too.
+out of the transaction rather than to raise a SQL timeout to cover it.
 
-## Running the integration tests locally
+That is a standing rule rather than an observation about payments:
 
-They need a real Postgres and Redis. Neither requires Docker or admin rights:
+> **No external network call while a transaction holds a business lock.**
 
-```bash
-npm run db:local          # start Postgres 16 + Redis on 55432 / 56379
-npm run test:integration:local
-npm run db:local:stop
-```
+Two places it applies today. A payment takes no exchange rate at all — the rate
+is frozen when the bill is opened — so nothing external is reachable from it.
+Opening a bill *may* fetch from BCV, so that happens before `BEGIN`; it once ran
+after the table row was locked, which stalled every other request for that table,
+held a pooled connection, and could leave the transaction idle long enough for
+`idle_in_transaction_session_timeout` to terminate the session outright. Both
+orderings are asserted by tests, so a future change cannot quietly undo either.
 
-The first run downloads user-space binaries into `~/.local`. `db:local` also
-creates the database and applies every migration, so a schema change is
-verified before it reaches CI rather than after.
+When a payment provider is wired up, its call belongs outside the transaction on
+the same rule.
 
 ## Logging
 
