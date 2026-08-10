@@ -278,7 +278,11 @@ router.post(
         amountPaidMinorUnits: req.body.amountMinorUnits,
         // Presentational: resolved only when this bill has no locked rate yet,
         // and never permitted to block settlement.
-        getRate: getUsdToVesRate
+        getRate: getUsdToVesRate,
+        // Recorded on the ledger row so a payment can be traced back to the
+        // request and the person who took it.
+        idempotencyKey: key,
+        payer: { type: 'STAFF', id: req.user.sub }
       });
 
       // Store the response before replying, so a client retry that races the
