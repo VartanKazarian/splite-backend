@@ -310,6 +310,36 @@ test('the wire-format conventions are declared and enforced', () => {
   assert.ok(exchangeRateProp.pattern, 'ExchangeRate.rate needs a pattern');
 });
 
+test('the README does not claim a mounted feature is missing', () => {
+  // This has gone wrong twice. The README claimed "No payments ledger" after
+  // migration 007 shipped one, and then listed bill line items, the split
+  // engine and guest bill reads as unbuilt after all three were mounted.
+  // Every other contract here has a drift test; prose had none.
+  //
+  // Matched on claims of *absence* rather than on capability names, because
+  // Open points legitimately mentions things that exist in order to explain
+  // what does not -- "the split engine is advisory" is true and must not trip
+  // this. A broader README-versus-code check would fail on ordinary prose
+  // edits and end up disabled, which is worse than not having one.
+  const fs = require('node:fs');
+  const readme = fs.readFileSync(require('node:path').join(__dirname, '..', 'README.md'), 'utf8');
+
+  const ABSENCE_CLAIMS = [
+    [/no bill line items/i, '/api/v1/bills/{id}/items'],
+    [/no payments? ledger/i, '/api/v1/bills/{id}/payments'],
+    [/no split engine/i, '/api/v1/bills/{id}/split/preview'],
+    [/guest loop dead-ends/i, '/api/v1/guest/bill'],
+    [/authenticateGuest[^.]*mounted on no route/i, '/api/v1/guest/bill'],
+    [/guest-facing bill read[^.]*never mounted/i, '/api/v1/guest/bill']
+  ];
+
+  const stale = ABSENCE_CLAIMS
+    .filter(([pattern, path]) => pattern.test(readme) && document.paths[path])
+    .map(([pattern]) => String(pattern));
+
+  assert.deepEqual(stale, [], 'the README claims these are missing while the routes are mounted');
+});
+
 test('the document has the structure an OpenAPI 3.1 consumer expects', () => {
   assert.equal(document.openapi, '3.1.0');
   assert.ok(document.info.title);

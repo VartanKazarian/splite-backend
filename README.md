@@ -16,12 +16,15 @@ opens so a diner's total cannot move while they eat.
 - Redis-backed rate limiting, fail-closed on the auth surface
 - RBAC: `OWNER`, `MANAGER`, `CASHIER`, `WAITER`
 - Signed, expiring, rotatable QR tokens; hashed guest session tokens
+- Guest bill access scoped to the scanned table, naming no resource ids
 - Audit logging with actor, tenant, IP and request id
 
 **Money**
 
 - VES-only settlement with exact BigInt arithmetic and largest-remainder splits
 - Menus priced in VES, USD or EUR, at the BCV rate in force, never guessed
+- Bill line items with immutable price snapshots; totals derived, never supplied
+- A split engine with four modes — FULL, EQUAL, ITEMS and CUSTOM
 - Append-only payment ledger with a database-enforced state machine
 - Payment concurrency control via `SELECT ... FOR UPDATE`
 - Idempotency keys on money-moving endpoints
@@ -39,8 +42,8 @@ opens so a diner's total cannot move while they eat.
 - CI: syntax check, OpenAPI drift check, unit tests, dependency audit,
   invisible-character guard, image build
 
-Not yet built: bill line items, the split engine, guest-facing bill reads, and
-a payment provider. See [Open points](#open-points).
+Not yet built: a payment provider, persisted split participants, and
+onboarding. See [Open points](#open-points).
 
 ## Local development
 
@@ -218,6 +221,86 @@ This replaced four shapes that were live at once: a bare string, `{ message,
 requestId }`, an array of validation strings, and a string with `code` and
 `billId` as *siblings* of `error` — so a client could not destructure a failure
 without first knowing which route produced it.
+
+## Bill line items
+
+A line's price is **snapshotted when it is added** and never read from the menu
+again, so re-pricing, renaming or deactivating a product cannot change a bill
+that has already been served. `product_id` is kept for reporting and is
+nullable: the line outlives the product.
+
+`subtotal_minor` is `GENERATED ALWAYS AS (unit_price_minor * quantity) STORED`
+— the database computes it or nothing does. A subtotal the application keeps in
+step with its inputs is the same drift the payment ledger exists to remove.
+
+Every mutation recomputes the bill total from its lines and re-converts at the
+rate **frozen when the bill opened**, never at today's rate: otherwise adding a
+coffee silently reprices the meal. Removing a line that would drop the total
+below what has already been settled is refused with `TOTAL_BELOW_AMOUNT_PAID`,
+because reversing money that has moved is a refund, not an edit.
+
+Items are optional. A bill opened with a fixed non-zero total refuses
+itemisation (`BILL_NOT_ITEMISED`) rather than silently discarding that figure or
+counting the bill twice — open it with a total of `0` to itemise it. A composite
+foreign key on `(bill_id, restaurant_id, currency)` ties every line to its bill,
+its tenant and its currency at once, so a EUR line cannot sit on a USD bill.
+
+## Splitting a bill
+
+`POST /api/v1/bills/{id}/split/preview` — and the guest equivalent at
+`/api/v1/guest/bill/split/preview` — computes who owes what. It is **advisory
+and mutates nothing**; payment still goes through the payments endpoint, which
+holds the row lock and enforces the ceiling.
+
+| Mode | Behaviour |
+|------|-----------|
+| `FULL` | one participant owes the balance |
+| `EQUAL` | divided evenly, largest remainder |
+| `ITEMS` | participants claim lines; a shared line splits between its claimants |
+| `CUSTOM` | the client states amounts, which must add up exactly |
+
+**Every mode divides the same figure** — the outstanding VES balance, echoed
+back as `outstandingVes`. Two bases would mean a client had to know which figure
+each mode picked, which is the arithmetic this endpoint exists to remove from
+the frontend.
+
+Exactness is structural: every mode routes through the largest-remainder
+allocator, whose parts sum to the total by construction, and the engine then
+asserts it and raises rather than return a quietly wrong bill.
+`totalAllocatedVes` is returned so a client can assert the same thing instead of
+trusting it.
+
+`ITEMS` allocates in two stages, both largest-remainder — the balance across the
+lines by subtotal, then each line's result across whoever claimed it. Every line
+must be claimed, because an unclaimed line is money owed by nobody and the parts
+could not sum. `CUSTOM` refuses amounts that do not add up rather than rounding
+them into shape, which would hide a client bug behind a number that looks right.
+
+Participant ids are client-owned and opaque for now. Persisting them is what
+would make the engine authoritative rather than advisory; see
+[Open points](#open-points).
+
+## Guest access
+
+A diner scans a table QR, exchanges it for a session, and reads their bill:
+
+```
+POST   /api/v1/guest/sessions            exchange a signed QR for a session
+GET    /api/v1/guest/bill                the open bill for that table
+POST   /api/v1/guest/bill/split/preview  split it
+DELETE /api/v1/guest/sessions            end the session
+```
+
+**No guest route takes a resource id.** The table comes from the session, which
+came from a signed QR whose nonce is checked against the table row, so a guest
+cannot ask for a bill that is not theirs — there is no identifier to tamper
+with. Rotating a table's nonce invalidates every code already printed for it.
+
+The session is a bearer token held in Redis, and only its SHA-256 is stored, so
+a dump of Redis yields nothing usable. Guests see a deliberately narrower view
+than staff: `dto.guestBill` withholds `restaurantId`, `calculationVersion` and
+the rate provenance, and publishes the rate itself so a client can show an
+approximate menu-currency figure.
 
 ## Money model
 
@@ -485,13 +568,12 @@ yet.
 
 ### Blocking real use
 
-- **No bill line items.** A bill carries a total and nothing else, so a
-  restaurant cannot be told what was ordered, and no screen can offer a
-  per-item split. This is also the prerequisite for any reporting.
-- **The guest loop dead-ends.** A diner can exchange a table QR for a session
-  and then has no endpoint to read the bill it belongs to, because
-  `authenticateGuest` is mounted on no route. Scanning a QR does nothing useful
-  yet, which makes this the shortest path to a demonstrable product.
+- **Split claims are not persisted.** The split engine is advisory: it computes
+  an allocation and returns it. Nothing records that Ana claimed the burger, so
+  two diners can still both pay for it and the second is simply refused by the
+  overpayment ceiling. Participants are client-owned ids today; making them
+  durable is what turns the engine from advisory into authoritative, and it
+  belongs with the guest session it hangs off.
 - **No onboarding.** Restaurants and their first owner are created by
   `npm run seed`. Whether signup is self-service or invite-only is an open
   product decision, and `registerSchema` sitting unused in
@@ -503,18 +585,16 @@ yet.
 
 From the working copy, onto the current model:
 
-- Bill line items. The ground under them is done — migration 008 moved
-  settlement onto `total_due_ves`/`amount_paid_ves`, made `bills.currency` the
-  menu currency (VES/USD/EUR), and snapshots the rate when the bill opens —
-  so `bill_items` with immutable price snapshots is the next PR.
 - Service charge, VAT and tip, rebuilt on `services/money.js` rather than the
-  incoming `Number`/`Math.round` arithmetic.
-- The split engine (FULL, ITEMS, EQUAL, CUSTOM) with participant claim tokens.
+  incoming `Number`/`Math.round` arithmetic. `applyBps` is written and unused,
+  waiting on a product decision about where the rates live — per restaurant, or
+  per bill.
 - POS settlement: HMAC request signing, timestamp and nonce replay protection,
   and an external-reference idempotency key.
 - Guest sessions bound to the current bill. The incoming version moves them from
   Redis into a `guest_sessions` table keyed on `bill_id`; that is a model change,
-  not an addition, and has not been adopted.
+  not an addition, and has not been adopted. It is also the natural home for
+  persisted split claims.
 
 ### Phase 2, not started
 
