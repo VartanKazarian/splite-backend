@@ -74,7 +74,9 @@ const schemas = {
       remaining_ves: minorUnits,
       fx_rate_ves_per_unit: {
         type: ['string', 'null'],
-        description: 'Rate frozen when the bill was opened, so the quoted total cannot move while diners eat.'
+        pattern: '^\\d+\\.\\d{8}$',
+        description: 'VES per unit of menu currency, padded to 8 decimal places. Frozen when the bill was opened.',
+        examples: ['757.54060000']
       },
       fx_rate_source: { type: ['string', 'null'] },
       fx_value_date: { type: ['string', 'null'], format: 'date' },
@@ -159,7 +161,12 @@ const schemas = {
       amountPaid: minorUnits,
       remaining: minorUnits,
       displayCurrency: { type: 'string', enum: ['VES', 'USD', 'EUR'] },
-      fxRate: { type: ['string', 'null'] },
+      fxRate: {
+        type: ['string', 'null'],
+        pattern: '^\\d+\\.\\d{8}$',
+        description: 'VES per unit of display currency, padded to 8 decimal places.',
+        examples: ['757.54060000']
+      },
       fxSource: { type: ['string', 'null'] },
       usdReference: ref('UsdReference')
     }
@@ -361,7 +368,12 @@ const schemas = {
         additionalProperties: {
           type: 'object',
           properties: {
-            rate: { type: 'number', examples: [757.5406] },
+            rate: {
+              type: 'string',
+              pattern: '^\\d+\\.\\d{8}$',
+              description: 'VES per unit, padded to 8 decimal places.',
+              examples: ['757.54060000']
+            },
             valueDate: {
               type: ['string', 'null'],
               format: 'date',
@@ -951,12 +963,34 @@ const document = {
     description: [
       'Bill splitting for Venezuelan restaurants.',
       '',
-      'Settlement is always VES in céntimos. Monetary amounts cross the wire as strings so',
-      'values beyond 2^53 survive JSON. USD is a display reference, never a payment currency.',
+      'Settlement is always VES in céntimos. USD and EUR are display references, never payment currencies.',
+      '',
+      '## Wire format conventions',
+      '',
+      'Every endpoint follows these rules. A frontend that trusts them never needs to guess.',
+      '',
+      '| Kind | JSON type | Format | Example |',
+      '|------|-----------|--------|---------|',
+      '| **Money** (minor units) | `string` | Digit string — no leading zeros except `"0"` | `"9007199254740993"` |',
+      '| **FX rates** | `string` | Decimal, padded to 8 fractional digits | `"757.54060000"` |',
+      '| **IDs** | `string` | UUID v4 | `"d290f1ee-6c54-4b01-90e6-d701748f0851"` |',
+      '| **Timestamps** | `string` | ISO 8601 `date-time` | `"2025-03-05T16:30:00.000Z"` |',
+      '| **Value dates** | `string` | ISO 8601 `date` | `"2025-03-06"` |',
+      '',
+      'Amounts are strings so values beyond 2^53 survive JSON (JavaScript `Number` loses',
+      'precision past `Number.MAX_SAFE_INTEGER`). Rates are strings so every endpoint returns',
+      'the same representation — no `757.5406` from one route and `"757.54060000"` from another.',
       '',
       'Every query is scoped to the caller\'s restaurant. A resource belonging to another tenant',
       'is reported as 404 rather than 403, so an endpoint never confirms that it exists.'
-    ].join('\n')
+    ].join('\n'),
+    'x-wire-format': {
+      money: { type: 'string', pattern: '^[0-9]+$', description: 'Integer minor units (céntimos) as a digit string.' },
+      rate: { type: 'string', pattern: '^\\d+\\.\\d{8}$', description: 'Decimal rate padded to 8 fractional digits.' },
+      id: { type: 'string', format: 'uuid', description: 'UUID v4.' },
+      timestamp: { type: 'string', format: 'date-time', description: 'ISO 8601 date-time.' },
+      valueDate: { type: 'string', format: 'date', description: 'ISO 8601 date (BCV publication date).' }
+    }
   },
   servers: [
     { url: '/', description: 'This server' },

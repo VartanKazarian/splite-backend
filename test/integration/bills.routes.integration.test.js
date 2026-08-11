@@ -391,8 +391,9 @@ describe('bill routes over HTTP', { skip }, () => {
   it('reports every rate in force', async () => {
     const rates = await request('GET', '/api/v1/exchange-rate');
     assert.equal(rates.status, 200, JSON.stringify(rates.body));
-    assert.equal(rates.body.rates.USD.rate, USD_RATE);
-    assert.equal(rates.body.rates.EUR.rate, EUR_RATE);
+    assert.equal(rates.body.rates.USD.rate, '757.54060000');
+    assert.equal(rates.body.rates.EUR.rate, '875.21695680');
+    assert.equal(typeof rates.body.rates.USD.rate, 'string', 'rates cross the wire as strings');
   });
 
   it('scopes every read to the caller\'s restaurant', async () => {
