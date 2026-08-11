@@ -27,7 +27,7 @@ router.get('/', authenticateToken, async (req, res, next) => {
       // BCV publishes USD and EUR on the same page with the same value date; a
       // restaurant may price its menu in either.
       rates: Object.fromEntries(Object.entries(rates).map(([currency, r]) => [currency, {
-        rate: r.rate,
+        rate: Number(r.rate).toFixed(8),
         valueDate: r.valueDate,
         source: r.source,
         fetchedAt: r.fetchedAt instanceof Date ? r.fetchedAt.toISOString() : r.fetchedAt

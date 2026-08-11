@@ -184,6 +184,30 @@ test('every $ref resolves', () => {
   }
 });
 
+test('the wire-format conventions are declared and enforced', () => {
+  const wf = document.info['x-wire-format'];
+  assert.ok(wf, 'x-wire-format extension is missing');
+  for (const key of ['money', 'rate', 'id', 'timestamp', 'valueDate']) {
+    assert.ok(wf[key], `x-wire-format.${key} is missing`);
+  }
+
+  const rateFields = [
+    ['Bill', 'fx_rate_ves_per_unit'],
+    ['PaymentResult', 'fxRate'],
+  ];
+  for (const [schema, field] of rateFields) {
+    const prop = document.components.schemas[schema].properties[field];
+    const types = Array.isArray(prop.type) ? prop.type : [prop.type];
+    assert.ok(types.includes('string'), `${schema}.${field} must be a string, got ${prop.type}`);
+    assert.ok(prop.pattern, `${schema}.${field} needs a pattern to enforce the padded format`);
+  }
+
+  const exchangeRateProp = document.components.schemas.ExchangeRate
+    .properties.rates.additionalProperties.properties.rate;
+  assert.equal(exchangeRateProp.type, 'string', 'ExchangeRate.rate must be a string');
+  assert.ok(exchangeRateProp.pattern, 'ExchangeRate.rate needs a pattern');
+});
+
 test('the document has the structure an OpenAPI 3.1 consumer expects', () => {
   assert.equal(document.openapi, '3.1.0');
   assert.ok(document.info.title);
