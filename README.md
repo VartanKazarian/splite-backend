@@ -1,24 +1,46 @@
-# Splite Backend — Phase 1
+# Splite Backend
 
-Security foundation for Splite, a Venezuela-focused bill-splitting API.
+A Venezuela-focused bill-splitting API. Settlement is always in bolívares;
+menus may be priced in VES, USD or EUR, and the rate is frozen when a bill
+opens so a diner's total cannot move while they eat.
 
-## What Phase 1 covers
+## What is built
+
+**Security foundation**
 
 - Express API with hardened headers, strict CORS and per-request correlation ids
 - PostgreSQL schema managed through versioned, transactional migrations
 - Multi-tenant restaurant / user / table / bill model, tenant-scoped on every query
 - Argon2id password hashing with constant-time failure paths
 - Short-lived access JWTs plus rotating refresh sessions with reuse detection
-- Redis-backed session mirror and rate limiting (fail-closed on the auth surface)
+- Redis-backed rate limiting, fail-closed on the auth surface
 - RBAC: `OWNER`, `MANAGER`, `CASHIER`, `WAITER`
 - Signed, expiring, rotatable QR tokens; hashed guest session tokens
+- Audit logging with actor, tenant, IP and request id
+
+**Money**
+
 - VES-only settlement with exact BigInt arithmetic and largest-remainder splits
-- Menus priced in VES, USD or EUR; the settlement rate frozen when the bill opens, never guessed
+- Menus priced in VES, USD or EUR, at the BCV rate in force, never guessed
+- Append-only payment ledger with a database-enforced state machine
 - Payment concurrency control via `SELECT ... FOR UPDATE`
 - Idempotency keys on money-moving endpoints
-- Audit logging with actor, tenant, IP and request id
+
+**Contract**
+
+- OpenAPI 3.1 document, committed as `openapi.json` and enforced by tests
+- camelCase on the wire, snake_case in the database, crossed in exactly one place
+- One error envelope for every failure, with codes clients branch on
+
+**Operations**
+
 - Multi-stage Docker image running as a non-root user; hardened Compose stack
-- CI: syntax check, unit tests, dependency audit, invisible-character guard, image build
+- Railway deployment config, with migrations as a pre-deploy step
+- CI: syntax check, OpenAPI drift check, unit tests, dependency audit,
+  invisible-character guard, image build
+
+Not yet built: bill line items, the split engine, guest-facing bill reads, and
+a payment provider. See [Open points](#open-points).
 
 ## Local development
 
@@ -27,19 +49,31 @@ cp .env.example .env
 npm install
 docker compose up -d db redis
 npm run migrate
-npm run seed
+SEED_OWNER_EMAIL=owner@example.com SEED_OWNER_PASSWORD=a-long-dev-password npm run seed
 npm test
 npm start
 ```
 
-Generate real secrets before deploying anywhere:
+Without Docker, `npm run db:local` starts a user-space PostgreSQL and Redis on
+non-default ports — no daemon, no `sudo` — and `npm run test:integration:local`
+runs the integration suite against them. `npm run db:local:stop` shuts them down.
+
+The integration tests skip unless `RUN_INTEGRATION=1` and a live database are
+present, so `npm test` stays fast and offline.
+
+Generate production secrets with:
 
 ```bash
-node -e "console.log(require('crypto').randomBytes(48).toString('base64url'))"
+npm run secrets
 ```
 
-The app refuses to start in production with missing, short, duplicated or
-placeholder secrets.
+It prints four 512-bit values and writes nothing to disk. The app refuses to
+start in production with missing, short, duplicated or placeholder secrets.
+
+The seed's email is validated against the same rule `/auth/login` uses, because
+they used to disagree: Joi checks the TLD against the IANA list, so a plausible
+address like `owner@splite.test` seeded happily and was then refused at every
+sign-in — which reads as a broken password rather than a rejected address.
 
 ## API
 
@@ -47,7 +81,8 @@ The API is described by an **OpenAPI 3.1 document**, which is the contract:
 
 | | |
 | --- | --- |
-| `GET /openapi.json` | the machine-readable document |
+| `openapi.json` | committed at the repository root, so a client can be generated without the API running |
+| `GET /openapi.json` | the same document, served live |
 | `GET /docs` | Swagger UI |
 
 `test/openapi.test.js` fails the build if a mounted route is missing from the
@@ -62,8 +97,12 @@ documented for several commits while the router was not mounted at all, and
 `GET /api/v1/tables` returned 404. Two hand-maintained lists disagree eventually;
 one generated contract with a test behind it does not.
 
-Set `DOCS_ENABLED=false` to withhold both endpoints and distribute
-`openapi.json` out of band instead.
+`npm run openapi:check` fails if the committed `openapi.json` has drifted from
+the code, so the artifact a frontend generates from cannot fall behind the API
+it describes. Regenerate it with `npm run openapi:dump`.
+
+Set `DOCS_ENABLED=false` to withhold both served endpoints; the committed file
+is unaffected.
 
 Monetary amounts cross the wire as **strings**, because a JSON number has
 already lost precision past 2^53 by the time it arrives. Payments accept an
@@ -434,6 +473,8 @@ schema. The live document is also served at `/openapi.json`, with Swagger UI at
 3. Set `CORS_ORIGINS` to your exact frontend origins. Wildcards are rejected in production.
 4. Set `TRUST_PROXY` to the number of proxy hops in front of the API, otherwise `req.ip` — and with it rate limiting and audit records — is attacker-controlled.
 5. Run `npm run migrate` as a controlled deployment step, not on process boot.
+   On Railway that is `railway.json`'s `preDeployCommand`, which runs before the
+   new version takes traffic; elsewhere it is a release command or a manual step.
 6. Commit `package-lock.json`; the image build and CI both depend on it for reproducibility.
 
 ## Open points
@@ -444,17 +485,19 @@ yet.
 
 ### Blocking real use
 
-- **No payments ledger.** `bills.amount_paid` is an aggregate counter. There is
-  no `payments` table, so there is no record of who paid what, when, under which
-  idempotency key, or against which provider reference — and therefore no
-  reconciliation, refunds, or dispute trail. A provider webhook has nothing to
-  map an external payment id onto, so this blocks the webhook work below.
 - **No bill line items.** A bill carries a total and nothing else, so a
-  restaurant cannot be told what was ordered. This is also the prerequisite for
-  any reporting.
+  restaurant cannot be told what was ordered, and no screen can offer a
+  per-item split. This is also the prerequisite for any reporting.
+- **The guest loop dead-ends.** A diner can exchange a table QR for a session
+  and then has no endpoint to read the bill it belongs to, because
+  `authenticateGuest` is mounted on no route. Scanning a QR does nothing useful
+  yet, which makes this the shortest path to a demonstrable product.
 - **No onboarding.** Restaurants and their first owner are created by
   `npm run seed`. Whether signup is self-service or invite-only is an open
-  product decision.
+  product decision, and `registerSchema` sitting unused in
+  `middleware/schemas.js` is that decision in disguise.
+- **No payment provider.** Money is recorded, never actually moved: every
+  payment is entered by staff. See the webhook item below.
 
 ### Port still outstanding
 
@@ -477,11 +520,10 @@ From the working copy, onto the current model:
 
 - **Webhook route wiring.** `src/middleware/webhookSignature.js` is complete —
   HMAC over the raw body, a two-sided timestamp window, Redis-backed replay
-  protection that fails closed — but it is not mounted on any route. It needs the
-  payments ledger first, so a callback has something to reconcile against.
-- **Guest-facing bill read.** `authenticateGuest` exists in
-  `services/guest.js` and is never mounted. Guests can obtain a session from a
-  table QR but cannot yet read the bill it belongs to.
+  protection that fails closed — but it is not mounted on any route. Its
+  blocker is gone: migration 007 added the ledger, so a callback now has
+  `payments.provider_payment_id` to reconcile against. What remains is choosing
+  a Venezuelan rail and writing the route.
 - **Staff account lockout.** The rate limiter is per-IP, not per-account, so
   distributed attempts against one account are not slowed. MFA for staff logins
   is also unstarted.
