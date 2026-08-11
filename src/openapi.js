@@ -1,4 +1,5 @@
 const config = require('./config');
+const { CODES, DETAILS } = require('./errors');
 
 /**
  * OpenAPI 3.1 description of the API.
@@ -25,65 +26,102 @@ const minorUnits = {
 };
 
 const schemas = {
+  // Every failure in the API is this object and nothing else. `error` used to
+  // be a string on some routes, `{ message, requestId }` on others and an array
+  // of validation strings on a third set, with `code` and `billId` as siblings
+  // rather than inside it -- so a client could not destructure a failure without
+  // first knowing which route produced it.
   Error: {
     type: 'object',
     required: ['error'],
     properties: {
       error: {
-        oneOf: [
-          { type: 'string' },
-          {
+        type: 'object',
+        required: ['code', 'message', 'details', 'requestId'],
+        properties: {
+          code: {
+            type: 'string',
+            enum: Object.keys(CODES),
+            description:
+              'Stable identifier for what went wrong. Branch on this, never on `message`. A code always carries the same HTTP status.'
+          },
+          message: {
+            type: 'string',
+            description:
+              'Human-readable and subject to change without notice. Never parse it. 5xx messages are always the literal string "Internal Server Error".'
+          },
+          details: {
             type: 'object',
-            properties: {
-              message: { type: 'string' },
-              requestId: { type: 'string' }
-            }
+            additionalProperties: true,
+            description:
+              'Structured context for this code, always present and possibly empty. See x-error-details for what each code carries.'
+          },
+          requestId: {
+            type: 'string',
+            description: 'Correlates with the server log line for this failure. Quote it in bug reports.'
           }
-        ]
-      },
-      code: { type: 'string', description: 'Stable machine-readable code, where one applies.' }
+        }
+      }
     }
   },
 
+  // Kept as a distinct name because a validation failure is the one error with
+  // a documented `details` payload clients routinely render field by field.
   ValidationError: {
-    type: 'object',
-    required: ['error'],
-    properties: {
-      error: {
-        type: 'array',
-        items: { type: 'string' },
-        description: 'One entry per failed field.'
+    allOf: [
+      ref('Error'),
+      {
+        type: 'object',
+        description: 'code is always VALIDATION_FAILED; details.fields carries one entry per failed field.',
+        properties: {
+          error: {
+            type: 'object',
+            properties: {
+              details: {
+                type: 'object',
+                properties: {
+                  fields: { type: 'array', items: { type: 'string' } }
+                }
+              }
+            }
+          }
+        }
       }
-    }
+    ]
   },
 
   Bill: {
     type: 'object',
     properties: {
       id: { type: 'string', format: 'uuid' },
-      restaurant_id: { type: 'string', format: 'uuid' },
-      table_id: { type: 'string', format: 'uuid' },
+      restaurantId: { type: 'string', format: 'uuid' },
+      tableId: { type: 'string', format: 'uuid' },
       status: { type: 'string', enum: ['OPEN', 'CLOSED', 'VOID'] },
-      total_due: { ...minorUnits, description: 'Subtotal in the menu currency, for display.' },
+      totalDue: { ...minorUnits, description: 'Subtotal in the menu currency, for display.' },
       currency: {
         type: 'string', enum: ['VES', 'USD', 'EUR'],
         description: 'The currency the menu quoted. Settlement is always VES.'
       },
-      total_due_ves: { ...minorUnits, description: 'Authoritative amount to settle.' },
-      amount_paid_ves: { ...minorUnits, description: 'Authoritative amount settled so far.' },
-      remaining_ves: minorUnits,
-      fx_rate_ves_per_unit: {
+      totalDueVes: { ...minorUnits, description: 'Authoritative amount to settle.' },
+      amountPaidVes: { ...minorUnits, description: 'Authoritative amount settled so far.' },
+      remainingVes: minorUnits,
+      fxRateVesPerUnit: {
         type: ['string', 'null'],
         pattern: '^\\d+\\.\\d{8}$',
         description: 'VES per unit of menu currency, padded to 8 decimal places. Frozen when the bill was opened.',
         examples: ['757.54060000']
       },
-      fx_rate_source: { type: ['string', 'null'] },
-      fx_value_date: { type: ['string', 'null'], format: 'date' },
-      calculation_version: { type: 'integer' },
+      fxRateSource: { type: ['string', 'null'] },
+      fxValueDate: {
+        type: ['string', 'null'],
+        format: 'date',
+        description: 'Calendar date only. Never a timestamp: a zone offset here can shift the BCV value date by a day.',
+        examples: ['2025-03-06']
+      },
+      calculationVersion: { type: 'integer' },
       usdReference: ref('UsdReference'),
-      created_at: { type: 'string', format: 'date-time' },
-      updated_at: { type: 'string', format: 'date-time' }
+      createdAt: { type: 'string', format: 'date-time' },
+      updatedAt: { type: 'string', format: 'date-time' }
     }
   },
 
@@ -191,10 +229,10 @@ const schemas = {
     type: 'object',
     properties: {
       id: { type: 'string', format: 'uuid' },
-      restaurant_id: { type: 'string', format: 'uuid' },
+      restaurantId: { type: 'string', format: 'uuid' },
       name: { type: 'string' },
       active: { type: 'boolean' },
-      created_at: { type: 'string', format: 'date-time' }
+      createdAt: { type: 'string', format: 'date-time' }
     }
   },
 
@@ -231,8 +269,22 @@ const schemas = {
       priceMinorUnits: minorUnits,
       currency: { type: 'string', enum: ['VES', 'USD', 'EUR'] },
       active: { type: 'boolean' },
-      created_at: { type: 'string', format: 'date-time' },
-      updated_at: { type: 'string', format: 'date-time' }
+      createdAt: { type: 'string', format: 'date-time' },
+      updatedAt: { type: 'string', format: 'date-time' }
+    }
+  },
+
+  // What a guest scanning a QR is shown: what a thing is and what it costs.
+  // Inactive products are not listed, so `active` would always be true, and
+  // edit timestamps are operational detail no diner needs.
+  PublicProduct: {
+    type: 'object',
+    properties: {
+      id: { type: 'string', format: 'uuid' },
+      name: { type: 'string' },
+      description: { type: ['string', 'null'] },
+      priceMinorUnits: minorUnits,
+      currency: { type: 'string', enum: ['VES', 'USD', 'EUR'] }
     }
   },
 
@@ -271,15 +323,8 @@ const schemas = {
   PublicMenu: {
     type: 'object',
     properties: {
-      restaurant: {
-        type: 'object',
-        properties: {
-          id: { type: 'string', format: 'uuid' },
-          name: { type: 'string' },
-          menuCurrency: { type: 'string', enum: ['VES', 'USD', 'EUR'] }
-        }
-      },
-      products: { type: 'array', items: ref('Product') }
+      restaurant: ref('MenuSettings'),
+      products: { type: 'array', items: ref('PublicProduct') }
     }
   },
 
@@ -984,6 +1029,7 @@ const document = {
       'Every query is scoped to the caller\'s restaurant. A resource belonging to another tenant',
       'is reported as 404 rather than 403, so an endpoint never confirms that it exists.'
     ].join('\n'),
+    'x-error-details': DETAILS,
     'x-wire-format': {
       money: { type: 'string', pattern: '^[0-9]+$', description: 'Integer minor units (céntimos) as a digit string.' },
       rate: { type: 'string', pattern: '^\\d+\\.\\d{8}$', description: 'Decimal rate padded to 8 fractional digits.' },

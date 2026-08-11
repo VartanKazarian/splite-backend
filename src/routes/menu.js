@@ -13,11 +13,12 @@ const {
   restaurantIdParamSchema
 } = require('../middleware/schemas');
 const { logAudit, auditContext } = require('../services/audit');
+const dto = require('../dto');
+const { ApiError } = require('../errors');
 
 const router = express.Router();
 
-const PRODUCT_COLUMNS = `id, name, description,
-                         price_minor_units AS "priceMinorUnits",
+const PRODUCT_COLUMNS = `id, name, description, price_minor_units,
                          currency, active, created_at, updated_at`;
 
 /**
@@ -33,20 +34,20 @@ router.get(
   async (req, res, next) => {
     try {
       const restaurant = await db.query(
-        'SELECT id, name, menu_currency AS "menuCurrency" FROM restaurants WHERE id = $1 AND active = true',
+        'SELECT id, name, menu_currency FROM restaurants WHERE id = $1 AND active = true',
         [req.params.restaurantId]
       );
-      if (!restaurant.rows.length) return res.status(404).json({ error: 'Restaurant not found' });
+      if (!restaurant.rows.length) throw new ApiError('RESTAURANT_NOT_FOUND', 'Restaurant not found');
 
       const { rows } = await db.query(
-        `SELECT id, name, description, price_minor_units AS "priceMinorUnits", currency
+        `SELECT id, name, description, price_minor_units, currency
            FROM menu_products
           WHERE restaurant_id = $1 AND active = true
           ORDER BY name`,
         [req.params.restaurantId]
       );
 
-      res.json({ restaurant: restaurant.rows[0], products: rows });
+      res.json({ restaurant: dto.menuSettings(restaurant.rows[0]), products: rows.map(dto.publicProduct) });
     } catch (err) { next(err); }
   }
 );
@@ -57,11 +58,11 @@ router.use(authenticateToken);
 router.get('/settings', async (req, res, next) => {
   try {
     const { rows } = await db.query(
-      'SELECT id, name, menu_currency AS "menuCurrency" FROM restaurants WHERE id = $1',
+      'SELECT id, name, menu_currency FROM restaurants WHERE id = $1',
       [req.user.restaurantId]
     );
-    if (!rows.length) return res.status(404).json({ error: 'Restaurant not found' });
-    res.json(rows[0]);
+    if (!rows.length) throw new ApiError('RESTAURANT_NOT_FOUND', 'Restaurant not found');
+    res.json(dto.menuSettings(rows[0]));
   } catch (err) { next(err); }
 });
 
@@ -84,18 +85,18 @@ router.patch(
         [req.user.restaurantId, req.body.currency]
       );
       if (mismatch.rows[0].n > 0) {
-        return res.status(409).json({
-          error: 'Active menu contains products priced in another currency. Update or deactivate them first.',
-          code: 'MENU_CURRENCY_MISMATCH',
-          activeProductsInOtherCurrency: mismatch.rows[0].n
-        });
+        throw new ApiError(
+          'MENU_CURRENCY_MISMATCH',
+          'Active menu contains products priced in another currency. Update or deactivate them first.',
+          { activeProductsInOtherCurrency: mismatch.rows[0].n }
+        );
       }
 
       const { rows } = await db.query(
-        'UPDATE restaurants SET menu_currency = $1 WHERE id = $2 RETURNING id, menu_currency AS "menuCurrency"',
+        'UPDATE restaurants SET menu_currency = $1 WHERE id = $2 RETURNING id, name, menu_currency',
         [req.body.currency, req.user.restaurantId]
       );
-      if (!rows.length) return res.status(404).json({ error: 'Restaurant not found' });
+      if (!rows.length) throw new ApiError('RESTAURANT_NOT_FOUND', 'Restaurant not found');
 
       await logAudit({
         ...auditContext(req),
@@ -105,7 +106,7 @@ router.patch(
         details: { currency: req.body.currency }
       });
 
-      res.json(rows[0]);
+      res.json(dto.menuSettings(rows[0]));
     } catch (err) { next(err); }
   }
 );
@@ -128,7 +129,7 @@ router.get('/products', validateQuery(listProductsQuerySchema), async (req, res,
       params
     );
 
-    res.json({ data: rows, limit: req.query.limit, offset: req.query.offset });
+    res.json({ data: rows.map(dto.product), limit: req.query.limit, offset: req.query.offset });
   } catch (err) { next(err); }
 });
 
@@ -144,7 +145,7 @@ router.post(
         'SELECT menu_currency FROM restaurants WHERE id = $1',
         [req.user.restaurantId]
       );
-      if (!restaurant.rows.length) return res.status(404).json({ error: 'Restaurant not found' });
+      if (!restaurant.rows.length) throw new ApiError('RESTAURANT_NOT_FOUND', 'Restaurant not found');
 
       const { rows } = await db.query(
         `INSERT INTO menu_products (restaurant_id, name, description, price_minor_units, currency, active)
@@ -168,10 +169,10 @@ router.post(
         details: { name: rows[0].name, currency: rows[0].currency }
       });
 
-      res.status(201).json(rows[0]);
+      res.status(201).json(dto.product(rows[0]));
     } catch (err) {
       if (err.code === '23505') {
-        return res.status(409).json({ error: 'A product with that name already exists' });
+        return next(new ApiError('PRODUCT_NAME_TAKEN', 'A product with that name already exists'));
       }
       next(err);
     }
@@ -204,7 +205,7 @@ router.patch(
           req.user.restaurantId
         ]
       );
-      if (!rows.length) return res.status(404).json({ error: 'Product not found' });
+      if (!rows.length) throw new ApiError('PRODUCT_NOT_FOUND', 'Product not found');
 
       await logAudit({
         ...auditContext(req),
@@ -213,10 +214,10 @@ router.patch(
         resourceId: rows[0].id
       });
 
-      res.json(rows[0]);
+      res.json(dto.product(rows[0]));
     } catch (err) {
       if (err.code === '23505') {
-        return res.status(409).json({ error: 'A product with that name already exists' });
+        return next(new ApiError('PRODUCT_NAME_TAKEN', 'A product with that name already exists'));
       }
       next(err);
     }
@@ -234,7 +235,7 @@ router.delete(
         'UPDATE menu_products SET active = false WHERE id = $1 AND restaurant_id = $2 RETURNING id',
         [req.params.id, req.user.restaurantId]
       );
-      if (!rows.length) return res.status(404).json({ error: 'Product not found' });
+      if (!rows.length) throw new ApiError('PRODUCT_NOT_FOUND', 'Product not found');
 
       await logAudit({
         ...auditContext(req),

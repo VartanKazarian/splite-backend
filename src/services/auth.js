@@ -1,4 +1,5 @@
 const crypto = require('crypto');
+const { ApiError } = require('../errors');
 const argon2 = require('argon2');
 const db = require('../connectors/base');
 const { redis } = require('../connectors/redis');
@@ -21,9 +22,7 @@ function decoyHash() {
 }
 
 function unauthorized(message = 'Invalid credentials') {
-  const error = new Error(message);
-  error.statusCode = 401;
-  return error;
+  return new ApiError('INVALID_CREDENTIALS', message);
 }
 
 function hashPassword(password) {

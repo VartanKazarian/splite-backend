@@ -13,6 +13,7 @@ const openapi = require('./openapi');
 const { logger } = require('./connectors/logger');
 const rateLimit = require('./middleware/rateLimit');
 const errorHandler = require('./middleware/errorHandler');
+const { ApiError } = require('./errors');
 const authRoutes = require('./routes/auth');
 const guestRoutes = require('./routes/guest');
 const billRoutes = require('./routes/bills');
@@ -40,9 +41,7 @@ app.use(cors({
   origin(origin, callback) {
     // No Origin header: server-to-server, curl, mobile clients.
     if (!origin || config.corsOrigins.includes(origin)) return callback(null, true);
-    const error = new Error('CORS origin not allowed');
-    error.statusCode = 403;
-    return callback(error);
+    return callback(new ApiError('CORS_ORIGIN_NOT_ALLOWED', 'CORS origin not allowed'));
   },
   credentials: true,
   methods: ['GET', 'POST', 'PATCH', 'DELETE', 'OPTIONS'],
@@ -135,7 +134,7 @@ app.use('/api/v1/exchange-rate', exchangeRateRoutes);
 // so it relies on the app-level limiter above.
 app.use('/api/v1/menu', menuRoutes);
 
-app.use((req, res) => res.status(404).json({ error: 'Not found' }));
+app.use((req, res, next) => next(new ApiError('NOT_FOUND', 'Not found')));
 app.use(errorHandler);
 
 module.exports = app;

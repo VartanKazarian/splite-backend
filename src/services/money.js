@@ -16,6 +16,8 @@
  * monetary value.
  */
 
+const { ApiError } = require('../errors');
+
 const RATE_SCALE_DECIMALS = 8;
 const RATE_SCALE = 10n ** BigInt(RATE_SCALE_DECIMALS);
 
@@ -24,10 +26,12 @@ const RATE_SCALE = 10n ** BigInt(RATE_SCALE_DECIMALS);
 const BIGINT_MAX = 9223372036854775807n;
 const BIGINT_MIN = -9223372036854775808n;
 
+// 400 means the caller sent an unusable amount; 503 means we could not obtain
+// a usable rate, which is not their fault.
 function invalid(message, statusCode = 400) {
-  const error = new Error(message);
-  error.statusCode = statusCode;
-  return error;
+  return statusCode === 503
+    ? new ApiError('FX_UNAVAILABLE', message)
+    : new ApiError('INVALID_MONETARY_VALUE', message);
 }
 
 /** Accepts a BigInt, an integer Number, or a digit string. */

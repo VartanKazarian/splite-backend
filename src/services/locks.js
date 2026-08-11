@@ -1,4 +1,5 @@
 const db = require('../connectors/base');
+const { ApiError } = require('../errors');
 const { usdReference } = require('./split');
 const config = require('../config');
 const { recordPayment } = require('./payments');
@@ -69,9 +70,7 @@ async function processSplitPayment({
 }) {
   const amount = toPaymentAmount(amountPaidMinorUnits);
   if (amount === null) {
-    const error = new Error('Invalid payment amount');
-    error.statusCode = 400;
-    throw error;
+    throw new ApiError('INVALID_AMOUNT', 'Invalid payment amount');
   }
 
   // The payment path runs on its own statement budget: several diners paying the
@@ -90,14 +89,14 @@ async function processSplitPayment({
 
     const bill = rows[0];
     if (!bill) {
-      const error = new Error('Bill not found');
-      error.statusCode = 404;
-      throw error;
+      throw new ApiError('BILL_NOT_FOUND', 'Bill not found');
     }
     if (bill.status !== 'OPEN') {
-      const error = new Error(bill.status === 'CLOSED' ? 'Bill is already fully paid' : 'Bill is not open');
-      error.statusCode = 409;
-      throw error;
+      throw new ApiError(
+        'BILL_NOT_OPEN',
+        bill.status === 'CLOSED' ? 'Bill is already fully paid' : 'Bill is not open',
+        { status: bill.status }
+      );
     }
 
     // BIGINT arrives from pg as a string; BigInt keeps the arithmetic exact for
@@ -105,9 +104,9 @@ async function processSplitPayment({
     const totalDue = BigInt(bill.total_due_ves);
     const newAmountPaid = BigInt(bill.amount_paid_ves) + amount;
     if (newAmountPaid > totalDue) {
-      const error = new Error('Payment exceeds remaining bill balance');
-      error.statusCode = 409;
-      throw error;
+      throw new ApiError('PAYMENT_EXCEEDS_BALANCE', 'Payment exceeds remaining bill balance', {
+        remainingVes: (totalDue - BigInt(bill.amount_paid_ves)).toString()
+      });
     }
 
     const newStatus = newAmountPaid === totalDue ? 'CLOSED' : 'OPEN';

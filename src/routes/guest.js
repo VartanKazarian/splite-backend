@@ -6,6 +6,7 @@ const { authenticateToken, requireRole } = require('../middleware/auth');
 const { validateBody, validateParams, guestSessionSchema, tableIdParamSchema } = require('../middleware/schemas');
 const { createGuestSession } = require('../services/guest');
 const { logAudit, auditContext } = require('../services/audit');
+const { ApiError } = require('../errors');
 
 const router = express.Router();
 
@@ -26,7 +27,7 @@ router.get(
         [req.params.tableId, req.user.restaurantId]
       );
       const table = rows[0];
-      if (!table) return res.status(404).json({ error: 'Table not found' });
+      if (!table) throw new ApiError('TABLE_NOT_FOUND', 'Table not found');
 
       const now = Math.floor(Date.now() / 1000);
       const token = signQrPayload({
@@ -64,7 +65,7 @@ router.post(
         'UPDATE tables SET qr_nonce = gen_random_uuid() WHERE id = $1 AND restaurant_id = $2 RETURNING id',
         [req.params.tableId, req.user.restaurantId]
       );
-      if (!rows.length) return res.status(404).json({ error: 'Table not found' });
+      if (!rows.length) throw new ApiError('TABLE_NOT_FOUND', 'Table not found');
       await logAudit({ ...auditContext(req), action: 'QR_ROTATED', resourceType: 'table', resourceId: rows[0].id });
       res.status(204).end();
     } catch (err) { next(err); }
@@ -78,7 +79,7 @@ router.post('/sessions', validateBody(guestSessionSchema), async (req, res, next
     try {
       payload = verifyQrToken(req.body.qrToken);
     } catch {
-      return res.status(401).json({ error: 'Invalid table QR' });
+      throw new ApiError('QR_INVALID', 'Invalid table QR');
     }
 
     const { rows } = await db.query(
@@ -88,7 +89,7 @@ router.post('/sessions', validateBody(guestSessionSchema), async (req, res, next
     const table = rows[0];
     // Nonce check makes a reprinted/rotated QR immediately unusable.
     if (!table || !table.active || String(table.qr_nonce) !== String(payload.nonce)) {
-      return res.status(401).json({ error: 'Invalid table QR' });
+      throw new ApiError('QR_INVALID', 'Invalid table QR');
     }
 
     const session = await createGuestSession({

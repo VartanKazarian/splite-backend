@@ -1,4 +1,5 @@
 const crypto = require('crypto');
+const { ApiError } = require('../errors');
 const { redis } = require('../connectors/redis');
 const config = require('../config');
 const { hashToken, safeEqual } = require('../utils/tokens');
@@ -53,11 +54,11 @@ function authenticateGuest(req, res, next) {
   const sessionId = req.get('x-guest-session');
   const [scheme, token] = (req.get('authorization') || '').split(' ');
   if (scheme !== 'Bearer' || !token || !sessionId) {
-    return res.status(401).json({ error: 'Guest session missing' });
+    return next(new ApiError('GUEST_SESSION_MISSING', 'Guest session missing'));
   }
   resolveGuestSession(sessionId, token)
     .then(session => {
-      if (!session) return res.status(401).json({ error: 'Invalid or expired guest session' });
+      if (!session) return next(new ApiError('GUEST_SESSION_INVALID', 'Invalid or expired guest session'));
       req.guest = session;
       next();
     })

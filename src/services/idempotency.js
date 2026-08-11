@@ -1,4 +1,5 @@
 const crypto = require('crypto');
+const { ApiError } = require('../errors');
 const db = require('../connectors/base');
 
 /**
@@ -16,11 +17,7 @@ function requestHash(req) {
     .digest('hex');
 }
 
-function conflict(message) {
-  const error = new Error(message);
-  error.statusCode = 409;
-  return error;
-}
+
 
 async function begin({ restaurantId, userId, key, hash }) {
   // Expired claims are cleared first, otherwise an abandoned in-flight key
@@ -46,9 +43,11 @@ async function begin({ restaurantId, userId, key, hash }) {
   const row = existing.rows[0];
   if (!row) return { owner: true };
 
-  if (row.request_hash !== hash) throw conflict('Idempotency key reused with a different request payload');
+  if (row.request_hash !== hash) {
+    throw new ApiError('IDEMPOTENCY_KEY_REUSED', 'Idempotency key reused with a different request payload');
+  }
   if (row.response_status) return { owner: false, response: { status: row.response_status, body: row.response_body } };
-  throw conflict('A request with this idempotency key is already in progress');
+  throw new ApiError('IDEMPOTENCY_IN_FLIGHT', 'A request with this idempotency key is already in progress');
 }
 
 async function complete({ restaurantId, key, status, body }) {

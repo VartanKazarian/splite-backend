@@ -147,12 +147,12 @@ test('settlement is documented as VES only', () => {
   // A bill inherits the restaurant's menu currency, so the client does not
   // choose one; the settlement column is what carries VES.
   assert.equal(document.components.schemas.CreateBillRequest.properties.currency, undefined);
-  assert.ok(document.components.schemas.Bill.properties.total_due_ves);
+  assert.ok(document.components.schemas.Bill.properties.totalDueVes);
 });
 
 test('monetary amounts are documented as strings, not numbers', () => {
   // A JSON number has already lost precision past 2^53 by the time it arrives.
-  for (const field of ['total_due', 'total_due_ves', 'amount_paid_ves', 'remaining_ves']) {
+  for (const field of ['totalDue', 'totalDueVes', 'amountPaidVes', 'remainingVes']) {
     assert.equal(document.components.schemas.Bill.properties[field].type, 'string', `Bill.${field}`);
   }
   assert.equal(document.components.schemas.PaymentResult.properties.amountPaid.type, 'string');
@@ -184,6 +184,108 @@ test('every $ref resolves', () => {
   }
 });
 
+test('every failure is the same envelope', () => {
+  const { CODES } = require('../src/errors');
+  const envelope = document.components.schemas.Error.properties.error;
+
+  // `error` used to be a string on some routes and an object on others, so the
+  // schema carried a oneOf and a client could not destructure a failure
+  // without first knowing which route produced it.
+  assert.equal(envelope.type, 'object', 'error must be an object, not a string or an array');
+  assert.equal(document.components.schemas.Error.properties.error.oneOf, undefined,
+    'a oneOf here means the client still has to branch on shape');
+
+  assert.deepEqual(envelope.required, ['code', 'message', 'details', 'requestId'],
+    'all four fields are always present, so none is optional to the client');
+
+  // Codes are enumerated from the registry, so a client can switch
+  // exhaustively and a generator can emit a union type.
+  assert.deepEqual(envelope.properties.code.enum, Object.keys(CODES));
+  assert.ok(envelope.properties.code.enum.length > 20, 'expected the full registry, not a sample');
+});
+
+test('the error codes a client branches on are published', () => {
+  const { CODES, DETAILS } = require('../src/errors');
+  assert.deepEqual(document.info['x-error-details'], DETAILS,
+    'x-error-details must be the registry itself, not a hand-copied duplicate');
+
+  const codes = document.components.schemas.Error.properties.error.properties.code.enum;
+  for (const code of Object.keys(DETAILS)) {
+    assert.ok(codes.includes(code), `${code} documents details but is not a published code`);
+  }
+  assert.equal(codes.length, Object.keys(CODES).length);
+});
+
+test('no operation documents an error status the envelope cannot express', () => {
+  // Every error response must point at Error or ValidationError. A route that
+  // invents its own error schema is how the four shapes appeared originally.
+  const offenders = [];
+  for (const [name, op] of operations()) {
+    for (const [status, res] of Object.entries(op.responses)) {
+      if (Number(status) < 400) continue;
+      const schema = res.content?.['application/json']?.schema;
+      if (!schema) continue; // a $ref to a shared response, checked below
+      const target = schema.$ref || '';
+      if (!target.endsWith('/Error') && !target.endsWith('/ValidationError')) {
+        offenders.push(`${name} ${status}`);
+      }
+    }
+  }
+  assert.deepEqual(offenders, [], 'these responses do not use the standard error envelope');
+});
+
+test('every shared error response uses the envelope', () => {
+  for (const [name, res] of Object.entries(document.components.responses)) {
+    const schema = res.content?.['application/json']?.schema;
+    assert.ok(schema, `${name} has no schema`);
+    const target = schema.$ref || '';
+    assert.ok(
+      target.endsWith('/Error') || target.endsWith('/ValidationError'),
+      `${name} does not use the standard error envelope`
+    );
+  }
+});
+
+test('every documented field is camelCase', () => {
+  // PostgreSQL is snake_case and the public API is camelCase, and src/dto.js is
+  // the only place allowed to cross between them. Before that boundary existed
+  // the API spoke three conventions at once: raw rows from bills, SQL aliases
+  // from menu, hand-built objects from payments — a single Bill carried
+  // `total_due_ves` and `usdReference` side by side. This fails if any of that
+  // comes back.
+  const offenders = [];
+  const walk = (node, path) => {
+    if (Array.isArray(node)) return node.forEach((item, i) => walk(item, `${path}[${i}]`));
+    if (!node || typeof node !== 'object') return;
+    for (const [key, value] of Object.entries(node)) {
+      if (key === 'properties' && value && typeof value === 'object') {
+        for (const field of Object.keys(value)) {
+          if (field.includes('_')) offenders.push(`${path}.${field}`);
+        }
+      }
+      walk(value, `${path}.${key}`);
+    }
+  };
+  walk(document.components.schemas, 'schemas');
+  walk(document.paths, 'paths');
+
+  assert.deepEqual(offenders, [], 'these fields leak the database naming convention onto the wire');
+});
+
+test('a date-only field is not documented as a timestamp', () => {
+  // node-pg parses a DATE column into a JS Date at local midnight, so the
+  // default serialisation carries a zone offset: "2025-03-06T04:00:00.000Z"
+  // here, "...T00:00:00.000Z" on a UTC host. A client formatting that locally
+  // can land a day early, and for a BCV value date that selects a different
+  // published rate.
+  const valueDate = document.components.schemas.Bill.properties.fxValueDate;
+  assert.equal(valueDate.format, 'date', 'fxValueDate is a calendar date, not an instant');
+
+  const rateValueDate = document.components.schemas.ExchangeRate
+    .properties.rates.additionalProperties.properties.valueDate;
+  assert.equal(rateValueDate.format, 'date');
+});
+
 test('the wire-format conventions are declared and enforced', () => {
   const wf = document.info['x-wire-format'];
   assert.ok(wf, 'x-wire-format extension is missing');
@@ -192,7 +294,7 @@ test('the wire-format conventions are declared and enforced', () => {
   }
 
   const rateFields = [
-    ['Bill', 'fx_rate_ves_per_unit'],
+    ['Bill', 'fxRateVesPerUnit'],
     ['PaymentResult', 'fxRate'],
   ];
   for (const [schema, field] of rateFields) {

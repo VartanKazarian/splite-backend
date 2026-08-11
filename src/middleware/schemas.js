@@ -1,4 +1,5 @@
 const Joi = require('joi');
+const { ApiError } = require('../errors');
 
 const uuid = Joi.string().uuid({ version: 'uuidv4' });
 
@@ -133,7 +134,14 @@ const restaurantIdParamSchema = Joi.object({ restaurantId: uuid.required() });
 function validate(schema, property) {
   return (req, res, next) => {
     const { error, value } = schema.validate(req[property], { abortEarly: false, stripUnknown: true, convert: true });
-    if (error) return res.status(400).json({ error: error.details.map(d => d.message) });
+    if (error) {
+      // The per-field list moves into details.fields. It used to be the whole
+      // body -- `{ error: [...] }` -- which is a third shape a client had to
+      // recognise on top of the two others.
+      return next(new ApiError('VALIDATION_FAILED', 'Request validation failed', {
+        fields: error.details.map(d => d.message)
+      }));
+    }
     if (property === 'body') req[property] = value;
     else Object.assign(req[property], value);
     next();
