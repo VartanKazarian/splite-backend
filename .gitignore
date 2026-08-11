@@ -12,3 +12,4 @@ npm-debug.log*
 # image or the BCV rate lookup fails TLS verification at runtime. Private keys
 # stay excluded by the rules above.
 !certs/*.pem
+dump.rdb
