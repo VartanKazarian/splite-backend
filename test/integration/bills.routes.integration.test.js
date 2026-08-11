@@ -265,11 +265,13 @@ describe('bill routes over HTTP', { skip }, () => {
     assert.equal(open.status, 200, JSON.stringify(open.body));
     assert.equal(open.body.id, created.body.id);
 
-    const split = await request('GET', `/api/v1/bills/${created.body.id}/split?diners=3`);
+    const split = await request('POST', `/api/v1/bills/${created.body.id}/split/preview`, {
+      body: { mode: 'EQUAL', participants: [{ id: 'a' }, { id: 'b' }, { id: 'c' }] }
+    });
     assert.equal(split.status, 200, JSON.stringify(split.body));
-    assert.deepEqual(split.body.shares, ['2523', '2522', '2522']);
+    assert.deepEqual(split.body.allocations.map(a => a.amountVes), ['2523', '2522', '2522']);
     assert.equal(
-      split.body.shares.reduce((sum, s) => sum + BigInt(s), 0n),
+      split.body.allocations.reduce((sum, a) => sum + BigInt(a.amountVes), 0n),
       7567n,
       'the shares sum to the outstanding total exactly'
     );
@@ -533,6 +535,44 @@ describe('bill routes over HTTP', { skip }, () => {
     assert.equal(typeof rates.body.rates.USD.rate, 'string', 'rates cross the wire as strings');
   });
 
+  it('identifies the caller without rotating anything', async () => {
+    // The reason /auth/me exists. A client restoring a session must not have to
+    // call /auth/refresh, because refresh rotates: two tabs booting at once
+    // both present the same stored token, one claims it, and the other trips
+    // reuse detection and revokes every session for that user.
+    const me = await request('GET', '/api/v1/auth/me');
+    assert.equal(me.status, 200, JSON.stringify(me.body));
+    assert.equal(me.body.user.role, 'OWNER');
+    assert.equal(me.body.user.restaurantId, restaurant.id);
+    assert.ok(me.body.user.email);
+
+    // Repeatable, unlike refresh: calling it twice changes nothing.
+    const again = await request('GET', '/api/v1/auth/me');
+    assert.equal(again.status, 200);
+    assert.deepEqual(again.body.user, me.body.user);
+
+    // And no session was consumed doing it.
+    const { rows } = await db.query(
+      'SELECT count(*)::int AS n FROM refresh_sessions WHERE user_id = $1 AND revoked_at IS NOT NULL',
+      [me.body.user.id]
+    );
+    assert.equal(rows[0].n, 0, 'identifying yourself must not revoke a session');
+  });
+
+  it('refuses /auth/me without a staff token, and after deactivation', async () => {
+    assert.equal((await request('GET', '/api/v1/auth/me', { auth: false })).status, 401);
+
+    const tenant = await usdRestaurant('USD');
+    const before = await request('GET', '/api/v1/auth/me', { token: tenant.token });
+    assert.equal(before.status, 200);
+
+    // Read from the database, not the token, so deactivation bites inside the
+    // access token's fifteen minutes rather than at the end of them.
+    await db.query('UPDATE users SET active = false WHERE restaurant_id = $1', [tenant.id]);
+    const after = await request('GET', '/api/v1/auth/me', { token: tenant.token });
+    assert.equal(after.status, 401, 'a deactivated account stops working immediately');
+  });
+
   it('adds, updates and removes bill lines over HTTP', async () => {
     // Its own USD tenant, so the frozen rate and the menu currency are known.
     const tenant = await usdRestaurant('USD');
@@ -714,7 +754,9 @@ describe('bill routes over HTTP', { skip }, () => {
 
       // Another tenant's bill is absent, not forbidden.
       assert.equal((await request('GET', `/api/v1/bills/${otherBill.id}`)).status, 404);
-      assert.equal((await request('GET', `/api/v1/bills/${otherBill.id}/split?diners=2`)).status, 404);
+      assert.equal((await request('POST', `/api/v1/bills/${otherBill.id}/split/preview`, {
+        body: { mode: 'EQUAL', participants: [{ id: 'a' }, { id: 'b' }] }
+      })).status, 404);
       assert.equal((await request('POST', `/api/v1/bills/${otherBill.id}/void`)).status, 404);
     } finally {
       await fixtures.destroyRestaurant(other.id);

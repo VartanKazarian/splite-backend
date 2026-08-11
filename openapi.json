@@ -1000,47 +1000,6 @@
           }
         }
       },
-      "SplitQuote": {
-        "type": "object",
-        "properties": {
-          "currency": {
-            "type": "string",
-            "const": "VES"
-          },
-          "outstanding": {
-            "type": "string",
-            "pattern": "^[0-9]+$",
-            "description": "Integer minor units (céntimos) as a string, so values beyond 2^53 survive JSON.",
-            "examples": [
-              "756710"
-            ]
-          },
-          "diners": {
-            "type": "integer"
-          },
-          "shares": {
-            "type": "array",
-            "items": {
-              "type": "string",
-              "pattern": "^[0-9]+$",
-              "description": "Integer minor units (céntimos) as a string, so values beyond 2^53 survive JSON.",
-              "examples": [
-                "756710"
-              ]
-            },
-            "description": "Largest-remainder allocation; the parts sum to exactly the outstanding total."
-          },
-          "usdReference": {
-            "type": "array",
-            "items": {
-              "type": [
-                "string",
-                "null"
-              ]
-            }
-          }
-        }
-      },
       "Table": {
         "type": "object",
         "properties": {
@@ -1362,29 +1321,33 @@
             "type": "string"
           },
           "user": {
-            "type": "object",
-            "properties": {
-              "id": {
-                "type": "string",
-                "format": "uuid"
-              },
-              "email": {
-                "type": "string"
-              },
-              "role": {
-                "type": "string",
-                "enum": [
-                  "OWNER",
-                  "MANAGER",
-                  "CASHIER",
-                  "WAITER"
-                ]
-              },
-              "restaurantId": {
-                "type": "string",
-                "format": "uuid"
-              }
-            }
+            "$ref": "#/components/schemas/SessionUser"
+          }
+        }
+      },
+      "SessionUser": {
+        "type": "object",
+        "description": "The authenticated staff member. Returned by login, refresh and /auth/me alike, so a client stores one type.",
+        "properties": {
+          "id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "email": {
+            "type": "string"
+          },
+          "role": {
+            "type": "string",
+            "enum": [
+              "OWNER",
+              "MANAGER",
+              "CASHIER",
+              "WAITER"
+            ]
+          },
+          "restaurantId": {
+            "type": "string",
+            "format": "uuid"
           }
         }
       },
@@ -1698,6 +1661,47 @@
           },
           "503": {
             "$ref": "#/components/responses/ServiceUnavailable"
+          }
+        }
+      }
+    },
+    "/api/v1/auth/me": {
+      "get": {
+        "tags": [
+          "Auth"
+        ],
+        "summary": "The current user",
+        "operationId": "getCurrentUser",
+        "description": "What a client calls when restoring a session on boot. Any authenticated staff role.\n\n**Use this rather than /auth/refresh to identify the caller.** Refresh *rotates*: two tabs\nstarting at once both present the same stored token, one claims it, and the other is\ntreated as theft and revokes every session for that user. Calling refresh merely to ask\n\"who am I\" turns a second browser tab into a logout.\n\nRead from the database rather than the token, so a deactivated account stops working\ninside the access token's fifteen minutes rather than at the end of them.",
+        "security": [
+          {
+            "staffAuth": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The caller. Identical in shape to `user` in a login or refresh response.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "user": {
+                      "$ref": "#/components/schemas/SessionUser"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "429": {
+            "$ref": "#/components/responses/TooManyRequests"
+          },
+          "500": {
+            "$ref": "#/components/responses/ServerError"
           }
         }
       }
@@ -2669,62 +2673,6 @@
           },
           "409": {
             "$ref": "#/components/responses/Conflict"
-          },
-          "429": {
-            "$ref": "#/components/responses/TooManyRequests"
-          },
-          "500": {
-            "$ref": "#/components/responses/ServerError"
-          }
-        }
-      }
-    },
-    "/api/v1/bills/{id}/split": {
-      "get": {
-        "tags": [
-          "Bills"
-        ],
-        "summary": "Suggest an even split of the outstanding balance",
-        "description": "Advisory only; it mutates nothing. Largest-remainder allocation, so the shares sum to exactly the outstanding total.",
-        "security": [
-          {
-            "staffAuth": []
-          }
-        ],
-        "parameters": [
-          {
-            "$ref": "#/components/parameters/BillId"
-          },
-          {
-            "name": "diners",
-            "in": "query",
-            "required": true,
-            "schema": {
-              "type": "integer",
-              "minimum": 1,
-              "maximum": 50
-            }
-          }
-        ],
-        "responses": {
-          "200": {
-            "description": "Suggested shares.",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/SplitQuote"
-                }
-              }
-            }
-          },
-          "400": {
-            "$ref": "#/components/responses/BadRequest"
-          },
-          "401": {
-            "$ref": "#/components/responses/Unauthorized"
-          },
-          "404": {
-            "$ref": "#/components/responses/NotFound"
           },
           "429": {
             "$ref": "#/components/responses/TooManyRequests"

@@ -109,6 +109,32 @@ async function login(email, password, meta = {}) {
  * Presenting an already-revoked token is treated as theft: every session for
  * that user is revoked.
  */
+/**
+ * The current user, for a client restoring a session on boot.
+ *
+ * This exists so a frontend never has to call /auth/refresh just to find out
+ * who it is. Refresh *rotates*: two tabs booting at once both present the same
+ * stored token, one claims it, and the other is treated as theft and revokes
+ * every session for that user. Using it as a "who am I" call turns a second
+ * browser tab into a logout.
+ *
+ * Read from the database rather than the token, so an account deactivated
+ * mid-token stops working inside the access token's fifteen minutes rather than
+ * at the end of them.
+ */
+async function currentUser(userId) {
+  const { rows } = await db.query(
+    'SELECT id, restaurant_id, email, role, active FROM users WHERE id = $1',
+    [userId]
+  );
+  const user = rows[0];
+  if (!user || !user.active) throw unauthorized('User inactive');
+
+  // Deliberately the same shape as `user` in a login or refresh response, so a
+  // client stores one type and refreshes it from here.
+  return { id: user.id, email: user.email, role: user.role, restaurantId: user.restaurant_id };
+}
+
 async function refresh(refreshToken, meta = {}) {
   let claims;
   try {
@@ -182,4 +208,5 @@ async function revokeAllSessionsForUser(userId) {
   return rows.length;
 }
 
-module.exports = { login, refresh, revokeSession, revokeAllSessionsForUser, hashPassword, ARGON2_OPTIONS };
+module.exports = {
+  currentUser, login, refresh, revokeSession, revokeAllSessionsForUser, hashPassword, ARGON2_OPTIONS };

@@ -376,21 +376,6 @@ const schemas = {
     }
   },
 
-  SplitQuote: {
-    type: 'object',
-    properties: {
-      currency: { type: 'string', const: 'VES' },
-      outstanding: minorUnits,
-      diners: { type: 'integer' },
-      shares: {
-        type: 'array',
-        items: minorUnits,
-        description: 'Largest-remainder allocation; the parts sum to exactly the outstanding total.'
-      },
-      usdReference: { type: 'array', items: { type: ['string', 'null'] } }
-    }
-  },
-
   Table: {
     type: 'object',
     properties: {
@@ -530,15 +515,18 @@ const schemas = {
       accessToken: { type: 'string' },
       refreshToken: { type: 'string' },
       expiresIn: { type: 'string' },
-      user: {
-        type: 'object',
-        properties: {
-          id: { type: 'string', format: 'uuid' },
-          email: { type: 'string' },
-          role: { type: 'string', enum: ['OWNER', 'MANAGER', 'CASHIER', 'WAITER'] },
-          restaurantId: { type: 'string', format: 'uuid' }
-        }
-      }
+      user: ref('SessionUser')
+    }
+  },
+
+  SessionUser: {
+    type: 'object',
+    description: 'The authenticated staff member. Returned by login, refresh and /auth/me alike, so a client stores one type.',
+    properties: {
+      id: { type: 'string', format: 'uuid' },
+      email: { type: 'string' },
+      role: { type: 'string', enum: ['OWNER', 'MANAGER', 'CASHIER', 'WAITER'] },
+      restaurantId: { type: 'string', format: 'uuid' }
     }
   },
 
@@ -736,6 +724,42 @@ const paths = {
         429: response('TooManyRequests'),
         500: response('ServerError'),
         503: response('ServiceUnavailable')
+      }
+    }
+  },
+
+  '/api/v1/auth/me': {
+    get: {
+      tags: ['Auth'],
+      summary: 'The current user',
+      operationId: 'getCurrentUser',
+      description: [
+        'What a client calls when restoring a session on boot. Any authenticated staff role.',
+        '',
+        '**Use this rather than /auth/refresh to identify the caller.** Refresh *rotates*: two tabs',
+        'starting at once both present the same stored token, one claims it, and the other is',
+        'treated as theft and revokes every session for that user. Calling refresh merely to ask',
+        '"who am I" turns a second browser tab into a logout.',
+        '',
+        'Read from the database rather than the token, so a deactivated account stops working',
+        'inside the access token\'s fifteen minutes rather than at the end of them.'
+      ].join('\n'),
+      security: staff,
+      responses: {
+        200: {
+          description: 'The caller. Identical in shape to `user` in a login or refresh response.',
+          content: {
+            'application/json': {
+              schema: {
+                type: 'object',
+                properties: { user: ref('SessionUser') }
+              }
+            }
+          }
+        },
+        401: response('Unauthorized'),
+        429: response('TooManyRequests'),
+        500: response('ServerError')
       }
     }
   },
@@ -1094,25 +1118,6 @@ const paths = {
         403: response('Forbidden'),
         404: response('NotFound'),
         409: response('Conflict')
-      }
-    }
-  },
-
-  '/api/v1/bills/{id}/split': {
-    get: {
-      tags: ['Bills'],
-      summary: 'Suggest an even split of the outstanding balance',
-      description:
-        'Advisory only; it mutates nothing. Largest-remainder allocation, so the shares sum to exactly the outstanding total.',
-      security: staff,
-      parameters: [
-        { $ref: '#/components/parameters/BillId' },
-        { name: 'diners', in: 'query', required: true, schema: { type: 'integer', minimum: 1, maximum: 50 } }
-      ],
-      responses: {
-        200: { description: 'Suggested shares.', content: { 'application/json': { schema: ref('SplitQuote') } } },
-        ...commonErrors,
-        404: response('NotFound')
       }
     }
   },

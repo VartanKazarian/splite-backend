@@ -118,9 +118,6 @@ const splitPreviewSchema = Joi.object({
   }))
 });
 
-const splitQuerySchema = Joi.object({
-  diners: Joi.number().integer().min(1).max(50).required()
-});
 
 const paginationKeys = {
   limit: Joi.number().integer().min(1).max(100).default(50),
@@ -209,7 +206,6 @@ module.exports = {
   splitPreviewSchema,
   listTablesQuerySchema,
   listBillsQuerySchema,
-  splitQuerySchema,
   MENU_CURRENCIES,
   menuCurrencySchema,
   createProductSchema,

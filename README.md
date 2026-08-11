@@ -222,6 +222,24 @@ requestId }`, an array of validation strings, and a string with `code` and
 `billId` as *siblings* of `error` — so a client could not destructure a failure
 without first knowing which route produced it.
 
+## Sessions
+
+`POST /api/v1/auth/login` returns an access token, a refresh token and the user.
+A client restoring a session on boot calls **`GET /api/v1/auth/me`**, not
+`/auth/refresh`.
+
+That distinction matters more than it looks. Refresh *rotates*: it atomically
+claims the presented token and issues a new one, and a token presented after it
+has already been claimed is treated as theft, which revokes **every** session for
+that user. Two browser tabs starting at once both present the same stored token
+— one claims it, the other is read as theft, and the user is logged out
+everywhere. So refresh is for renewing an expired access token, and nothing else.
+
+`/auth/me` reads the user from the database rather than the token, so an account
+deactivated mid-session stops working inside the access token's fifteen minutes
+rather than at the end of them. It returns the same `user` shape as login and
+refresh, so a client stores one type.
+
 ## Bill line items
 
 A line's price is **snapshotted when it is added** and never read from the menu
@@ -279,6 +297,11 @@ them into shape, which would hide a client bug behind a number that looks right.
 Participant ids are client-owned and opaque for now. Persisting them is what
 would make the engine authoritative rather than advisory; see
 [Open points](#open-points).
+
+There is one split endpoint, not two. An earlier `GET /bills/{id}/split?diners=n`
+answered a strictly narrower version of the same question and was removed rather
+than left alongside this one, because two endpoints that nearly agree are a
+choice a client should not have to make.
 
 ## Guest access
 
@@ -574,6 +597,10 @@ yet.
   overpayment ceiling. Participants are client-owned ids today; making them
   durable is what turns the engine from advisory into authoritative, and it
   belongs with the guest session it hangs off.
+- **A guest cannot pay.** Settlement is staff-only: `POST /bills/{id}/payments`
+  records cash, card or any other tender a member of staff takes. A diner can
+  see their split and not act on it. Paying from the phone needs the provider
+  work below; marking a bill settled by other means already works.
 - **No onboarding.** Restaurants and their first owner are created by
   `npm run seed`. Whether signup is self-service or invite-only is an open
   product decision, and `registerSchema` sitting unused in

@@ -13,7 +13,6 @@ const {
   billItemIdParamSchema,
   splitPreviewSchema,
   listBillsQuerySchema,
-  splitQuerySchema,
   billIdParamSchema,
   tableIdParamSchema
 } = require('../middleware/schemas');
@@ -21,7 +20,7 @@ const { processSplitPayment } = require('../services/locks');
 const billItems = require('../services/billItems');
 const splitEngine = require('../services/splitEngine');
 const { getRateFor } = require('../services/fx');
-const { splitEvenly, usdReference } = require('../services/split');
+const { usdReference } = require('../services/split');
 const dto = require('../dto');
 const { ApiError } = require('../errors');
 const { parseRate, applyRate, toMinor } = require('../services/money');
@@ -336,33 +335,6 @@ router.delete(
       });
 
       res.json({ removedId, bill: dto.bill(bill) });
-    } catch (err) { next(err); }
-  }
-);
-
-/** Suggested even split of the outstanding balance, exact to the céntimo. */
-router.get(
-  '/:id/split',
-  validateParams(billIdParamSchema),
-  validateQuery(splitQuerySchema),
-  async (req, res, next) => {
-    try {
-      const { rows } = await db.query(
-        'SELECT total_due_ves, amount_paid_ves, fx_rate_ves_per_unit FROM bills WHERE id = $1 AND restaurant_id = $2',
-        [req.params.id, req.user.restaurantId]
-      );
-      if (!rows.length) throw new ApiError('BILL_NOT_FOUND', 'Bill not found');
-
-      const outstanding = (BigInt(rows[0].total_due_ves) - BigInt(rows[0].amount_paid_ves)).toString();
-      const shares = splitEvenly(outstanding, req.query.diners);
-
-      res.json({
-        currency: 'VES',
-        outstanding,
-        diners: req.query.diners,
-        shares,
-        usdReference: shares.map(share => usdReference(share, rows[0].fx_rate_ves_per_unit))
-      });
     } catch (err) { next(err); }
   }
 );
