@@ -24,6 +24,13 @@
       "MENU_CURRENCY_MISMATCH": {
         "activeProductsInOtherCurrency": "integer -- how many still disagree"
       },
+      "TOTAL_BELOW_AMOUNT_PAID": {
+        "amountPaidVes": "string -- minor units already settled",
+        "proposedTotalVes": "string -- what the change would have made the total"
+      },
+      "BILL_NOT_ITEMISED": {
+        "totalDue": "string -- the manually supplied total blocking itemisation"
+      },
       "FORBIDDEN_ROLE": {
         "requiredRoles": "string[] -- roles that would have been accepted"
       },
@@ -139,6 +146,15 @@
           "format": "uuid"
         }
       },
+      "BillItemId": {
+        "name": "itemId",
+        "in": "path",
+        "required": true,
+        "schema": {
+          "type": "string",
+          "format": "uuid"
+        }
+      },
       "ProductId": {
         "name": "id",
         "in": "path",
@@ -227,12 +243,16 @@
                   "CORS_ORIGIN_NOT_ALLOWED",
                   "NOT_FOUND",
                   "BILL_NOT_FOUND",
+                  "BILL_ITEM_NOT_FOUND",
                   "TABLE_NOT_FOUND",
                   "PRODUCT_NOT_FOUND",
                   "RESTAURANT_NOT_FOUND",
                   "OPEN_BILL_NOT_FOUND",
                   "OPEN_BILL_EXISTS",
                   "BILL_NOT_OPEN",
+                  "BILL_NOT_ITEMISED",
+                  "TOTAL_BELOW_AMOUNT_PAID",
+                  "PRODUCT_INACTIVE",
                   "BILL_HAS_PAYMENTS",
                   "PAYMENT_EXCEEDS_BALANCE",
                   "PAYMENT_STATE_INVALID",
@@ -402,6 +422,157 @@
           "updatedAt": {
             "type": "string",
             "format": "date-time"
+          }
+        }
+      },
+      "BillItem": {
+        "type": "object",
+        "description": "A line on a bill. The price is snapshotted when the line is added, so re-pricing, renaming or deactivating the product never changes a bill already served.",
+        "properties": {
+          "id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "billId": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "productId": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "uuid",
+            "description": "Reporting link only. Null once the product is gone; the line outlives it."
+          },
+          "name": {
+            "type": "string",
+            "description": "The product name as it was when the line was added."
+          },
+          "unitPriceMinor": {
+            "type": "string",
+            "pattern": "^[0-9]+$",
+            "description": "Snapshotted unit price, in the bill currency.",
+            "examples": [
+              "756710"
+            ]
+          },
+          "currency": {
+            "type": "string",
+            "enum": [
+              "VES",
+              "USD",
+              "EUR"
+            ]
+          },
+          "quantity": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 999
+          },
+          "subtotalMinor": {
+            "type": "string",
+            "pattern": "^[0-9]+$",
+            "description": "unitPriceMinor x quantity, computed by the database.",
+            "examples": [
+              "756710"
+            ]
+          },
+          "createdAt": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "updatedAt": {
+            "type": "string",
+            "format": "date-time"
+          }
+        }
+      },
+      "BillWithItems": {
+        "allOf": [
+          {
+            "$ref": "#/components/schemas/Bill"
+          },
+          {
+            "type": "object",
+            "description": "Returned by single-bill reads. The list endpoint returns Bill, without lines.",
+            "properties": {
+              "itemCount": {
+                "type": "integer"
+              },
+              "items": {
+                "type": "array",
+                "items": {
+                  "$ref": "#/components/schemas/BillItem"
+                }
+              }
+            }
+          }
+        ]
+      },
+      "BillItemList": {
+        "type": "object",
+        "properties": {
+          "data": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/BillItem"
+            }
+          }
+        }
+      },
+      "BillItemMutation": {
+        "type": "object",
+        "description": "The affected line and the recalculated bill, so a client never re-derives a total.",
+        "properties": {
+          "item": {
+            "$ref": "#/components/schemas/BillItem"
+          },
+          "bill": {
+            "$ref": "#/components/schemas/Bill"
+          }
+        }
+      },
+      "BillItemRemoval": {
+        "type": "object",
+        "properties": {
+          "removedId": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "bill": {
+            "$ref": "#/components/schemas/Bill"
+          }
+        }
+      },
+      "AddBillItemRequest": {
+        "type": "object",
+        "required": [
+          "productId"
+        ],
+        "properties": {
+          "productId": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "quantity": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 999,
+            "default": 1
+          }
+        }
+      },
+      "UpdateBillItemRequest": {
+        "type": "object",
+        "required": [
+          "quantity"
+        ],
+        "properties": {
+          "quantity": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 999
           }
         }
       },
@@ -1870,11 +2041,11 @@
         ],
         "responses": {
           "200": {
-            "description": "The bill.",
+            "description": "The bill, with its line items.",
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/Bill"
+                  "$ref": "#/components/schemas/BillWithItems"
                 }
               }
             }
@@ -1887,6 +2058,248 @@
           },
           "404": {
             "$ref": "#/components/responses/NotFound"
+          },
+          "429": {
+            "$ref": "#/components/responses/TooManyRequests"
+          },
+          "500": {
+            "$ref": "#/components/responses/ServerError"
+          }
+        }
+      }
+    },
+    "/api/v1/bills/{id}/items": {
+      "get": {
+        "tags": [
+          "Bills"
+        ],
+        "summary": "List the lines on a bill",
+        "description": "Any authenticated staff role.",
+        "security": [
+          {
+            "staffAuth": []
+          }
+        ],
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/BillId"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Lines.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BillItemList"
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "404": {
+            "$ref": "#/components/responses/NotFound"
+          },
+          "429": {
+            "$ref": "#/components/responses/TooManyRequests"
+          },
+          "500": {
+            "$ref": "#/components/responses/ServerError"
+          }
+        }
+      },
+      "post": {
+        "tags": [
+          "Bills"
+        ],
+        "summary": "Add a line to a bill",
+        "x-required-roles": [
+          "OWNER",
+          "MANAGER",
+          "CASHIER",
+          "WAITER"
+        ],
+        "description": "Roles: OWNER, MANAGER, CASHIER, WAITER.\n\nThe product name and price are **snapshotted** onto the line, so later menu changes\nnever alter a bill already served. Adding the same product twice creates two lines: a\nsecond round may have been ordered at a different price.\n\nThe bill total is recomputed from its lines and re-converted at the rate **frozen when\nthe bill opened**, never at the current rate.\n\nOnly an OPEN bill accepts lines. A bill opened with a fixed non-zero total is refused\nwith 409 `BILL_NOT_ITEMISED`; open it with a total of 0 to itemise it.",
+        "security": [
+          {
+            "staffAuth": []
+          }
+        ],
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/BillId"
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/AddBillItemRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "Line added.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BillItemMutation"
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "403": {
+            "$ref": "#/components/responses/Forbidden"
+          },
+          "404": {
+            "$ref": "#/components/responses/NotFound"
+          },
+          "409": {
+            "$ref": "#/components/responses/Conflict"
+          },
+          "429": {
+            "$ref": "#/components/responses/TooManyRequests"
+          },
+          "500": {
+            "$ref": "#/components/responses/ServerError"
+          }
+        }
+      }
+    },
+    "/api/v1/bills/{id}/items/{itemId}": {
+      "patch": {
+        "tags": [
+          "Bills"
+        ],
+        "summary": "Change a line quantity",
+        "x-required-roles": [
+          "OWNER",
+          "MANAGER",
+          "CASHIER",
+          "WAITER"
+        ],
+        "description": "Roles: OWNER, MANAGER, CASHIER, WAITER. The snapshotted unit price is never revisited; only the quantity changes.",
+        "security": [
+          {
+            "staffAuth": []
+          }
+        ],
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/BillId"
+          },
+          {
+            "$ref": "#/components/parameters/BillItemId"
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/UpdateBillItemRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Updated.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BillItemMutation"
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "403": {
+            "$ref": "#/components/responses/Forbidden"
+          },
+          "404": {
+            "$ref": "#/components/responses/NotFound"
+          },
+          "409": {
+            "$ref": "#/components/responses/Conflict"
+          },
+          "429": {
+            "$ref": "#/components/responses/TooManyRequests"
+          },
+          "500": {
+            "$ref": "#/components/responses/ServerError"
+          }
+        }
+      },
+      "delete": {
+        "tags": [
+          "Bills"
+        ],
+        "summary": "Remove a line from a bill",
+        "x-required-roles": [
+          "OWNER",
+          "MANAGER",
+          "CASHIER",
+          "WAITER"
+        ],
+        "description": "Roles: OWNER, MANAGER, CASHIER, WAITER.\n\nRefused with 409 `TOTAL_BELOW_AMOUNT_PAID` when it would drop the bill total below what\nhas already been settled — reversing money that has moved is a refund, not an edit.",
+        "security": [
+          {
+            "staffAuth": []
+          }
+        ],
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/BillId"
+          },
+          {
+            "$ref": "#/components/parameters/BillItemId"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Removed.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BillItemRemoval"
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "403": {
+            "$ref": "#/components/responses/Forbidden"
+          },
+          "404": {
+            "$ref": "#/components/responses/NotFound"
+          },
+          "409": {
+            "$ref": "#/components/responses/Conflict"
           },
           "429": {
             "$ref": "#/components/responses/TooManyRequests"

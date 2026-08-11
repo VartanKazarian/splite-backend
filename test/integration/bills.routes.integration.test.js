@@ -3,11 +3,12 @@ const assert = require('node:assert/strict');
 
 const { skip } = require('./helpers/env');
 const db = require('../../src/connectors/base');
-const { closeRedis } = require('../../src/connectors/redis');
+const { redis, closeRedis } = require('../../src/connectors/redis');
 const fixtures = require('./helpers/fixtures');
 const bcv = require('../../src/connectors/bcv');
 const fx = require('../../src/services/fx');
 const { hashPassword } = require('../../src/services/auth');
+const { signAccessToken } = require('../../src/utils/tokens');
 const { caracasToday } = require('../../src/services/fx');
 const app = require('../../src/app');
 
@@ -47,25 +48,32 @@ describe('bill routes over HTTP', { skip }, () => {
 
   const newTable = () => fixtures.createTable(restaurant.id, { name: `R${++tableSeq}` });
 
-  /** A tenant of its own, priced in `currency`, with a token to act as it. */
+  /**
+   * A tenant of its own, priced in `currency`, with a token to act as it.
+   *
+   * The token is minted directly rather than obtained by logging in. /api/v1/auth
+   * is limited to 10 requests a minute per IP, and every test here shares
+   * 127.0.0.1 -- so a suite that logged in once per tenant started failing on
+   * 429 as soon as it grew past ten. The limiter was right; the harness was
+   * leaning on it. The real login path is still exercised once, in `before`.
+   */
   const extraTenants = [];
   const usdRestaurant = async (currency) => {
     const tenant = await fixtures.createRestaurant({ name: `${currency} Menu Tenant` });
     await db.query('UPDATE restaurants SET menu_currency = $1 WHERE id = $2', [currency, tenant.id]);
 
     const email = `${currency.toLowerCase()}-${tenant.id}@example.com`;
-    const password = 'route-test-password-123';
-    await db.query(
+    const { rows } = await db.query(
       `INSERT INTO users (restaurant_id, email, password_hash, role)
-       VALUES ($1, $2, $3, 'OWNER')`,
-      [tenant.id, email, await hashPassword(password)]
+       VALUES ($1, $2, $3, 'OWNER') RETURNING id`,
+      [tenant.id, email, await hashPassword('route-test-password-123')]
     );
 
-    const login = await request('POST', '/api/v1/auth/login', { auth: false, body: { email, password } });
-    assert.equal(login.status, 200, `login failed: ${JSON.stringify(login.body)}`);
-
     extraTenants.push(tenant.id);
-    return { id: tenant.id, token: login.body.accessToken };
+    return {
+      id: tenant.id,
+      token: signAccessToken({ id: rows[0].id, restaurantId: tenant.id, role: 'OWNER' })
+    };
   };
 
   before(async () => {
@@ -76,6 +84,14 @@ describe('bill routes over HTTP', { skip }, () => {
       valueDate: caracasToday()
     });
     fx.__reset();
+
+    // This is the only suite that drives HTTP, and every request in it comes
+    // from 127.0.0.1 against an app-level limit of 120/minute per IP. A full run
+    // spends most of that, so a second run inside the same minute starts at ~140
+    // and fails on 429 that has nothing to do with the code under test. Clearing
+    // the two IP-keyed buckets isolates the run from its own predecessor; the
+    // per-user `bills:` buckets are keyed on fresh ids and need no help.
+    await redis.del('api:::ffff:127.0.0.1', 'auth:::ffff:127.0.0.1', 'api:127.0.0.1', 'auth:127.0.0.1');
 
     restaurant = await fixtures.createRestaurant({ name: 'Routes Tenant' });
     table = await newTable();
@@ -515,6 +531,88 @@ describe('bill routes over HTTP', { skip }, () => {
     assert.equal(rates.body.rates.USD.rate, '757.54060000');
     assert.equal(rates.body.rates.EUR.rate, '875.21695680');
     assert.equal(typeof rates.body.rates.USD.rate, 'string', 'rates cross the wire as strings');
+  });
+
+  it('adds, updates and removes bill lines over HTTP', async () => {
+    // Its own USD tenant, so the frozen rate and the menu currency are known.
+    const tenant = await usdRestaurant('USD');
+    const lineTable = await fixtures.createTable(tenant.id, { name: 'L1' });
+    const { rows } = await db.query(
+      `INSERT INTO menu_products (restaurant_id, name, price_minor_units, currency)
+       VALUES ($1, 'Arepa', 1250, 'USD') RETURNING id`,
+      [tenant.id]
+    );
+    const productId = rows[0].id;
+
+    // Opened at zero: a bill with a fixed total is deliberately not itemisable.
+    const bill = await request('POST', '/api/v1/bills', {
+      body: { tableId: lineTable.id, totalDueMinorUnits: '0' },
+      token: tenant.token
+    });
+    assert.equal(bill.status, 201, JSON.stringify(bill.body));
+
+    const added = await request('POST', `/api/v1/bills/${bill.body.id}/items`, {
+      body: { productId, quantity: 2 }, token: tenant.token
+    });
+    assert.equal(added.status, 201, JSON.stringify(added.body));
+    assert.equal(added.body.item.name, 'Arepa', 'the snapshotted name, not a product lookup');
+    assert.equal(added.body.item.unitPriceMinor, '1250');
+    assert.equal(added.body.item.subtotalMinor, '2500');
+    // $25.00 at 757.5406 is 1 893 851.5 céntimos, half-up.
+    assert.equal(added.body.bill.totalDue, '2500');
+    assert.equal(added.body.bill.totalDueVes, '1893852');
+
+    // The single-bill read carries its lines; the list deliberately does not.
+    const read = await request('GET', `/api/v1/bills/${bill.body.id}`, { token: tenant.token });
+    assert.equal(read.body.itemCount, 1);
+    assert.equal(read.body.items[0].id, added.body.item.id);
+    assert.deepEqual(Object.keys(read.body.items[0]).filter(k => k.includes('_')), [],
+      'lines speak camelCase like everything else');
+
+    const list = await request('GET', '/api/v1/bills?limit=5', { token: tenant.token });
+    assert.equal(list.body.data[0].items, undefined, 'the list stays cheap');
+
+    const patched = await request('PATCH', `/api/v1/bills/${bill.body.id}/items/${added.body.item.id}`, {
+      body: { quantity: 1 }, token: tenant.token
+    });
+    assert.equal(patched.status, 200, JSON.stringify(patched.body));
+    assert.equal(patched.body.bill.totalDue, '1250');
+
+    const removed = await request('DELETE', `/api/v1/bills/${bill.body.id}/items/${added.body.item.id}`, {
+      token: tenant.token
+    });
+    assert.equal(removed.status, 200, JSON.stringify(removed.body));
+    assert.equal(removed.body.bill.totalDue, '0');
+  });
+
+  it('reports line-item failures in the standard envelope', async () => {
+    const tenant = await usdRestaurant('USD');
+    const errTable = await fixtures.createTable(tenant.id, { name: 'L2' });
+
+    // A bill opened with a fixed total cannot be itemised.
+    const fixed = await request('POST', '/api/v1/bills', {
+      body: { tableId: errTable.id, totalDueMinorUnits: '5000' }, token: tenant.token
+    });
+    const { rows } = await db.query(
+      `INSERT INTO menu_products (restaurant_id, name, price_minor_units, currency)
+       VALUES ($1, 'Cachapa', 900, 'USD') RETURNING id`,
+      [tenant.id]
+    );
+
+    const refused = await request('POST', `/api/v1/bills/${fixed.body.id}/items`, {
+      body: { productId: rows[0].id }, token: tenant.token
+    });
+    assert.equal(refused.status, 409);
+    assert.equal(refused.body.error.code, 'BILL_NOT_ITEMISED');
+    assert.equal(refused.body.error.details.totalDue, '5000');
+    assert.ok(refused.body.error.requestId);
+
+    // An unknown line on a real bill is a 404 naming what was not found.
+    const missing = await request('DELETE',
+      `/api/v1/bills/${fixed.body.id}/items/11111111-1111-4111-8111-111111111111`,
+      { token: tenant.token });
+    assert.equal(missing.status, 404);
+    assert.equal(missing.body.error.code, 'BILL_ITEM_NOT_FOUND');
   });
 
   it('scopes every read to the caller\'s restaurant', async () => {

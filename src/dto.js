@@ -86,6 +86,47 @@ function bill(row) {
   };
 }
 
+/**
+ * A bill line.
+ *
+ * Amounts are minor units as digit strings, like every other monetary value on
+ * the wire -- a decimal string here would be a second money format for clients
+ * to handle, and the point of the contract is that there is one.
+ *
+ * `productId` is nullable by design: the line survives the product it came
+ * from, and `name` is the snapshot taken when it was added, not today's menu.
+ */
+function billItem(row) {
+  return {
+    id: row.id,
+    billId: row.bill_id,
+    productId: row.product_id ?? null,
+    name: row.name_snapshot,
+    unitPriceMinor: row.unit_price_minor,
+    currency: row.currency,
+    quantity: row.quantity,
+    subtotalMinor: row.subtotal_minor,
+    createdAt: isoTimestamp(row.created_at),
+    updatedAt: isoTimestamp(row.updated_at)
+  };
+}
+
+/**
+ * A bill with its lines.
+ *
+ * Kept separate from `bill` rather than making `items` conditional: a field
+ * that is sometimes present is exactly the ambiguity the contract work removed.
+ * List endpoints return `bill`, single-bill reads return this, and the two are
+ * documented as different schemas.
+ */
+function billWithItems(row, items = []) {
+  return {
+    ...bill(row),
+    itemCount: items.length,
+    items: items.map(billItem)
+  };
+}
+
 function table(row) {
   return {
     id: row.id,
@@ -134,4 +175,8 @@ function menuSettings(row) {
   };
 }
 
-module.exports = { isoDate, isoTimestamp, bill, table, product, publicProduct, menuSettings };
+module.exports = {
+  isoDate, isoTimestamp,
+  bill, billItem, billWithItems,
+  table, product, publicProduct, menuSettings
+};

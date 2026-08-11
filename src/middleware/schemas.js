@@ -78,6 +78,25 @@ const createBillSchema = Joi.object({
   totalDueMinorUnits: minorUnits.required()
 });
 
+// 999 matches the database CHECK. Bounded on purpose: quantity multiplies into
+// a BIGINT subtotal, and an unbounded value turns an overflow into a failed
+// insert in the middle of a service.
+const quantity = Joi.number().integer().min(1).max(999);
+
+const addBillItemSchema = Joi.object({
+  productId: uuid.required(),
+  quantity: quantity.default(1)
+});
+
+const updateBillItemSchema = Joi.object({
+  quantity: quantity.required()
+});
+
+const billItemIdParamSchema = Joi.object({
+  id: uuid.required(),
+  itemId: uuid.required()
+});
+
 const splitQuerySchema = Joi.object({
   diners: Joi.number().integer().min(1).max(50).required()
 });
@@ -163,6 +182,9 @@ module.exports = {
   createTableSchema,
   updateTableSchema,
   createBillSchema,
+  addBillItemSchema,
+  updateBillItemSchema,
+  billItemIdParamSchema,
   listTablesQuerySchema,
   listBillsQuerySchema,
   splitQuerySchema,

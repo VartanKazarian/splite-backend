@@ -8,12 +8,16 @@ const {
   validateQuery,
   splitPaymentSchema,
   createBillSchema,
+  addBillItemSchema,
+  updateBillItemSchema,
+  billItemIdParamSchema,
   listBillsQuerySchema,
   splitQuerySchema,
   billIdParamSchema,
   tableIdParamSchema
 } = require('../middleware/schemas');
 const { processSplitPayment } = require('../services/locks');
+const billItems = require('../services/billItems');
 const { getRateFor } = require('../services/fx');
 const { splitEvenly, usdReference } = require('../services/split');
 const dto = require('../dto');
@@ -223,9 +227,116 @@ router.get('/:id', validateParams(billIdParamSchema), async (req, res, next) => 
     );
     if (!rows.length) throw new ApiError('BILL_NOT_FOUND', 'Bill not found');
 
-    res.json(dto.bill(rows[0]));
+    // A single bill always carries its lines, so a client never has to make a
+    // second call to render one. The list endpoint deliberately does not.
+    const items = await billItems.listForBill({
+      restaurantId: req.user.restaurantId, billId: req.params.id
+    });
+    res.json(dto.billWithItems(rows[0], items));
   } catch (err) { next(err); }
 });
+
+/**
+ * Line items.
+ *
+ * A line's price is snapshotted when it is added, so re-pricing the menu never
+ * changes a bill that has already been served. Every mutation recomputes the
+ * bill total from its lines and re-converts at the rate frozen when the bill
+ * opened -- never at today's rate, or adding a coffee would reprice the meal.
+ */
+router.get('/:id/items', validateParams(billIdParamSchema), async (req, res, next) => {
+  try {
+    const { rows } = await db.query(
+      'SELECT id FROM bills WHERE id = $1 AND restaurant_id = $2',
+      [req.params.id, req.user.restaurantId]
+    );
+    if (!rows.length) throw new ApiError('BILL_NOT_FOUND', 'Bill not found');
+
+    const items = await billItems.listForBill({
+      restaurantId: req.user.restaurantId, billId: req.params.id
+    });
+    res.json({ data: items.map(dto.billItem) });
+  } catch (err) { next(err); }
+});
+
+router.post(
+  '/:id/items',
+  requireRole('OWNER', 'MANAGER', 'CASHIER', 'WAITER'),
+  validateParams(billIdParamSchema),
+  validateBody(addBillItemSchema),
+  async (req, res, next) => {
+    try {
+      const { item, bill } = await billItems.addItem({
+        restaurantId: req.user.restaurantId,
+        billId: req.params.id,
+        productId: req.body.productId,
+        quantity: req.body.quantity
+      });
+
+      await logAudit({
+        ...auditContext(req),
+        action: 'BILL_ITEM_ADDED',
+        resourceType: 'bill',
+        resourceId: req.params.id,
+        details: { itemId: item.id, productId: req.body.productId, quantity: item.quantity }
+      });
+
+      res.status(201).json({ item: dto.billItem(item), bill: dto.bill(bill) });
+    } catch (err) { next(err); }
+  }
+);
+
+router.patch(
+  '/:id/items/:itemId',
+  requireRole('OWNER', 'MANAGER', 'CASHIER', 'WAITER'),
+  validateParams(billItemIdParamSchema),
+  validateBody(updateBillItemSchema),
+  async (req, res, next) => {
+    try {
+      const { item, bill } = await billItems.updateQuantity({
+        restaurantId: req.user.restaurantId,
+        billId: req.params.id,
+        itemId: req.params.itemId,
+        quantity: req.body.quantity
+      });
+
+      await logAudit({
+        ...auditContext(req),
+        action: 'BILL_ITEM_UPDATED',
+        resourceType: 'bill',
+        resourceId: req.params.id,
+        details: { itemId: item.id, quantity: item.quantity }
+      });
+
+      res.json({ item: dto.billItem(item), bill: dto.bill(bill) });
+    } catch (err) { next(err); }
+  }
+);
+
+router.delete(
+  '/:id/items/:itemId',
+  requireRole('OWNER', 'MANAGER', 'CASHIER', 'WAITER'),
+  validateParams(billItemIdParamSchema),
+  async (req, res, next) => {
+    try {
+      const { removedId, bill } = await billItems.removeItem({
+        restaurantId: req.user.restaurantId,
+        billId: req.params.id,
+        itemId: req.params.itemId
+      });
+
+      await logAudit({
+        ...auditContext(req),
+        action: 'BILL_ITEM_REMOVED',
+        resourceType: 'bill',
+        resourceId: req.params.id,
+        details: { itemId: removedId }
+      });
+
+      res.json({ removedId, bill: dto.bill(bill) });
+    } catch (err) { next(err); }
+  }
+);
 
 /** Suggested even split of the outstanding balance, exact to the céntimo. */
 router.get(

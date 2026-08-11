@@ -125,6 +125,78 @@ const schemas = {
     }
   },
 
+  BillItem: {
+    type: 'object',
+    description:
+      'A line on a bill. The price is snapshotted when the line is added, so re-pricing, renaming or deactivating the product never changes a bill already served.',
+    properties: {
+      id: { type: 'string', format: 'uuid' },
+      billId: { type: 'string', format: 'uuid' },
+      productId: {
+        type: ['string', 'null'], format: 'uuid',
+        description: 'Reporting link only. Null once the product is gone; the line outlives it.'
+      },
+      name: { type: 'string', description: 'The product name as it was when the line was added.' },
+      unitPriceMinor: { ...minorUnits, description: 'Snapshotted unit price, in the bill currency.' },
+      currency: { type: 'string', enum: ['VES', 'USD', 'EUR'] },
+      quantity: { type: 'integer', minimum: 1, maximum: 999 },
+      subtotalMinor: { ...minorUnits, description: 'unitPriceMinor x quantity, computed by the database.' },
+      createdAt: { type: 'string', format: 'date-time' },
+      updatedAt: { type: 'string', format: 'date-time' }
+    }
+  },
+
+  BillWithItems: {
+    allOf: [
+      ref('Bill'),
+      {
+        type: 'object',
+        description: 'Returned by single-bill reads. The list endpoint returns Bill, without lines.',
+        properties: {
+          itemCount: { type: 'integer' },
+          items: { type: 'array', items: ref('BillItem') }
+        }
+      }
+    ]
+  },
+
+  BillItemList: {
+    type: 'object',
+    properties: { data: { type: 'array', items: ref('BillItem') } }
+  },
+
+  BillItemMutation: {
+    type: 'object',
+    description: 'The affected line and the recalculated bill, so a client never re-derives a total.',
+    properties: {
+      item: ref('BillItem'),
+      bill: ref('Bill')
+    }
+  },
+
+  BillItemRemoval: {
+    type: 'object',
+    properties: {
+      removedId: { type: 'string', format: 'uuid' },
+      bill: ref('Bill')
+    }
+  },
+
+  AddBillItemRequest: {
+    type: 'object',
+    required: ['productId'],
+    properties: {
+      productId: { type: 'string', format: 'uuid' },
+      quantity: { type: 'integer', minimum: 1, maximum: 999, default: 1 }
+    }
+  },
+
+  UpdateBillItemRequest: {
+    type: 'object',
+    required: ['quantity'],
+    properties: { quantity: { type: 'integer', minimum: 1, maximum: 999 } }
+  },
+
   UsdReference: {
     type: 'object',
     description:
@@ -502,6 +574,9 @@ const parameters = {
   TableId: {
     name: 'tableId', in: 'path', required: true, schema: { type: 'string', format: 'uuid' }
   },
+  BillItemId: {
+    name: 'itemId', in: 'path', required: true, schema: { type: 'string', format: 'uuid' }
+  },
   ProductId: {
     name: 'id', in: 'path', required: true, schema: { type: 'string', format: 'uuid' }
   },
@@ -766,9 +841,101 @@ const paths = {
       security: staff,
       parameters: [{ $ref: '#/components/parameters/BillId' }],
       responses: {
-        200: { description: 'The bill.', content: { 'application/json': { schema: ref('Bill') } } },
+        200: {
+          description: 'The bill, with its line items.',
+          content: { 'application/json': { schema: ref('BillWithItems') } }
+        },
         ...commonErrors,
         404: response('NotFound')
+      }
+    }
+  },
+
+  '/api/v1/bills/{id}/items': {
+    get: {
+      tags: ['Bills'],
+      summary: 'List the lines on a bill',
+      description: 'Any authenticated staff role.',
+      security: staff,
+      parameters: [{ $ref: '#/components/parameters/BillId' }],
+      responses: {
+        200: { description: 'Lines.', content: { 'application/json': { schema: ref('BillItemList') } } },
+        ...commonErrors,
+        404: response('NotFound')
+      }
+    },
+    post: {
+      tags: ['Bills'],
+      summary: 'Add a line to a bill',
+      'x-required-roles': ['OWNER', 'MANAGER', 'CASHIER', 'WAITER'],
+      description: [
+        'Roles: OWNER, MANAGER, CASHIER, WAITER.',
+        '',
+        'The product name and price are **snapshotted** onto the line, so later menu changes',
+        'never alter a bill already served. Adding the same product twice creates two lines: a',
+        'second round may have been ordered at a different price.',
+        '',
+        'The bill total is recomputed from its lines and re-converted at the rate **frozen when',
+        'the bill opened**, never at the current rate.',
+        '',
+        'Only an OPEN bill accepts lines. A bill opened with a fixed non-zero total is refused',
+        'with 409 `BILL_NOT_ITEMISED`; open it with a total of 0 to itemise it.'
+      ].join('\n'),
+      security: staff,
+      parameters: [{ $ref: '#/components/parameters/BillId' }],
+      requestBody: { required: true, content: { 'application/json': { schema: ref('AddBillItemRequest') } } },
+      responses: {
+        201: { description: 'Line added.', content: { 'application/json': { schema: ref('BillItemMutation') } } },
+        ...commonErrors,
+        403: response('Forbidden'),
+        404: response('NotFound'),
+        409: response('Conflict')
+      }
+    }
+  },
+
+  '/api/v1/bills/{id}/items/{itemId}': {
+    patch: {
+      tags: ['Bills'],
+      summary: 'Change a line quantity',
+      'x-required-roles': ['OWNER', 'MANAGER', 'CASHIER', 'WAITER'],
+      description:
+        'Roles: OWNER, MANAGER, CASHIER, WAITER. The snapshotted unit price is never revisited; only the quantity changes.',
+      security: staff,
+      parameters: [
+        { $ref: '#/components/parameters/BillId' },
+        { $ref: '#/components/parameters/BillItemId' }
+      ],
+      requestBody: { required: true, content: { 'application/json': { schema: ref('UpdateBillItemRequest') } } },
+      responses: {
+        200: { description: 'Updated.', content: { 'application/json': { schema: ref('BillItemMutation') } } },
+        ...commonErrors,
+        403: response('Forbidden'),
+        404: response('NotFound'),
+        409: response('Conflict')
+      }
+    },
+    delete: {
+      tags: ['Bills'],
+      summary: 'Remove a line from a bill',
+      'x-required-roles': ['OWNER', 'MANAGER', 'CASHIER', 'WAITER'],
+      description: [
+        'Roles: OWNER, MANAGER, CASHIER, WAITER.',
+        '',
+        'Refused with 409 `TOTAL_BELOW_AMOUNT_PAID` when it would drop the bill total below what',
+        'has already been settled — reversing money that has moved is a refund, not an edit.'
+      ].join('\n'),
+      security: staff,
+      parameters: [
+        { $ref: '#/components/parameters/BillId' },
+        { $ref: '#/components/parameters/BillItemId' }
+      ],
+      responses: {
+        200: { description: 'Removed.', content: { 'application/json': { schema: ref('BillItemRemoval') } } },
+        ...commonErrors,
+        403: response('Forbidden'),
+        404: response('NotFound'),
+        409: response('Conflict')
       }
     }
   },

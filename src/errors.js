@@ -54,6 +54,7 @@ const CODES = {
   // another tenant's row is reported absent rather than forbidden.
   NOT_FOUND: 404,
   BILL_NOT_FOUND: 404,
+  BILL_ITEM_NOT_FOUND: 404,
   TABLE_NOT_FOUND: 404,
   PRODUCT_NOT_FOUND: 404,
   RESTAURANT_NOT_FOUND: 404,
@@ -62,6 +63,9 @@ const CODES = {
   // 409 -- valid request, incompatible with current state.
   OPEN_BILL_EXISTS: 409,
   BILL_NOT_OPEN: 409,
+  BILL_NOT_ITEMISED: 409,
+  TOTAL_BELOW_AMOUNT_PAID: 409,
+  PRODUCT_INACTIVE: 409,
   BILL_HAS_PAYMENTS: 409,
   PAYMENT_EXCEEDS_BALANCE: 409,
   PAYMENT_STATE_INVALID: 409,
@@ -98,6 +102,11 @@ const DETAILS = {
   PAYMENT_EXCEEDS_BALANCE: { remainingVes: 'string -- minor units still owed' },
   PAYMENT_STATE_INVALID: { from: 'string -- current status', to: 'string -- requested status' },
   MENU_CURRENCY_MISMATCH: { activeProductsInOtherCurrency: 'integer -- how many still disagree' },
+  TOTAL_BELOW_AMOUNT_PAID: {
+    amountPaidVes: 'string -- minor units already settled',
+    proposedTotalVes: 'string -- what the change would have made the total'
+  },
+  BILL_NOT_ITEMISED: { totalDue: 'string -- the manually supplied total blocking itemisation' },
   FORBIDDEN_ROLE: { requiredRoles: 'string[] -- roles that would have been accepted' },
   FX_UNAVAILABLE: { currency: 'string -- the currency with no usable rate, when specific to one' },
   RATE_LIMITED: { retryAfterSeconds: 'integer -- matches the Retry-After header' },
