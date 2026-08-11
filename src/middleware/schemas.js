@@ -97,6 +97,27 @@ const billItemIdParamSchema = Joi.object({
   itemId: uuid.required()
 });
 
+// A participant id is opaque to the backend: the client owns identity until
+// persisted participants land with the guest claim flow. It is bounded and
+// pattern-checked so it can be echoed back safely and read in a log line.
+const participantId = Joi.string().min(1).max(64).pattern(/^[A-Za-z0-9._:-]+$/);
+
+const splitPreviewSchema = Joi.object({
+  mode: Joi.string().valid('FULL', 'EQUAL', 'ITEMS', 'CUSTOM').required(),
+  participants: Joi.array().min(1).max(50).required().items(Joi.object({
+    id: participantId.required(),
+    name: Joi.string().trim().max(80),
+    // CUSTOM only. Validated for exactness against the outstanding balance in
+    // the engine, where the bill is known.
+    amountVes: minorUnits
+  })),
+  // ITEMS only.
+  claims: Joi.array().max(500).items(Joi.object({
+    itemId: uuid.required(),
+    participantIds: Joi.array().min(1).max(50).required().items(participantId)
+  }))
+});
+
 const splitQuerySchema = Joi.object({
   diners: Joi.number().integer().min(1).max(50).required()
 });
@@ -185,6 +206,7 @@ module.exports = {
   addBillItemSchema,
   updateBillItemSchema,
   billItemIdParamSchema,
+  splitPreviewSchema,
   listTablesQuerySchema,
   listBillsQuerySchema,
   splitQuerySchema,

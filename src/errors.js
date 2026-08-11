@@ -32,6 +32,10 @@ const CODES = {
   INVALID_AMOUNT: 400,
   INVALID_MONETARY_VALUE: 400,
   WEBHOOK_BODY_UNVERIFIABLE: 400,
+  SPLIT_PARTICIPANTS_INVALID: 400,
+  SPLIT_CLAIMS_INCOMPLETE: 400,
+  SPLIT_CLAIM_UNKNOWN: 400,
+  SPLIT_AMOUNT_MISMATCH: 400,
 
   // 401 -- who the caller is could not be established.
   AUTH_TOKEN_MISSING: 401,
@@ -66,6 +70,8 @@ const CODES = {
   BILL_NOT_ITEMISED: 409,
   TOTAL_BELOW_AMOUNT_PAID: 409,
   PRODUCT_INACTIVE: 409,
+  SPLIT_NOT_ITEMISED: 409,
+  SPLIT_NOTHING_OUTSTANDING: 409,
   BILL_HAS_PAYMENTS: 409,
   PAYMENT_EXCEEDS_BALANCE: 409,
   PAYMENT_STATE_INVALID: 409,
@@ -107,6 +113,16 @@ const DETAILS = {
     proposedTotalVes: 'string -- what the change would have made the total'
   },
   BILL_NOT_ITEMISED: { totalDue: 'string -- the manually supplied total blocking itemisation' },
+  SPLIT_PARTICIPANTS_INVALID: { reason: 'string -- which rule the participant list broke' },
+  SPLIT_CLAIMS_INCOMPLETE: { unclaimedItemIds: 'string[] -- lines nobody claimed' },
+  SPLIT_CLAIM_UNKNOWN: {
+    unknownItemIds: 'string[] -- claimed lines not on this bill',
+    unknownParticipantIds: 'string[] -- claimants not in the participant list'
+  },
+  SPLIT_AMOUNT_MISMATCH: {
+    outstandingVes: 'string -- what the amounts had to sum to',
+    submittedTotalVes: 'string -- what they actually summed to'
+  },
   FORBIDDEN_ROLE: { requiredRoles: 'string[] -- roles that would have been accepted' },
   FX_UNAVAILABLE: { currency: 'string -- the currency with no usable rate, when specific to one' },
   RATE_LIMITED: { retryAfterSeconds: 'integer -- matches the Retry-After header' },

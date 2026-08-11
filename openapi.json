@@ -31,6 +31,20 @@
       "BILL_NOT_ITEMISED": {
         "totalDue": "string -- the manually supplied total blocking itemisation"
       },
+      "SPLIT_PARTICIPANTS_INVALID": {
+        "reason": "string -- which rule the participant list broke"
+      },
+      "SPLIT_CLAIMS_INCOMPLETE": {
+        "unclaimedItemIds": "string[] -- lines nobody claimed"
+      },
+      "SPLIT_CLAIM_UNKNOWN": {
+        "unknownItemIds": "string[] -- claimed lines not on this bill",
+        "unknownParticipantIds": "string[] -- claimants not in the participant list"
+      },
+      "SPLIT_AMOUNT_MISMATCH": {
+        "outstandingVes": "string -- what the amounts had to sum to",
+        "submittedTotalVes": "string -- what they actually summed to"
+      },
       "FORBIDDEN_ROLE": {
         "requiredRoles": "string[] -- roles that would have been accepted"
       },
@@ -229,6 +243,10 @@
                   "INVALID_AMOUNT",
                   "INVALID_MONETARY_VALUE",
                   "WEBHOOK_BODY_UNVERIFIABLE",
+                  "SPLIT_PARTICIPANTS_INVALID",
+                  "SPLIT_CLAIMS_INCOMPLETE",
+                  "SPLIT_CLAIM_UNKNOWN",
+                  "SPLIT_AMOUNT_MISMATCH",
                   "AUTH_TOKEN_MISSING",
                   "AUTH_TOKEN_INVALID",
                   "INVALID_CREDENTIALS",
@@ -253,6 +271,8 @@
                   "BILL_NOT_ITEMISED",
                   "TOTAL_BELOW_AMOUNT_PAID",
                   "PRODUCT_INACTIVE",
+                  "SPLIT_NOT_ITEMISED",
+                  "SPLIT_NOTHING_OUTSTANDING",
                   "BILL_HAS_PAYMENTS",
                   "PAYMENT_EXCEEDS_BALANCE",
                   "PAYMENT_STATE_INVALID",
@@ -748,6 +768,151 @@
           },
           "usdReference": {
             "$ref": "#/components/schemas/UsdReference"
+          }
+        }
+      },
+      "SplitPreviewRequest": {
+        "type": "object",
+        "required": [
+          "mode",
+          "participants"
+        ],
+        "properties": {
+          "mode": {
+            "type": "string",
+            "enum": [
+              "FULL",
+              "EQUAL",
+              "ITEMS",
+              "CUSTOM"
+            ],
+            "description": "FULL: one participant owes the balance. EQUAL: divided evenly. ITEMS: participants claim lines, shared lines split between claimants. CUSTOM: the client states amounts, which must add up exactly."
+          },
+          "participants": {
+            "type": "array",
+            "minItems": 1,
+            "maxItems": 50,
+            "items": {
+              "type": "object",
+              "required": [
+                "id"
+              ],
+              "properties": {
+                "id": {
+                  "type": "string",
+                  "maxLength": 64,
+                  "pattern": "^[A-Za-z0-9._:-]+$",
+                  "description": "Client-owned and opaque to the server. Must be unique within the request."
+                },
+                "name": {
+                  "type": "string",
+                  "maxLength": 80
+                },
+                "amountVes": {
+                  "type": "string",
+                  "pattern": "^[0-9]+$",
+                  "description": "CUSTOM only. Must sum to outstandingVes exactly.",
+                  "examples": [
+                    "756710"
+                  ]
+                }
+              }
+            }
+          },
+          "claims": {
+            "type": "array",
+            "maxItems": 500,
+            "description": "ITEMS only. Every line on the bill must appear, or the split is refused.",
+            "items": {
+              "type": "object",
+              "required": [
+                "itemId",
+                "participantIds"
+              ],
+              "properties": {
+                "itemId": {
+                  "type": "string",
+                  "format": "uuid"
+                },
+                "participantIds": {
+                  "type": "array",
+                  "minItems": 1,
+                  "items": {
+                    "type": "string"
+                  },
+                  "description": "More than one splits that line evenly between them."
+                }
+              }
+            }
+          }
+        }
+      },
+      "SplitPreview": {
+        "type": "object",
+        "properties": {
+          "billId": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "mode": {
+            "type": "string",
+            "enum": [
+              "FULL",
+              "EQUAL",
+              "ITEMS",
+              "CUSTOM"
+            ]
+          },
+          "currency": {
+            "type": "string",
+            "const": "VES"
+          },
+          "outstandingVes": {
+            "type": "string",
+            "pattern": "^[0-9]+$",
+            "description": "What was divided. Every mode divides this same figure.",
+            "examples": [
+              "756710"
+            ]
+          },
+          "totalAllocatedVes": {
+            "type": "string",
+            "pattern": "^[0-9]+$",
+            "description": "Always equal to outstandingVes. Present so a client can assert it rather than trust it.",
+            "examples": [
+              "756710"
+            ]
+          },
+          "allocations": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "participantId": {
+                  "type": "string"
+                },
+                "name": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "amountVes": {
+                  "type": "string",
+                  "pattern": "^[0-9]+$",
+                  "description": "Integer minor units (céntimos) as a string, so values beyond 2^53 survive JSON.",
+                  "examples": [
+                    "756710"
+                  ]
+                },
+                "usdReference": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                }
+              }
+            }
           }
         }
       },
@@ -2356,6 +2521,69 @@
           },
           "404": {
             "$ref": "#/components/responses/NotFound"
+          },
+          "429": {
+            "$ref": "#/components/responses/TooManyRequests"
+          },
+          "500": {
+            "$ref": "#/components/responses/ServerError"
+          }
+        }
+      }
+    },
+    "/api/v1/bills/{id}/split/preview": {
+      "post": {
+        "tags": [
+          "Bills"
+        ],
+        "summary": "Compute an exact split of the outstanding balance",
+        "operationId": "previewSplit",
+        "description": "Any authenticated staff role. **Advisory: this mutates nothing.** Payment still goes\nthrough the payments endpoint, which holds the bill lock and enforces the ceiling.\n\n**Every mode divides the same figure** — the outstanding VES balance — echoed back as\n`outstandingVes`, so a client never has to work out which number was split.\n\nAllocation is largest-remainder, so the parts sum to exactly the total. Rounding each\nshare independently would leave the last diner unable to pay under\n`CHECK (amount_paid_ves <= total_due_ves)`. `totalAllocatedVes` is returned so a client\ncan assert that rather than trust it.\n\nPOST because the intent does not fit in a query string, not because anything is written.",
+        "security": [
+          {
+            "staffAuth": []
+          }
+        ],
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/BillId"
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SplitPreviewRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "The allocation.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SplitPreview"
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "403": {
+            "$ref": "#/components/responses/Forbidden"
+          },
+          "404": {
+            "$ref": "#/components/responses/NotFound"
+          },
+          "409": {
+            "$ref": "#/components/responses/Conflict"
           },
           "429": {
             "$ref": "#/components/responses/TooManyRequests"

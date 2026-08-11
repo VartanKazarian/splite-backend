@@ -615,6 +615,95 @@ describe('bill routes over HTTP', { skip }, () => {
     assert.equal(missing.body.error.code, 'BILL_ITEM_NOT_FOUND');
   });
 
+  it('splits a real itemised bill four ways over HTTP', async () => {
+    const tenant = await usdRestaurant('USD');
+    const splitTable = await fixtures.createTable(tenant.id, { name: 'S9' });
+    const menu = async (name, price) => (await db.query(
+      `INSERT INTO menu_products (restaurant_id, name, price_minor_units, currency)
+       VALUES ($1, $2, $3, 'USD') RETURNING id`, [tenant.id, name, price]
+    )).rows[0].id;
+
+    const burger = await menu('Split Burger', 2500);
+    const wine = await menu('Split Wine', 3000);
+
+    const bill = await request('POST', '/api/v1/bills', {
+      body: { tableId: splitTable.id, totalDueMinorUnits: '0' }, token: tenant.token
+    });
+    const addBurger = await request('POST', `/api/v1/bills/${bill.body.id}/items`, {
+      body: { productId: burger, quantity: 1 }, token: tenant.token
+    });
+    const addWine = await request('POST', `/api/v1/bills/${bill.body.id}/items`, {
+      body: { productId: wine, quantity: 1 }, token: tenant.token
+    });
+    // $55.00 at 757.5406 -> 4 166 473 céntimos.
+    const outstanding = addWine.body.bill.totalDueVes;
+    assert.equal(outstanding, '4166473');
+
+    const preview = (body) =>
+      request('POST', `/api/v1/bills/${bill.body.id}/split/preview`, { body, token: tenant.token });
+
+    const exact = res => {
+      assert.equal(res.status, 200, JSON.stringify(res.body));
+      const summed = res.body.allocations.reduce((t, a) => t + BigInt(a.amountVes), 0n);
+      assert.equal(summed.toString(), res.body.outstandingVes, 'allocations must sum to the balance');
+      assert.equal(res.body.totalAllocatedVes, res.body.outstandingVes);
+      assert.equal(res.body.outstandingVes, outstanding, 'every mode divides the same figure');
+      return res.body;
+    };
+
+    exact(await preview({ mode: 'FULL', participants: [{ id: 'ana', name: 'Ana' }] }));
+
+    // 4 166 473 across 3 does not divide cleanly, which is the interesting case.
+    const equal = exact(await preview({
+      mode: 'EQUAL', participants: [{ id: 'ana' }, { id: 'bea' }, { id: 'cid' }]
+    }));
+    assert.deepEqual(equal.allocations.map(a => a.amountVes), ['1388825', '1388824', '1388824']);
+
+    // Ana takes the burger, the wine is shared.
+    const byItems = exact(await preview({
+      mode: 'ITEMS',
+      participants: [{ id: 'ana' }, { id: 'bea' }],
+      claims: [
+        { itemId: addBurger.body.item.id, participantIds: ['ana'] },
+        { itemId: addWine.body.item.id, participantIds: ['ana', 'bea'] }
+      ]
+    }));
+    // Ana owes the burger plus half the wine; Bea owes half the wine.
+    assert.ok(BigInt(byItems.allocations[0].amountVes) > BigInt(byItems.allocations[1].amountVes));
+
+    exact(await preview({
+      mode: 'CUSTOM',
+      participants: [{ id: 'ana', amountVes: '166473' }, { id: 'bea', amountVes: '4000000' }]
+    }));
+
+    // And a split that does not add up is refused in the standard envelope.
+    const wrong = await preview({
+      mode: 'CUSTOM', participants: [{ id: 'ana', amountVes: '1' }]
+    });
+    assert.equal(wrong.status, 400);
+    assert.equal(wrong.body.error.code, 'SPLIT_AMOUNT_MISMATCH');
+    assert.equal(wrong.body.error.details.outstandingVes, outstanding);
+  });
+
+  it('a split preview moves no money', async () => {
+    const tenant = await usdRestaurant('USD');
+    const t = await fixtures.createTable(tenant.id, { name: 'S10' });
+    const bill = await fixtures.createBill({
+      restaurantId: tenant.id, tableId: t.id, totalDue: 1000,
+      currency: 'USD', totalDueVes: 757541, fxRate: '757.54060000'
+    });
+
+    const before = await fixtures.readBill(bill.id);
+    const res = await request('POST', `/api/v1/bills/${bill.id}/split/preview`, {
+      body: { mode: 'EQUAL', participants: [{ id: 'a' }, { id: 'b' }] }, token: tenant.token
+    });
+    assert.equal(res.status, 200, JSON.stringify(res.body));
+
+    const after = await fixtures.readBill(bill.id);
+    // Advisory means advisory: the endpoint reads and returns, nothing else.
+    assert.deepEqual(after, before, 'the bill is untouched by a preview');
+  });
+
   it('scopes every read to the caller\'s restaurant', async () => {
     const other = await fixtures.createRestaurant({ name: 'Other Routes Tenant' });
     try {

@@ -11,6 +11,7 @@ const {
   addBillItemSchema,
   updateBillItemSchema,
   billItemIdParamSchema,
+  splitPreviewSchema,
   listBillsQuerySchema,
   splitQuerySchema,
   billIdParamSchema,
@@ -18,6 +19,7 @@ const {
 } = require('../middleware/schemas');
 const { processSplitPayment } = require('../services/locks');
 const billItems = require('../services/billItems');
+const splitEngine = require('../services/splitEngine');
 const { getRateFor } = require('../services/fx');
 const { splitEvenly, usdReference } = require('../services/split');
 const dto = require('../dto');
@@ -361,6 +363,39 @@ router.get(
         shares,
         usdReference: shares.map(share => usdReference(share, rows[0].fx_rate_ves_per_unit))
       });
+    } catch (err) { next(err); }
+  }
+);
+
+/**
+ * Computes an exact split of the outstanding balance.
+ *
+ * Advisory: it reads and returns, and mutates nothing. Payment still goes
+ * through POST /payments, which takes the row lock and enforces the ceiling.
+ *
+ * POST rather than GET because the intent -- participants, claims, custom
+ * amounts -- does not fit in a query string, not because anything is written.
+ */
+router.post(
+  '/:id/split/preview',
+  validateParams(billIdParamSchema),
+  validateBody(splitPreviewSchema),
+  async (req, res, next) => {
+    try {
+      const { rows } = await db.query(
+        `SELECT id, total_due_ves, amount_paid_ves, fx_rate_ves_per_unit
+           FROM bills WHERE id = $1 AND restaurant_id = $2`,
+        [req.params.id, req.user.restaurantId]
+      );
+      if (!rows.length) throw new ApiError('BILL_NOT_FOUND', 'Bill not found');
+
+      // Lines are only read for ITEMS; fetching them unconditionally would put
+      // a query on every EQUAL split for nothing.
+      const items = req.body.mode === 'ITEMS'
+        ? await billItems.listForBill({ restaurantId: req.user.restaurantId, billId: req.params.id })
+        : [];
+
+      res.json(splitEngine.preview({ bill: rows[0], items, request: req.body }));
     } catch (err) { next(err); }
   }
 );

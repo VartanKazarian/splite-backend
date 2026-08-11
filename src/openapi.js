@@ -282,6 +282,75 @@ const schemas = {
     }
   },
 
+  SplitPreviewRequest: {
+    type: 'object',
+    required: ['mode', 'participants'],
+    properties: {
+      mode: {
+        type: 'string',
+        enum: ['FULL', 'EQUAL', 'ITEMS', 'CUSTOM'],
+        description:
+          'FULL: one participant owes the balance. EQUAL: divided evenly. ITEMS: participants claim lines, shared lines split between claimants. CUSTOM: the client states amounts, which must add up exactly.'
+      },
+      participants: {
+        type: 'array', minItems: 1, maxItems: 50,
+        items: {
+          type: 'object',
+          required: ['id'],
+          properties: {
+            id: {
+              type: 'string', maxLength: 64, pattern: '^[A-Za-z0-9._:-]+$',
+              description: 'Client-owned and opaque to the server. Must be unique within the request.'
+            },
+            name: { type: 'string', maxLength: 80 },
+            amountVes: { ...minorUnits, description: 'CUSTOM only. Must sum to outstandingVes exactly.' }
+          }
+        }
+      },
+      claims: {
+        type: 'array', maxItems: 500,
+        description: 'ITEMS only. Every line on the bill must appear, or the split is refused.',
+        items: {
+          type: 'object',
+          required: ['itemId', 'participantIds'],
+          properties: {
+            itemId: { type: 'string', format: 'uuid' },
+            participantIds: {
+              type: 'array', minItems: 1, items: { type: 'string' },
+              description: 'More than one splits that line evenly between them.'
+            }
+          }
+        }
+      }
+    }
+  },
+
+  SplitPreview: {
+    type: 'object',
+    properties: {
+      billId: { type: 'string', format: 'uuid' },
+      mode: { type: 'string', enum: ['FULL', 'EQUAL', 'ITEMS', 'CUSTOM'] },
+      currency: { type: 'string', const: 'VES' },
+      outstandingVes: { ...minorUnits, description: 'What was divided. Every mode divides this same figure.' },
+      totalAllocatedVes: {
+        ...minorUnits,
+        description: 'Always equal to outstandingVes. Present so a client can assert it rather than trust it.'
+      },
+      allocations: {
+        type: 'array',
+        items: {
+          type: 'object',
+          properties: {
+            participantId: { type: 'string' },
+            name: { type: ['string', 'null'] },
+            amountVes: minorUnits,
+            usdReference: { type: ['string', 'null'] }
+          }
+        }
+      }
+    }
+  },
+
   SplitQuote: {
     type: 'object',
     properties: {
@@ -955,6 +1024,38 @@ const paths = {
         200: { description: 'Suggested shares.', content: { 'application/json': { schema: ref('SplitQuote') } } },
         ...commonErrors,
         404: response('NotFound')
+      }
+    }
+  },
+
+  '/api/v1/bills/{id}/split/preview': {
+    post: {
+      tags: ['Bills'],
+      summary: 'Compute an exact split of the outstanding balance',
+      operationId: 'previewSplit',
+      description: [
+        'Any authenticated staff role. **Advisory: this mutates nothing.** Payment still goes',
+        'through the payments endpoint, which holds the bill lock and enforces the ceiling.',
+        '',
+        '**Every mode divides the same figure** — the outstanding VES balance — echoed back as',
+        '`outstandingVes`, so a client never has to work out which number was split.',
+        '',
+        'Allocation is largest-remainder, so the parts sum to exactly the total. Rounding each',
+        'share independently would leave the last diner unable to pay under',
+        '`CHECK (amount_paid_ves <= total_due_ves)`. `totalAllocatedVes` is returned so a client',
+        'can assert that rather than trust it.',
+        '',
+        'POST because the intent does not fit in a query string, not because anything is written.'
+      ].join('\n'),
+      security: staff,
+      parameters: [{ $ref: '#/components/parameters/BillId' }],
+      requestBody: { required: true, content: { 'application/json': { schema: ref('SplitPreviewRequest') } } },
+      responses: {
+        200: { description: 'The allocation.', content: { 'application/json': { schema: ref('SplitPreview') } } },
+        ...commonErrors,
+        403: response('Forbidden'),
+        404: response('NotFound'),
+        409: response('Conflict')
       }
     }
   },
