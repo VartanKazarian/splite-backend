@@ -1,4 +1,5 @@
 const { getContext } = require('../connectors/logger');
+const { ApiError } = require('../errors');
 
 /**
  * The payment ledger.
@@ -31,11 +32,7 @@ const ALLOWED_TRANSITIONS = {
   REFUNDED: []
 };
 
-function conflict(message) {
-  const error = new Error(message);
-  error.statusCode = 409;
-  return error;
-}
+
 
 /** Records a transition. Append-only; nothing here is ever updated. */
 async function appendTransition(client, {
@@ -128,16 +125,18 @@ async function transitionPayment(client, {
   );
   const current = rows[0];
   if (!current) {
-    const error = new Error('Payment not found');
-    error.statusCode = 404;
-    throw error;
+    throw new ApiError('NOT_FOUND', 'Payment not found');
   }
 
   if (current.status === toStatus) return current;
 
   const allowed = ALLOWED_TRANSITIONS[current.status] ?? [];
   if (!allowed.includes(toStatus)) {
-    throw conflict(`Cannot move a ${current.status} payment to ${toStatus}`);
+    throw new ApiError(
+      'PAYMENT_STATE_INVALID',
+      `Cannot move a ${current.status} payment to ${toStatus}`,
+      { from: current.status, to: toStatus }
+    );
   }
 
   const updated = await client.query(

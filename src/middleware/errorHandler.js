@@ -1,10 +1,42 @@
 const { logger } = require('../connectors/logger');
+const { ApiError } = require('../errors');
+
+/**
+ * The only place in the app that renders an error body.
+ *
+ * Every failure arrives here by being thrown or passed to next(), so the
+ * envelope is guaranteed by construction rather than by 45 call sites each
+ * remembering to build it the same way.
+ */
+/**
+ * Only reachable if something throws a plain Error with a statusCode. Every
+ * site in the tree raises an ApiError, so this exists so that a future one that
+ * forgets still produces a valid envelope rather than a malformed body.
+ */
+const FALLBACK_CODES = {
+  400: 'VALIDATION_FAILED',
+  401: 'AUTH_TOKEN_INVALID',
+  403: 'FORBIDDEN_ROLE',
+  404: 'NOT_FOUND',
+  429: 'RATE_LIMITED'
+};
+const genericFallback = status => (status >= 500 ? 'INTERNAL_ERROR' : 'VALIDATION_FAILED');
 
 // eslint-disable-next-line no-unused-vars -- Express identifies error handlers by arity (4 args).
 function errorHandler(err, req, res, next) {
-  const statusCode = Number.isInteger(err.statusCode) && err.statusCode >= 400 && err.statusCode < 600
+  // An ApiError was raised deliberately and its message is written for a
+  // caller. Anything else is a bug, and its message is withheld: unexpected
+  // errors routinely carry driver, query or file-path detail.
+  const known = err instanceof ApiError;
+
+  // Legacy `statusCode` on a plain Error still selects the status, so a throw
+  // site that has not been converted yet degrades to a correct status with a
+  // generic code rather than becoming a 500.
+  const statusCode = known
     ? err.statusCode
-    : 500;
+    : (Number.isInteger(err.statusCode) && err.statusCode >= 400 && err.statusCode < 600 ? err.statusCode : 500);
+
+  const code = known ? err.code : (FALLBACK_CODES[statusCode] ?? genericFallback(statusCode));
 
   // A 4xx is the caller's problem and routine; a 5xx is ours and is not.
   // Splitting them keeps an alert on `level >= 50` meaningful instead of
@@ -20,6 +52,7 @@ function errorHandler(err, req, res, next) {
       method: req.method,
       path: req.originalUrl,
       status: statusCode,
+      code,
       err
     },
     err.message
@@ -29,9 +62,12 @@ function errorHandler(err, req, res, next) {
 
   res.status(statusCode).json({
     error: {
-      // 5xx messages are never echoed back: they routinely contain driver,
-      // query or file-path detail.
+      code,
+      // 5xx messages are never echoed back.
       message: statusCode >= 500 ? 'Internal Server Error' : err.message,
+      // Always an object, never absent: `error.details.billId` must not throw
+      // on the responses that carry nothing extra.
+      details: known ? (err.details ?? {}) : {},
       requestId: req.id
     }
   });

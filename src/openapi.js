@@ -1,4 +1,5 @@
 const config = require('./config');
+const { CODES, DETAILS } = require('./errors');
 
 /**
  * OpenAPI 3.1 description of the API.
@@ -25,44 +26,68 @@ const minorUnits = {
 };
 
 const schemas = {
+  // Every failure in the API is this object and nothing else. `error` used to
+  // be a string on some routes, `{ message, requestId }` on others and an array
+  // of validation strings on a third set, with `code` and `billId` as siblings
+  // rather than inside it -- so a client could not destructure a failure without
+  // first knowing which route produced it.
   Error: {
     type: 'object',
     required: ['error'],
     properties: {
       error: {
-        oneOf: [
-          { type: 'string' },
-          {
+        type: 'object',
+        required: ['code', 'message', 'details', 'requestId'],
+        properties: {
+          code: {
+            type: 'string',
+            enum: Object.keys(CODES),
+            description:
+              'Stable identifier for what went wrong. Branch on this, never on `message`. A code always carries the same HTTP status.'
+          },
+          message: {
+            type: 'string',
+            description:
+              'Human-readable and subject to change without notice. Never parse it. 5xx messages are always the literal string "Internal Server Error".'
+          },
+          details: {
             type: 'object',
-            properties: {
-              message: { type: 'string' },
-              requestId: { type: 'string' }
-            }
+            additionalProperties: true,
+            description:
+              'Structured context for this code, always present and possibly empty. See x-error-details for what each code carries.'
+          },
+          requestId: {
+            type: 'string',
+            description: 'Correlates with the server log line for this failure. Quote it in bug reports.'
           }
-        ]
-      },
-      code: { type: 'string', description: 'Stable machine-readable code, where one applies.' },
-      billId: {
-        type: 'string', format: 'uuid',
-        description: 'Set on 409 OPEN_BILL_EXISTS: the bill already open on that table.'
-      },
-      activeProductsInOtherCurrency: {
-        type: 'integer',
-        description: 'Set on 409 MENU_CURRENCY_MISMATCH: how many active products still disagree.'
+        }
       }
     }
   },
 
+  // Kept as a distinct name because a validation failure is the one error with
+  // a documented `details` payload clients routinely render field by field.
   ValidationError: {
-    type: 'object',
-    required: ['error'],
-    properties: {
-      error: {
-        type: 'array',
-        items: { type: 'string' },
-        description: 'One entry per failed field.'
+    allOf: [
+      ref('Error'),
+      {
+        type: 'object',
+        description: 'code is always VALIDATION_FAILED; details.fields carries one entry per failed field.',
+        properties: {
+          error: {
+            type: 'object',
+            properties: {
+              details: {
+                type: 'object',
+                properties: {
+                  fields: { type: 'array', items: { type: 'string' } }
+                }
+              }
+            }
+          }
+        }
       }
-    }
+    ]
   },
 
   Bill: {
@@ -1004,6 +1029,7 @@ const document = {
       'Every query is scoped to the caller\'s restaurant. A resource belonging to another tenant',
       'is reported as 404 rather than 403, so an endpoint never confirms that it exists.'
     ].join('\n'),
+    'x-error-details': DETAILS,
     'x-wire-format': {
       money: { type: 'string', pattern: '^[0-9]+$', description: 'Integer minor units (céntimos) as a digit string.' },
       rate: { type: 'string', pattern: '^\\d+\\.\\d{8}$', description: 'Decimal rate padded to 8 fractional digits.' },

@@ -42,8 +42,15 @@ test('validateBody strips unknown keys and returns every error at once', () => {
   assert.equal(nexted, true);
   assert.equal(req.body.isAdmin, undefined);
 
+  // A validation failure now raises the standard envelope like every other
+  // error, with the per-field list under details.fields. It used to be the
+  // whole body -- `{ error: [...] }` -- a third shape clients had to know.
   const bad = { body: { currency: 'EUR', amountMinorUnits: -1 } };
-  validateBody(splitPaymentSchema)(bad, res, () => { throw new Error('should not pass'); });
-  assert.equal(res.statusCode, 400);
-  assert.ok(res.payload.error.length > 1);
+  let raised = null;
+  validateBody(splitPaymentSchema)(bad, res, err => { raised = err; });
+
+  assert.ok(raised, 'an invalid body must not reach the handler');
+  assert.equal(raised.code, 'VALIDATION_FAILED');
+  assert.equal(raised.statusCode, 400);
+  assert.ok(raised.details.fields.length > 1, 'every failing field is reported at once');
 });

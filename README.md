@@ -138,6 +138,48 @@ derived function of column names, so a rename would silently rename a public
 field, and `{ ...row }` publishes whatever the `SELECT` happened to fetch —
 `qr_nonce` and `password_hash` are one careless `SELECT *` away.
 
+## Errors
+
+Every failure is the same object. `src/middleware/errorHandler.js` is the only
+place that renders one, and every error reaches it by being thrown or passed to
+`next()`, so the shape is guaranteed by construction rather than by each route
+remembering it.
+
+```json
+{
+  "error": {
+    "code": "OPEN_BILL_EXISTS",
+    "message": "This table already has an open bill",
+    "details": { "billId": "0f3c..." },
+    "requestId": "9a1e..."
+  }
+}
+```
+
+**Branch on `code`, never on `message`.** Messages are written for humans and
+get reworded; codes are the contract. `src/errors.js` is the registry, a code
+always carries the same HTTP status, and constructing an unregistered one
+throws rather than reaching a client as an unmatchable string.
+
+```js
+if (error.code === "OPEN_BILL_EXISTS") navigate(`/bills/${error.details.billId}`);
+```
+
+`details` is always an object and often empty, so `error.details.billId` reads
+as undefined instead of throwing. `requestId` is always present and matches the
+`REQUEST_FAILED` log line. What each code carries is published in the OpenAPI
+document as `x-error-details`, generated from the registry rather than written
+by hand.
+
+5xx messages are always the literal `"Internal Server Error"` — unexpected
+errors carry driver, query and file-path detail, so only the code and the
+requestId cross the wire. The real message stays in the logs.
+
+This replaced four shapes that were live at once: a bare string, `{ message,
+requestId }`, an array of validation strings, and a string with `code` and
+`billId` as *siblings* of `error` — so a client could not destructure a failure
+without first knowing which route produced it.
+
 ## Money model
 
 Settlement is **always VES**, in céntimos, stored as `BIGINT`. A menu may be

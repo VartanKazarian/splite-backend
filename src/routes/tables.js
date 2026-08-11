@@ -12,6 +12,7 @@ const {
 } = require('../middleware/schemas');
 const { logAudit, auditContext } = require('../services/audit');
 const dto = require('../dto');
+const { ApiError } = require('../errors');
 
 const router = express.Router();
 
@@ -56,7 +57,7 @@ router.post('/', requireRole('OWNER', 'MANAGER'), validateBody(createTableSchema
        RETURNING ${TABLE_COLUMNS}`,
       [req.user.restaurantId, req.body.name]
     );
-    if (!rows.length) return res.status(409).json({ error: 'A table with that name already exists' });
+    if (!rows.length) throw new ApiError('TABLE_NAME_TAKEN', 'A table with that name already exists');
 
     await logAudit({
       ...auditContext(req),
@@ -87,7 +88,7 @@ router.patch(
         RETURNING ${TABLE_COLUMNS}`,
         [req.body.name ?? null, req.body.active ?? null, req.params.tableId, req.user.restaurantId]
       );
-      if (!rows.length) return res.status(404).json({ error: 'Table not found' });
+      if (!rows.length) throw new ApiError('TABLE_NOT_FOUND', 'Table not found');
 
       await logAudit({
         ...auditContext(req),
@@ -100,7 +101,9 @@ router.patch(
       res.json(dto.table(rows[0]));
     } catch (err) {
       // Renaming onto an existing name trips the unique index.
-      if (err.code === '23505') return res.status(409).json({ error: 'A table with that name already exists' });
+      if (err.code === '23505') {
+        return next(new ApiError('TABLE_NAME_TAKEN', 'A table with that name already exists'));
+      }
       next(err);
     }
   }

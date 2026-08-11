@@ -1,5 +1,6 @@
 const { redis } = require('../connectors/redis');
 const { logger } = require('../connectors/logger');
+const { ApiError } = require('../errors');
 
 /**
  * Fixed-window limiter backed by Redis.
@@ -26,14 +27,14 @@ function rateLimit({ windowSeconds = 60, max = 60, keyPrefix = 'rl', failClosed 
 
       if (count > max) {
         res.set('Retry-After', String(windowSeconds));
-        return res.status(429).json({ error: 'Too many requests' });
+        return next(new ApiError('RATE_LIMITED', 'Too many requests', { retryAfterSeconds: windowSeconds }));
       }
       next();
     } catch (err) {
       logger.warn({ event: 'RATE_LIMIT_BACKEND_UNAVAILABLE', keyPrefix, failClosed, err }, 'Rate limiter backend unavailable');
       if (failClosed) {
         res.set('Retry-After', String(windowSeconds));
-        return res.status(503).json({ error: 'Rate limiter unavailable' });
+        return next(new ApiError('RATE_LIMITER_UNAVAILABLE', 'Rate limiter unavailable', { retryAfterSeconds: windowSeconds }));
       }
       next();
     }

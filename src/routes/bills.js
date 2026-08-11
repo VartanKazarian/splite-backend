@@ -17,6 +17,7 @@ const { processSplitPayment } = require('../services/locks');
 const { getRateFor } = require('../services/fx');
 const { splitEvenly, usdReference } = require('../services/split');
 const dto = require('../dto');
+const { ApiError } = require('../errors');
 const { parseRate, applyRate, toMinor } = require('../services/money');
 const { requestHash, begin, complete, abort } = require('../services/idempotency');
 const { logAudit, auditContext } = require('../services/audit');
@@ -58,9 +59,11 @@ async function snapshotFx(menuCurrency, totalDueMinorUnits) {
     // total, and inventing one is what the FX service exists to prevent. This
     // can only stop a bill being opened; payments on existing bills use the
     // rate already frozen on them.
-    const error = new Error(`No exchange rate is available for ${menuCurrency}, so the bill cannot be opened`);
-    error.statusCode = 503;
-    throw error;
+    throw new ApiError(
+      'FX_UNAVAILABLE',
+      `No exchange rate is available for ${menuCurrency}, so the bill cannot be opened`,
+      { currency: menuCurrency }
+    );
   }
 
   const scaled = parseRate(fx.rate);
@@ -113,7 +116,7 @@ router.get('/tables/:tableId/open', validateParams(tableIdParamSchema), async (r
         WHERE restaurant_id = $1 AND table_id = $2 AND status = 'OPEN'`,
       [req.user.restaurantId, req.params.tableId]
     );
-    if (!rows.length) return res.status(404).json({ error: 'No open bill for this table' });
+    if (!rows.length) throw new ApiError('OPEN_BILL_NOT_FOUND', 'No open bill for this table');
 
     res.json(dto.bill(rows[0]));
   } catch (err) { next(err); }
@@ -157,7 +160,7 @@ router.post(
           [req.body.tableId, req.user.restaurantId]
         );
         if (!table.rows.length) {
-          throw Object.assign(new Error('Table not found'), { statusCode: 404 });
+          throw new ApiError('TABLE_NOT_FOUND', 'Table not found');
         }
 
         const open = await client.query(
@@ -165,9 +168,7 @@ router.post(
           [req.user.restaurantId, req.body.tableId]
         );
         if (open.rows.length) {
-          throw Object.assign(new Error('This table already has an open bill'), {
-            statusCode: 409,
-            code: 'OPEN_BILL_EXISTS',
+          throw new ApiError('OPEN_BILL_EXISTS', 'This table already has an open bill', {
             billId: open.rows[0].id
           });
         }
@@ -207,10 +208,7 @@ router.post(
       // request committed first, the insert fails here rather than producing a
       // second open bill for the table.
       if (err.code === '23505' && String(err.constraint || '').includes('one_open_per_table')) {
-        return res.status(409).json({ error: 'This table already has an open bill', code: 'OPEN_BILL_EXISTS' });
-      }
-      if (err.code === 'OPEN_BILL_EXISTS') {
-        return res.status(409).json({ error: err.message, code: err.code, billId: err.billId });
+        return next(new ApiError('OPEN_BILL_EXISTS', 'This table already has an open bill'));
       }
       next(err);
     }
@@ -223,7 +221,7 @@ router.get('/:id', validateParams(billIdParamSchema), async (req, res, next) => 
       `SELECT ${BILL_COLUMNS} FROM bills WHERE id = $1 AND restaurant_id = $2`,
       [req.params.id, req.user.restaurantId]
     );
-    if (!rows.length) return res.status(404).json({ error: 'Bill not found' });
+    if (!rows.length) throw new ApiError('BILL_NOT_FOUND', 'Bill not found');
 
     res.json(dto.bill(rows[0]));
   } catch (err) { next(err); }
@@ -240,7 +238,7 @@ router.get(
         'SELECT total_due_ves, amount_paid_ves, fx_rate_ves_per_unit FROM bills WHERE id = $1 AND restaurant_id = $2',
         [req.params.id, req.user.restaurantId]
       );
-      if (!rows.length) return res.status(404).json({ error: 'Bill not found' });
+      if (!rows.length) throw new ApiError('BILL_NOT_FOUND', 'Bill not found');
 
       const outstanding = (BigInt(rows[0].total_due_ves) - BigInt(rows[0].amount_paid_ves)).toString();
       const shares = splitEvenly(outstanding, req.query.diners);
@@ -281,12 +279,12 @@ router.post(
           'SELECT status, amount_paid_ves FROM bills WHERE id = $1 AND restaurant_id = $2',
           [req.params.id, req.user.restaurantId]
         );
-        if (!existing.rows.length) return res.status(404).json({ error: 'Bill not found' });
-        return res.status(409).json({
-          error: existing.rows[0].amount_paid_ves !== '0'
-            ? 'A bill with payments applied cannot be voided'
-            : `A ${existing.rows[0].status} bill cannot be voided`
-        });
+        if (!existing.rows.length) throw new ApiError('BILL_NOT_FOUND', 'Bill not found');
+        throw existing.rows[0].amount_paid_ves !== '0'
+          ? new ApiError('BILL_HAS_PAYMENTS', 'A bill with payments applied cannot be voided')
+          : new ApiError('BILL_NOT_OPEN', `A ${existing.rows[0].status} bill cannot be voided`, {
+            status: existing.rows[0].status
+          });
       }
 
       await logAudit({
@@ -311,7 +309,7 @@ router.post(
   validateBody(splitPaymentSchema),
   async (req, res, next) => {
     if (req.body.billId !== req.params.id) {
-      return res.status(400).json({ error: 'billId does not match the URL' });
+      return next(new ApiError('BILL_ID_MISMATCH', 'billId does not match the URL'));
     }
 
     const key = req.get('Idempotency-Key') || req.body.idempotencyKey;

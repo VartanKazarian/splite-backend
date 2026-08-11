@@ -1,6 +1,7 @@
 const express = require('express');
 const { authenticateToken } = require('../middleware/auth');
 const { getRates } = require('../services/fx');
+const { ApiError } = require('../errors');
 
 const router = express.Router();
 
@@ -20,7 +21,7 @@ router.get('/', authenticateToken, async (req, res, next) => {
   try {
     const rates = await getRates();
     if (Object.keys(rates).length === 0) {
-      return res.status(503).json({ error: 'No exchange rate is available' });
+      throw new ApiError('FX_UNAVAILABLE', 'No exchange rate is available');
     }
     res.set('Cache-Control', 'public, max-age=60');
     res.json({

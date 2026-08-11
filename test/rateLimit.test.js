@@ -59,16 +59,23 @@ test('the window TTL is applied on the first hit', async () => {
   assert.equal(store.ttls.get('ttl:203.0.113.9'), 45);
 });
 
-test('exceeding the limit returns 429 with Retry-After', async () => {
+test('exceeding the limit raises RATE_LIMITED and still sets Retry-After', async () => {
   fakeRedis();
   const mw = rateLimit({ windowSeconds: 60, max: 2, keyPrefix: 'burst' });
   await mw(req, fakeRes(), () => {});
   await mw(req, fakeRes(), () => {});
   const res = fakeRes();
-  let passed = false;
-  await mw(req, res, () => { passed = true; });
-  assert.equal(passed, false);
-  assert.equal(res.statusCode, 429);
+
+  // The limiter hands the error to the error handler rather than writing a
+  // body, so every failure in the app renders through one place.
+  let raised = null;
+  await mw(req, res, err => { raised = err; });
+
+  assert.ok(raised, 'the limiter must reject rather than pass the request through');
+  assert.equal(raised.code, 'RATE_LIMITED');
+  assert.equal(raised.statusCode, 429);
+  assert.equal(raised.details.retryAfterSeconds, 60);
+  // The header is set before the throw, so a client can back off correctly.
   assert.equal(res.headers['Retry-After'], '60');
 });
 
@@ -76,7 +83,7 @@ test('a Redis outage fails open by default', async () => {
   fakeRedis({ fail: true });
   const res = fakeRes();
   let passed = false;
-  await rateLimit({ keyPrefix: 'open' })(req, res, () => { passed = true; });
+  await rateLimit({ keyPrefix: 'open' })(req, res, err => { passed = !err; });
   assert.equal(passed, true);
   assert.equal(res.statusCode, null);
 });
@@ -84,8 +91,12 @@ test('a Redis outage fails open by default', async () => {
 test('a Redis outage fails closed when failClosed is set', async () => {
   fakeRedis({ fail: true });
   const res = fakeRes();
-  let passed = false;
-  await rateLimit({ keyPrefix: 'closed', failClosed: true })(req, res, () => { passed = true; });
-  assert.equal(passed, false);
-  assert.equal(res.statusCode, 503);
+  let raised = null;
+  await rateLimit({ keyPrefix: 'closed', failClosed: true })(req, res, err => { raised = err; });
+
+  // Distinguishable from RATE_LIMITED on purpose: the caller did nothing wrong
+  // and the client should say so rather than blame them for being too quick.
+  assert.ok(raised, 'must not pass the request through');
+  assert.equal(raised.code, 'RATE_LIMITER_UNAVAILABLE');
+  assert.equal(raised.statusCode, 503);
 });

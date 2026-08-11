@@ -412,8 +412,75 @@ describe('bill routes over HTTP', { skip }, () => {
       body: { tableId: dupTable.id, totalDueMinorUnits: '1000' }
     });
     assert.equal(second.status, 409);
-    assert.equal(second.body.code, 'OPEN_BILL_EXISTS');
-    assert.equal(second.body.billId, first.body.id);
+
+    // The exact shape a client branches on: code identifies the case, and
+    // details carries the bill to navigate to instead of parsing the message.
+    assert.equal(second.body.error.code, 'OPEN_BILL_EXISTS');
+    assert.equal(second.body.error.details.billId, first.body.id);
+    assert.ok(second.body.error.requestId, 'a failure is correlatable with the logs');
+    assert.equal(typeof second.body.error.message, 'string');
+  });
+
+  it('returns the same error envelope for every kind of failure', async () => {
+    const envelope = body => {
+      assert.ok(body.error, 'every failure nests under `error`');
+      assert.equal(typeof body.error.code, 'string');
+      assert.equal(typeof body.error.message, 'string');
+      assert.equal(typeof body.error.details, 'object');
+      assert.ok(body.error.details !== null, 'details is an object so `details.x` never throws');
+      assert.ok(body.error.requestId, 'requestId is always present');
+      return body.error;
+    };
+
+    // 400 validation -- used to be `{ error: [ ...strings ] }`.
+    const invalid = await request('POST', '/api/v1/bills', { body: { tableId: 'nope' } });
+    assert.equal(invalid.status, 400);
+    assert.equal(envelope(invalid.body).code, 'VALIDATION_FAILED');
+    assert.ok(Array.isArray(invalid.body.error.details.fields), 'per-field messages live in details.fields');
+
+    // 401 -- used to be `{ error: 'string' }` from middleware.
+    const noAuth = await request('GET', '/api/v1/bills', { auth: false });
+    assert.equal(noAuth.status, 401);
+    assert.equal(envelope(noAuth.body).code, 'AUTH_TOKEN_MISSING');
+
+    // 404 -- a named code, so the client knows which lookup failed.
+    const missing = await request('GET', '/api/v1/bills/11111111-1111-4111-8111-111111111111');
+    assert.equal(missing.status, 404);
+    assert.equal(envelope(missing.body).code, 'BILL_NOT_FOUND');
+
+    // 404 on an unrouted path, which came from a different handler entirely.
+    const nowhere = await request('GET', '/api/v1/does-not-exist');
+    assert.equal(nowhere.status, 404);
+    assert.equal(envelope(nowhere.body).code, 'NOT_FOUND');
+
+    // 400 from a body that contradicts the path.
+    const mismatch = await request('POST', '/api/v1/bills/11111111-1111-4111-8111-111111111111/payments', {
+      body: {
+        billId: '22222222-2222-4222-8222-222222222222',
+        amountMinorUnits: '100', currency: 'VES', idempotencyKey: 'k0123456789abcdef'
+      }
+    });
+    assert.equal(mismatch.status, 400);
+    assert.equal(envelope(mismatch.body).code, 'BILL_ID_MISMATCH');
+  });
+
+  it('refuses to overpay with a code and the balance still owed', async () => {
+    const overTable = await newTable();
+    const bill = await request('POST', '/api/v1/bills', {
+      body: { tableId: overTable.id, totalDueMinorUnits: '5000' }
+    });
+
+    const over = await request('POST', `/api/v1/bills/${bill.body.id}/payments`, {
+      body: {
+        billId: bill.body.id, amountMinorUnits: '9000', currency: 'VES',
+        idempotencyKey: `over-${bill.body.id}`
+      }
+    });
+
+    assert.equal(over.status, 409);
+    assert.equal(over.body.error.code, 'PAYMENT_EXCEEDS_BALANCE');
+    // Enough to re-render the amount due without a second round trip.
+    assert.equal(over.body.error.details.remainingVes, '5000');
   });
 
   it('voids an unpaid bill and refuses one that has been paid into', async () => {
