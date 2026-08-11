@@ -35,6 +35,11 @@ jobs:
       - name: Syntax check
         run: npm run lint
 
+      - name: OpenAPI artifact is current
+        # The committed spec is what a frontend generates its client from, so
+        # it must not drift from the code that produces it.
+        run: npm run openapi:check
+
       - name: Unit tests
         run: npm test
 

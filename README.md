@@ -380,6 +380,53 @@ What the structured events do give you is the operational half of that picture:
 because every line carries `restaurantId` and a stable `event`, "which tenant is
 seeing payment failures this week" is a query rather than a grep.
 
+## Deploying to Railway
+
+Three services in one project: this app, Postgres and Redis. `railway.json`
+selects the Dockerfile, points the platform's health check at `/health/ready`,
+and runs `npm run migrate` as a pre-deploy command so a release cannot serve
+traffic against a schema it has not migrated. The runner takes an advisory lock
+and records each file in `schema_migrations`, so concurrent deploys serialise and
+re-running is a no-op.
+
+1. Create the project and add **Postgres** and **Redis** from Railway's catalogue.
+2. Deploy this repository as a third service. The Dockerfile is detected automatically.
+3. Set the variables from `.env.production.example`. `DATABASE_URL` and `REDIS_URL`
+   use Railway's reference syntax (`${{Postgres.DATABASE_URL}}`) so no credential is
+   ever copied by hand.
+4. Generate the four secrets with `npm run secrets` and paste them in. They are
+   printed once and never written to disk.
+5. Seed the first restaurant from the Railway shell, then delete the seed variables:
+
+   ```
+   ALLOW_PRODUCTION_SEED=true npm run seed
+   ```
+
+**`DB_SSL=false` is deliberate.** The app defaults it to true whenever
+`NODE_ENV=production`, but Railway's private network (`postgres.railway.internal`)
+carries no TLS, so the default fails to connect on first boot. If you switch to the
+public proxy URL instead, set `DB_SSL=true` *and*
+`DB_SSL_REJECT_UNAUTHORIZED=false` — the proxy presents a certificate for a
+different hostname.
+
+`TRUST_PROXY=1` matters more than it looks: Railway terminates TLS ahead of the
+app, and rate limiting is keyed on `req.ip`. Leave it unset and every client
+shares one bucket.
+
+## Generating a frontend client
+
+`openapi.json` is committed at the repository root and CI fails if it drifts from
+the code (`npm run openapi:check`), so a client can be generated from git without
+the API running anywhere:
+
+```
+npx openapi-typescript openapi.json -o src/api.d.ts
+```
+
+Regenerate the artifact with `npm run openapi:dump` after changing any route or
+schema. The live document is also served at `/openapi.json`, with Swagger UI at
+`/docs` while `DOCS_ENABLED=true`.
+
 ## Production notes
 
 1. Use `DATABASE_URL` with TLS. Set `DB_SSL_REJECT_UNAUTHORIZED=true` once you pin your provider's CA.

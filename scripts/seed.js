@@ -1,5 +1,6 @@
 const db = require('../src/connectors/base');
 const { hashPassword } = require('../src/services/auth');
+const { loginSchema } = require('../src/middleware/schemas');
 
 /**
  * Idempotent development seed. Re-running it updates the owner's password
@@ -16,6 +17,17 @@ async function run() {
   if (!email || !password) throw new Error('SEED_OWNER_EMAIL and SEED_OWNER_PASSWORD are required');
   if (password.length < 12) throw new Error('SEED_OWNER_PASSWORD must be at least 12 characters');
   if (/replace-with/i.test(password)) throw new Error('SEED_OWNER_PASSWORD is still the example placeholder');
+
+  // Validated against the same schema /auth/login uses, because they disagreed:
+  // Joi checks the TLD against the IANA list, so a plausible address like
+  // owner@splite.test seeds happily and is then refused at every login attempt.
+  // On a fresh deploy that reads as a broken password, not a rejected address.
+  const { error } = loginSchema.validate({ email, password });
+  if (error) {
+    throw new Error(
+      `SEED_OWNER_EMAIL would be rejected at login: ${error.details.map(d => d.message).join('; ')}`
+    );
+  }
 
   const passwordHash = await hashPassword(password);
 
