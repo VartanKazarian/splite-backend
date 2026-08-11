@@ -138,7 +138,7 @@
       "guestAuth": {
         "type": "http",
         "scheme": "bearer",
-        "description": "Guest session token, sent with the `X-Guest-Session` header. Reserved for the guest-facing bill endpoints, which are not yet mounted."
+        "description": "Guest session token. Send the token as a bearer credential *and* the session id in the `X-Guest-Session` header; both are required. Obtained from POST /api/v1/guest/sessions by presenting a signed table QR."
       }
     },
     "parameters": {
@@ -913,6 +913,90 @@
                 }
               }
             }
+          }
+        }
+      },
+      "GuestBill": {
+        "type": "object",
+        "description": "A bill as a diner sees it. Narrower than Bill: internal identifiers and rate provenance are withheld, since this is the least trusted surface in the API.",
+        "properties": {
+          "id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "tableId": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "status": {
+            "type": "string",
+            "enum": [
+              "OPEN"
+            ]
+          },
+          "currency": {
+            "type": "string",
+            "enum": [
+              "VES",
+              "USD",
+              "EUR"
+            ]
+          },
+          "totalDue": {
+            "type": "string",
+            "pattern": "^[0-9]+$",
+            "description": "In the menu currency, for display.",
+            "examples": [
+              "756710"
+            ]
+          },
+          "totalDueVes": {
+            "type": "string",
+            "pattern": "^[0-9]+$",
+            "description": "Authoritative amount to settle.",
+            "examples": [
+              "756710"
+            ]
+          },
+          "amountPaidVes": {
+            "type": "string",
+            "pattern": "^[0-9]+$",
+            "description": "Integer minor units (céntimos) as a string, so values beyond 2^53 survive JSON.",
+            "examples": [
+              "756710"
+            ]
+          },
+          "remainingVes": {
+            "type": "string",
+            "pattern": "^[0-9]+$",
+            "description": "Integer minor units (céntimos) as a string, so values beyond 2^53 survive JSON.",
+            "examples": [
+              "756710"
+            ]
+          },
+          "fxRateVesPerUnit": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "pattern": "^\\d+\\.\\d{8}$",
+            "description": "Frozen when the bill opened. Present so a client can show an approximate menu-currency figure."
+          },
+          "usdReference": {
+            "$ref": "#/components/schemas/UsdReference"
+          },
+          "itemCount": {
+            "type": "integer"
+          },
+          "items": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/BillItem"
+            }
+          },
+          "updatedAt": {
+            "type": "string",
+            "format": "date-time"
           }
         }
       },
@@ -1730,6 +1814,126 @@
           },
           "401": {
             "$ref": "#/components/responses/Unauthorized"
+          },
+          "429": {
+            "$ref": "#/components/responses/TooManyRequests"
+          },
+          "500": {
+            "$ref": "#/components/responses/ServerError"
+          }
+        }
+      },
+      "delete": {
+        "tags": [
+          "Guest"
+        ],
+        "summary": "End a guest session",
+        "description": "Always 204, whether or not the session existed, so it never confirms that a given session id was live.",
+        "security": [
+          {
+            "guestAuth": []
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "Ended, or it was already gone."
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "429": {
+            "$ref": "#/components/responses/TooManyRequests"
+          },
+          "500": {
+            "$ref": "#/components/responses/ServerError"
+          }
+        }
+      }
+    },
+    "/api/v1/guest/bill": {
+      "get": {
+        "tags": [
+          "Guest"
+        ],
+        "summary": "The open bill for the guest's own table",
+        "operationId": "getGuestBill",
+        "description": "Authenticated with a guest session: `X-Guest-Session` plus the guest token as a bearer.\n\n**Takes no bill id.** The table comes from the session, which came from a signed QR, so\na guest cannot request a bill that is not theirs -- there is no identifier to tamper with.\n\nReturns 404 when the table has no open bill, which is the normal state between sittings.\n\nRate limited to 30 requests a minute per IP.",
+        "security": [
+          {
+            "guestAuth": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The bill.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/GuestBill"
+                }
+              }
+            }
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "404": {
+            "$ref": "#/components/responses/NotFound"
+          },
+          "429": {
+            "$ref": "#/components/responses/TooManyRequests"
+          },
+          "500": {
+            "$ref": "#/components/responses/ServerError"
+          }
+        }
+      }
+    },
+    "/api/v1/guest/bill/split/preview": {
+      "post": {
+        "tags": [
+          "Guest"
+        ],
+        "summary": "Split the guest's own bill",
+        "operationId": "previewGuestSplit",
+        "description": "The same engine the staff endpoint uses, so a diner and a waiter looking at one bill are\nnever shown two different allocations. **Advisory: it moves no money.**\n\nScoped to the session's table, like every guest route.",
+        "security": [
+          {
+            "guestAuth": []
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SplitPreviewRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "The allocation.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SplitPreview"
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "404": {
+            "$ref": "#/components/responses/NotFound"
+          },
+          "409": {
+            "$ref": "#/components/responses/Conflict"
           },
           "429": {
             "$ref": "#/components/responses/TooManyRequests"

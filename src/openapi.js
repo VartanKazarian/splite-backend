@@ -351,6 +351,31 @@ const schemas = {
     }
   },
 
+  GuestBill: {
+    type: 'object',
+    description:
+      'A bill as a diner sees it. Narrower than Bill: internal identifiers and rate provenance are withheld, since this is the least trusted surface in the API.',
+    properties: {
+      id: { type: 'string', format: 'uuid' },
+      tableId: { type: 'string', format: 'uuid' },
+      status: { type: 'string', enum: ['OPEN'] },
+      currency: { type: 'string', enum: ['VES', 'USD', 'EUR'] },
+      totalDue: { ...minorUnits, description: 'In the menu currency, for display.' },
+      totalDueVes: { ...minorUnits, description: 'Authoritative amount to settle.' },
+      amountPaidVes: minorUnits,
+      remainingVes: minorUnits,
+      fxRateVesPerUnit: {
+        type: ['string', 'null'],
+        pattern: '^\\d+\\.\\d{8}$',
+        description: 'Frozen when the bill opened. Present so a client can show an approximate menu-currency figure.'
+      },
+      usdReference: ref('UsdReference'),
+      itemCount: { type: 'integer' },
+      items: { type: 'array', items: ref('BillItem') },
+      updatedAt: { type: 'string', format: 'date-time' }
+    }
+  },
+
   SplitQuote: {
     type: 'object',
     properties: {
@@ -761,6 +786,70 @@ const paths = {
         201: { description: 'Guest session created.', content: { 'application/json': { schema: ref('GuestSession') } } },
         400: response('BadRequest'),
         401: response('Unauthorized'),
+        429: response('TooManyRequests'),
+        500: response('ServerError')
+      }
+    },
+    delete: {
+      tags: ['Guest'],
+      summary: 'End a guest session',
+      description:
+        'Always 204, whether or not the session existed, so it never confirms that a given session id was live.',
+      security: [{ guestAuth: [] }],
+      responses: {
+        204: { description: 'Ended, or it was already gone.' },
+        401: response('Unauthorized'),
+        429: response('TooManyRequests'),
+        500: response('ServerError')
+      }
+    }
+  },
+
+  '/api/v1/guest/bill': {
+    get: {
+      tags: ['Guest'],
+      summary: 'The open bill for the guest\'s own table',
+      operationId: 'getGuestBill',
+      description: [
+        'Authenticated with a guest session: `X-Guest-Session` plus the guest token as a bearer.',
+        '',
+        '**Takes no bill id.** The table comes from the session, which came from a signed QR, so',
+        'a guest cannot request a bill that is not theirs -- there is no identifier to tamper with.',
+        '',
+        'Returns 404 when the table has no open bill, which is the normal state between sittings.',
+        '',
+        'Rate limited to 30 requests a minute per IP.'
+      ].join('\n'),
+      security: [{ guestAuth: [] }],
+      responses: {
+        200: { description: 'The bill.', content: { 'application/json': { schema: ref('GuestBill') } } },
+        401: response('Unauthorized'),
+        404: response('NotFound'),
+        429: response('TooManyRequests'),
+        500: response('ServerError')
+      }
+    }
+  },
+
+  '/api/v1/guest/bill/split/preview': {
+    post: {
+      tags: ['Guest'],
+      summary: 'Split the guest\'s own bill',
+      operationId: 'previewGuestSplit',
+      description: [
+        'The same engine the staff endpoint uses, so a diner and a waiter looking at one bill are',
+        'never shown two different allocations. **Advisory: it moves no money.**',
+        '',
+        'Scoped to the session\'s table, like every guest route.'
+      ].join('\n'),
+      security: [{ guestAuth: [] }],
+      requestBody: { required: true, content: { 'application/json': { schema: ref('SplitPreviewRequest') } } },
+      responses: {
+        200: { description: 'The allocation.', content: { 'application/json': { schema: ref('SplitPreview') } } },
+        400: response('BadRequest'),
+        401: response('Unauthorized'),
+        404: response('NotFound'),
+        409: response('Conflict'),
         429: response('TooManyRequests'),
         500: response('ServerError')
       }
@@ -1333,7 +1422,7 @@ const document = {
         type: 'http',
         scheme: 'bearer',
         description:
-          'Guest session token, sent with the `X-Guest-Session` header. Reserved for the guest-facing bill endpoints, which are not yet mounted.'
+          'Guest session token. Send the token as a bearer credential *and* the session id in the `X-Guest-Session` header; both are required. Obtained from POST /api/v1/guest/sessions by presenting a signed table QR.'
       }
     },
     parameters,

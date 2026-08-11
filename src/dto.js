@@ -127,6 +127,44 @@ function billWithItems(row, items = []) {
   };
 }
 
+/**
+ * A bill as a diner sees it.
+ *
+ * Deliberately narrower than `billWithItems`. A guest holds a bearer token that
+ * was handed out by scanning a sticker on a table, so this is the least
+ * trusted surface in the API, and it publishes what somebody about to pay
+ * actually needs: what was ordered, what is owed, what has been settled.
+ *
+ * Left out on purpose: `restaurantId` and `calculationVersion` are internal
+ * identifiers a diner has no use for, and `fxRateSource` / `fxValueDate` are
+ * provenance for staff. The rate itself stays, because the client needs it to
+ * show an approximate figure in the currency the menu quoted.
+ */
+function guestBill(row, items = []) {
+  const remainingVes = (BigInt(row.total_due_ves) - BigInt(row.amount_paid_ves)).toString();
+  const rate = row.fx_rate_ves_per_unit ?? null;
+
+  return {
+    id: row.id,
+    tableId: row.table_id,
+    status: row.status,
+    currency: row.currency,
+    totalDue: row.total_due,
+    totalDueVes: row.total_due_ves,
+    amountPaidVes: row.amount_paid_ves,
+    remainingVes,
+    fxRateVesPerUnit: rate,
+    usdReference: {
+      totalDue: usdReference(row.total_due_ves, rate),
+      amountPaid: usdReference(row.amount_paid_ves, rate),
+      remaining: usdReference(remainingVes, rate)
+    },
+    itemCount: items.length,
+    items: items.map(billItem),
+    updatedAt: isoTimestamp(row.updated_at)
+  };
+}
+
 function table(row) {
   return {
     id: row.id,
@@ -177,6 +215,6 @@ function menuSettings(row) {
 
 module.exports = {
   isoDate, isoTimestamp,
-  bill, billItem, billWithItems,
+  bill, billItem, billWithItems, guestBill,
   table, product, publicProduct, menuSettings
 };

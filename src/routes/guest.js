@@ -3,8 +3,13 @@ const db = require('../connectors/base');
 const config = require('../config');
 const { signQrPayload, verifyQrToken } = require('../utils/tokens');
 const { authenticateToken, requireRole } = require('../middleware/auth');
-const { validateBody, validateParams, guestSessionSchema, tableIdParamSchema } = require('../middleware/schemas');
-const { createGuestSession } = require('../services/guest');
+const {
+  validateBody, validateParams, guestSessionSchema, tableIdParamSchema, splitPreviewSchema
+} = require('../middleware/schemas');
+const { createGuestSession, destroyGuestSession, authenticateGuest } = require('../services/guest');
+const billItems = require('../services/billItems');
+const splitEngine = require('../services/splitEngine');
+const dto = require('../dto');
 const { logAudit, auditContext } = require('../services/audit');
 const { ApiError } = require('../errors');
 
@@ -110,6 +115,67 @@ router.post('/sessions', validateBody(guestSessionSchema), async (req, res, next
     });
 
     res.status(201).json(session);
+  } catch (err) { next(err); }
+});
+
+/**
+ * The open bill for the guest's own table.
+ *
+ * Note what this route does not take: a bill id. The table comes from the
+ * session, which came from a signed QR, so a guest cannot ask for a bill that
+ * is not theirs -- there is no identifier to tamper with. Every guest route
+ * below is built the same way.
+ */
+async function openBillForGuest(guest) {
+  const { rows } = await db.query(
+    `SELECT id, table_id, status, currency, total_due, total_due_ves, amount_paid_ves,
+            fx_rate_ves_per_unit, updated_at
+       FROM bills
+      WHERE restaurant_id = $1 AND table_id = $2 AND status = 'OPEN'`,
+    [guest.restaurantId, guest.tableId]
+  );
+  if (!rows.length) throw new ApiError('OPEN_BILL_NOT_FOUND', 'No open bill for this table');
+  return rows[0];
+}
+
+router.get('/bill', authenticateGuest, async (req, res, next) => {
+  try {
+    const bill = await openBillForGuest(req.guest);
+    const items = await billItems.listForBill({
+      restaurantId: req.guest.restaurantId, billId: bill.id
+    });
+    res.json(dto.guestBill(bill, items));
+  } catch (err) { next(err); }
+});
+
+/**
+ * A split of the guest's own bill.
+ *
+ * The same engine the staff endpoint uses, so a diner and a waiter looking at
+ * the same bill are never shown two different allocations. Advisory: it
+ * computes and returns, and moves no money.
+ */
+router.post('/bill/split/preview', authenticateGuest, validateBody(splitPreviewSchema), async (req, res, next) => {
+  try {
+    const bill = await openBillForGuest(req.guest);
+    const items = req.body.mode === 'ITEMS'
+      ? await billItems.listForBill({ restaurantId: req.guest.restaurantId, billId: bill.id })
+      : [];
+
+    res.json(splitEngine.preview({ bill, items, request: req.body }));
+  } catch (err) { next(err); }
+});
+
+/**
+ * Ends the session.
+ *
+ * Always 204, whether or not the session existed, so it never reports back
+ * whether a given session id was live.
+ */
+router.delete('/sessions', authenticateGuest, async (req, res, next) => {
+  try {
+    await destroyGuestSession(req.guest.sessionId);
+    res.status(204).end();
   } catch (err) { next(err); }
 });
 
