@@ -16,6 +16,7 @@ const {
 const { processSplitPayment } = require('../services/locks');
 const { getRateFor } = require('../services/fx');
 const { splitEvenly, usdReference } = require('../services/split');
+const dto = require('../dto');
 const { parseRate, applyRate, toMinor } = require('../services/money');
 const { requestHash, begin, complete, abort } = require('../services/idempotency');
 const { logAudit, auditContext } = require('../services/audit');
@@ -37,26 +38,6 @@ router.use(authenticateToken);
 // app-level limiter runs before any auth middleware, which leaves it keyed on
 // IP alone — behind carrier NAT that is one shared bucket for many staff.
 router.use(rateLimit({ windowSeconds: 60, max: 60, keyPrefix: 'bills' }));
-
-/**
- * Adds the derived figures to a bill row.
- *
- * The outstanding balance is computed rather than stored: two maintained
- * counters for one quantity is the drift the payment ledger exists to remove.
- */
-function present(bill) {
-  const remainingVes = (BigInt(bill.total_due_ves) - BigInt(bill.amount_paid_ves)).toString();
-  const rate = bill.fx_rate_ves_per_unit ?? null;
-  return {
-    ...bill,
-    remaining_ves: remainingVes,
-    usdReference: {
-      totalDue: usdReference(bill.total_due_ves, rate),
-      amountPaid: usdReference(bill.amount_paid_ves, rate),
-      remaining: usdReference(remainingVes, rate)
-    }
-  };
-}
 
 /**
  * Freezes the rate the bill will settle at.
@@ -114,7 +95,7 @@ router.get('/', validateQuery(listBillsQuerySchema), async (req, res, next) => {
       params
     );
 
-    res.json({ data: rows, limit: req.query.limit, offset: req.query.offset });
+    res.json({ data: rows.map(dto.bill), limit: req.query.limit, offset: req.query.offset });
   } catch (err) { next(err); }
 });
 
@@ -134,7 +115,7 @@ router.get('/tables/:tableId/open', validateParams(tableIdParamSchema), async (r
     );
     if (!rows.length) return res.status(404).json({ error: 'No open bill for this table' });
 
-    res.json(present(rows[0]));
+    res.json(dto.bill(rows[0]));
   } catch (err) { next(err); }
 });
 
@@ -220,7 +201,7 @@ router.post(
         }
       });
 
-      res.status(201).json(present(created));
+      res.status(201).json(dto.bill(created));
     } catch (err) {
       // The partial unique index is the last line of defence: if a concurrent
       // request committed first, the insert fails here rather than producing a
@@ -244,7 +225,7 @@ router.get('/:id', validateParams(billIdParamSchema), async (req, res, next) => 
     );
     if (!rows.length) return res.status(404).json({ error: 'Bill not found' });
 
-    res.json(present(rows[0]));
+    res.json(dto.bill(rows[0]));
   } catch (err) { next(err); }
 });
 
@@ -315,7 +296,10 @@ router.post(
         resourceId: rows[0].id
       });
 
-      res.json(rows[0]);
+      // Through the same mapper as every other bill response. This route used
+      // to return the raw row, so a voided bill came back in a different shape
+      // than the one that had just been read — both documented as `Bill`.
+      res.json(dto.bill(rows[0]));
     } catch (err) { next(err); }
   }
 );

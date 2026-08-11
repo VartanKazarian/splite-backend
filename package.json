@@ -1,6 +1,6 @@
 {
   "name": "splite-backend",
-  "version": "1.2.0-phase1",
+  "version": "2.0.0-contract",
   "description": "Production-oriented backend foundation for Splite bill splitting in Venezuela",
   "main": "src/server.js",
   "private": true,

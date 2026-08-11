@@ -11,6 +11,7 @@ const {
   tableIdParamSchema
 } = require('../middleware/schemas');
 const { logAudit, auditContext } = require('../services/audit');
+const dto = require('../dto');
 
 const router = express.Router();
 
@@ -40,7 +41,7 @@ router.get('/', validateQuery(listTablesQuerySchema), async (req, res, next) => 
       params
     );
 
-    res.json({ data: rows, limit: req.query.limit, offset: req.query.offset });
+    res.json({ data: rows.map(dto.table), limit: req.query.limit, offset: req.query.offset });
   } catch (err) { next(err); }
 });
 
@@ -65,7 +66,7 @@ router.post('/', requireRole('OWNER', 'MANAGER'), validateBody(createTableSchema
       details: { name: rows[0].name }
     });
 
-    res.status(201).json(rows[0]);
+    res.status(201).json(dto.table(rows[0]));
   } catch (err) { next(err); }
 });
 
@@ -96,7 +97,7 @@ router.patch(
         details: { name: req.body.name, active: req.body.active }
       });
 
-      res.json(rows[0]);
+      res.json(dto.table(rows[0]));
     } catch (err) {
       // Renaming onto an existing name trips the unique index.
       if (err.code === '23505') return res.status(409).json({ error: 'A table with that name already exists' });

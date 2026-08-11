@@ -41,7 +41,15 @@ const schemas = {
           }
         ]
       },
-      code: { type: 'string', description: 'Stable machine-readable code, where one applies.' }
+      code: { type: 'string', description: 'Stable machine-readable code, where one applies.' },
+      billId: {
+        type: 'string', format: 'uuid',
+        description: 'Set on 409 OPEN_BILL_EXISTS: the bill already open on that table.'
+      },
+      activeProductsInOtherCurrency: {
+        type: 'integer',
+        description: 'Set on 409 MENU_CURRENCY_MISMATCH: how many active products still disagree.'
+      }
     }
   },
 
@@ -61,29 +69,34 @@ const schemas = {
     type: 'object',
     properties: {
       id: { type: 'string', format: 'uuid' },
-      restaurant_id: { type: 'string', format: 'uuid' },
-      table_id: { type: 'string', format: 'uuid' },
+      restaurantId: { type: 'string', format: 'uuid' },
+      tableId: { type: 'string', format: 'uuid' },
       status: { type: 'string', enum: ['OPEN', 'CLOSED', 'VOID'] },
-      total_due: { ...minorUnits, description: 'Subtotal in the menu currency, for display.' },
+      totalDue: { ...minorUnits, description: 'Subtotal in the menu currency, for display.' },
       currency: {
         type: 'string', enum: ['VES', 'USD', 'EUR'],
         description: 'The currency the menu quoted. Settlement is always VES.'
       },
-      total_due_ves: { ...minorUnits, description: 'Authoritative amount to settle.' },
-      amount_paid_ves: { ...minorUnits, description: 'Authoritative amount settled so far.' },
-      remaining_ves: minorUnits,
-      fx_rate_ves_per_unit: {
+      totalDueVes: { ...minorUnits, description: 'Authoritative amount to settle.' },
+      amountPaidVes: { ...minorUnits, description: 'Authoritative amount settled so far.' },
+      remainingVes: minorUnits,
+      fxRateVesPerUnit: {
         type: ['string', 'null'],
         pattern: '^\\d+\\.\\d{8}$',
         description: 'VES per unit of menu currency, padded to 8 decimal places. Frozen when the bill was opened.',
         examples: ['757.54060000']
       },
-      fx_rate_source: { type: ['string', 'null'] },
-      fx_value_date: { type: ['string', 'null'], format: 'date' },
-      calculation_version: { type: 'integer' },
+      fxRateSource: { type: ['string', 'null'] },
+      fxValueDate: {
+        type: ['string', 'null'],
+        format: 'date',
+        description: 'Calendar date only. Never a timestamp: a zone offset here can shift the BCV value date by a day.',
+        examples: ['2025-03-06']
+      },
+      calculationVersion: { type: 'integer' },
       usdReference: ref('UsdReference'),
-      created_at: { type: 'string', format: 'date-time' },
-      updated_at: { type: 'string', format: 'date-time' }
+      createdAt: { type: 'string', format: 'date-time' },
+      updatedAt: { type: 'string', format: 'date-time' }
     }
   },
 
@@ -191,10 +204,10 @@ const schemas = {
     type: 'object',
     properties: {
       id: { type: 'string', format: 'uuid' },
-      restaurant_id: { type: 'string', format: 'uuid' },
+      restaurantId: { type: 'string', format: 'uuid' },
       name: { type: 'string' },
       active: { type: 'boolean' },
-      created_at: { type: 'string', format: 'date-time' }
+      createdAt: { type: 'string', format: 'date-time' }
     }
   },
 
@@ -231,8 +244,22 @@ const schemas = {
       priceMinorUnits: minorUnits,
       currency: { type: 'string', enum: ['VES', 'USD', 'EUR'] },
       active: { type: 'boolean' },
-      created_at: { type: 'string', format: 'date-time' },
-      updated_at: { type: 'string', format: 'date-time' }
+      createdAt: { type: 'string', format: 'date-time' },
+      updatedAt: { type: 'string', format: 'date-time' }
+    }
+  },
+
+  // What a guest scanning a QR is shown: what a thing is and what it costs.
+  // Inactive products are not listed, so `active` would always be true, and
+  // edit timestamps are operational detail no diner needs.
+  PublicProduct: {
+    type: 'object',
+    properties: {
+      id: { type: 'string', format: 'uuid' },
+      name: { type: 'string' },
+      description: { type: ['string', 'null'] },
+      priceMinorUnits: minorUnits,
+      currency: { type: 'string', enum: ['VES', 'USD', 'EUR'] }
     }
   },
 
@@ -271,15 +298,8 @@ const schemas = {
   PublicMenu: {
     type: 'object',
     properties: {
-      restaurant: {
-        type: 'object',
-        properties: {
-          id: { type: 'string', format: 'uuid' },
-          name: { type: 'string' },
-          menuCurrency: { type: 'string', enum: ['VES', 'USD', 'EUR'] }
-        }
-      },
-      products: { type: 'array', items: ref('Product') }
+      restaurant: ref('MenuSettings'),
+      products: { type: 'array', items: ref('PublicProduct') }
     }
   },
 

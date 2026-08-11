@@ -147,12 +147,12 @@ test('settlement is documented as VES only', () => {
   // A bill inherits the restaurant's menu currency, so the client does not
   // choose one; the settlement column is what carries VES.
   assert.equal(document.components.schemas.CreateBillRequest.properties.currency, undefined);
-  assert.ok(document.components.schemas.Bill.properties.total_due_ves);
+  assert.ok(document.components.schemas.Bill.properties.totalDueVes);
 });
 
 test('monetary amounts are documented as strings, not numbers', () => {
   // A JSON number has already lost precision past 2^53 by the time it arrives.
-  for (const field of ['total_due', 'total_due_ves', 'amount_paid_ves', 'remaining_ves']) {
+  for (const field of ['totalDue', 'totalDueVes', 'amountPaidVes', 'remainingVes']) {
     assert.equal(document.components.schemas.Bill.properties[field].type, 'string', `Bill.${field}`);
   }
   assert.equal(document.components.schemas.PaymentResult.properties.amountPaid.type, 'string');
@@ -184,6 +184,46 @@ test('every $ref resolves', () => {
   }
 });
 
+test('every documented field is camelCase', () => {
+  // PostgreSQL is snake_case and the public API is camelCase, and src/dto.js is
+  // the only place allowed to cross between them. Before that boundary existed
+  // the API spoke three conventions at once: raw rows from bills, SQL aliases
+  // from menu, hand-built objects from payments — a single Bill carried
+  // `total_due_ves` and `usdReference` side by side. This fails if any of that
+  // comes back.
+  const offenders = [];
+  const walk = (node, path) => {
+    if (Array.isArray(node)) return node.forEach((item, i) => walk(item, `${path}[${i}]`));
+    if (!node || typeof node !== 'object') return;
+    for (const [key, value] of Object.entries(node)) {
+      if (key === 'properties' && value && typeof value === 'object') {
+        for (const field of Object.keys(value)) {
+          if (field.includes('_')) offenders.push(`${path}.${field}`);
+        }
+      }
+      walk(value, `${path}.${key}`);
+    }
+  };
+  walk(document.components.schemas, 'schemas');
+  walk(document.paths, 'paths');
+
+  assert.deepEqual(offenders, [], 'these fields leak the database naming convention onto the wire');
+});
+
+test('a date-only field is not documented as a timestamp', () => {
+  // node-pg parses a DATE column into a JS Date at local midnight, so the
+  // default serialisation carries a zone offset: "2025-03-06T04:00:00.000Z"
+  // here, "...T00:00:00.000Z" on a UTC host. A client formatting that locally
+  // can land a day early, and for a BCV value date that selects a different
+  // published rate.
+  const valueDate = document.components.schemas.Bill.properties.fxValueDate;
+  assert.equal(valueDate.format, 'date', 'fxValueDate is a calendar date, not an instant');
+
+  const rateValueDate = document.components.schemas.ExchangeRate
+    .properties.rates.additionalProperties.properties.valueDate;
+  assert.equal(rateValueDate.format, 'date');
+});
+
 test('the wire-format conventions are declared and enforced', () => {
   const wf = document.info['x-wire-format'];
   assert.ok(wf, 'x-wire-format extension is missing');
@@ -192,7 +232,7 @@ test('the wire-format conventions are declared and enforced', () => {
   }
 
   const rateFields = [
-    ['Bill', 'fx_rate_ves_per_unit'],
+    ['Bill', 'fxRateVesPerUnit'],
     ['PaymentResult', 'fxRate'],
   ];
   for (const [schema, field] of rateFields) {

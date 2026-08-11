@@ -128,15 +128,15 @@ describe('bill routes over HTTP', { skip }, () => {
 
     // Every one of these fields comes from a column migration 008 introduced.
     assert.equal(created.body.currency, 'VES');
-    assert.equal(created.body.total_due_ves, '10000');
-    assert.equal(created.body.amount_paid_ves, '0');
-    assert.equal(created.body.remaining_ves, '10000');
-    assert.equal(Number(created.body.fx_rate_ves_per_unit), 1);
-    assert.equal(created.body.fx_rate_source, 'IDENTITY');
+    assert.equal(created.body.totalDueVes, '10000');
+    assert.equal(created.body.amountPaidVes, '0');
+    assert.equal(created.body.remainingVes, '10000');
+    assert.equal(Number(created.body.fxRateVesPerUnit), 1);
+    assert.equal(created.body.fxRateSource, 'IDENTITY');
 
     const read = await request('GET', `/api/v1/bills/${created.body.id}`);
     assert.equal(read.status, 200, JSON.stringify(read.body));
-    assert.equal(read.body.total_due_ves, '10000');
+    assert.equal(read.body.totalDueVes, '10000');
 
     const list = await request('GET', '/api/v1/bills?limit=5');
     assert.equal(list.status, 200, JSON.stringify(list.body));
@@ -159,10 +159,10 @@ describe('bill routes over HTTP', { skip }, () => {
     assert.equal(created.status, 201, JSON.stringify(created.body));
 
     assert.equal(created.body.currency, 'USD', 'the bill inherits the menu currency');
-    assert.equal(created.body.total_due, '1000', 'the menu-currency figure is kept for display');
-    assert.equal(created.body.total_due_ves, '757541', 'settlement is VES, converted at the frozen rate');
-    assert.equal(Number(created.body.fx_rate_ves_per_unit), USD_RATE);
-    assert.equal(created.body.fx_rate_source, 'BCV');
+    assert.equal(created.body.totalDue, '1000', 'the menu-currency figure is kept for display');
+    assert.equal(created.body.totalDueVes, '757541', 'settlement is VES, converted at the frozen rate');
+    assert.equal(Number(created.body.fxRateVesPerUnit), USD_RATE);
+    assert.equal(created.body.fxRateSource, 'BCV');
     assert.equal(created.body.usdReference.totalDue, '10.00');
   });
 
@@ -176,12 +176,66 @@ describe('bill routes over HTTP', { skip }, () => {
     });
     assert.equal(created.status, 201, JSON.stringify(created.body));
     assert.equal(created.body.currency, 'EUR');
-    assert.equal(created.body.total_due_ves, '875217', '€10.00 at 875.2169568');
+    assert.equal(created.body.totalDueVes, '875217', '€10.00 at 875.2169568');
 
     // NUMERIC(20,8), so the stored rate is the published rate. At (20,6) this
     // came back as 875.216957 — near enough not to change a total, and still
     // not the number BCV printed.
-    assert.equal(Number(created.body.fx_rate_ves_per_unit), EUR_RATE);
+    assert.equal(Number(created.body.fxRateVesPerUnit), EUR_RATE);
+  });
+
+  it('states the BCV value date as a calendar date, with no zone attached', async () => {
+    const tenant = await usdRestaurant('USD');
+    const fxTable = await fixtures.createTable(tenant.id, { name: 'F1' });
+
+    const created = await request('POST', '/api/v1/bills', {
+      body: { tableId: fxTable.id, totalDueMinorUnits: '1000' },
+      token: tenant.token
+    });
+    assert.equal(created.status, 201, JSON.stringify(created.body));
+
+    // node-pg turns a DATE column into a JS Date at *local* midnight, so the
+    // default serialisation was "2025-03-06T04:00:00.000Z" on a Caracas host
+    // and "...T00:00:00.000Z" on a UTC one -- the same row, two strings. A
+    // client formatting that in its own zone can land a day early, and for a
+    // BCV value date that is a different published rate.
+    assert.match(created.body.fxValueDate, /^\d{4}-\d{2}-\d{2}$/,
+      'a value date carries no time and no offset');
+    assert.equal(created.body.fxValueDate, caracasToday());
+  });
+
+  it('speaks camelCase everywhere, on every bill-shaped response', async () => {
+    // The void route used to return the raw row while the others went through
+    // a presenter, so a voided bill came back in a different shape than the one
+    // just read -- both documented as `Bill`.
+    const camelTable = await newTable();
+    const created = await request('POST', '/api/v1/bills', {
+      body: { tableId: camelTable.id, totalDueMinorUnits: '4000' }
+    });
+    assert.equal(created.status, 201, JSON.stringify(created.body));
+
+    const read = await request('GET', `/api/v1/bills/${created.body.id}`);
+    const open = await request('GET', `/api/v1/bills/tables/${camelTable.id}/open`);
+    const list = await request('GET', `/api/v1/bills?tableId=${camelTable.id}`);
+    const voided = await request('POST', `/api/v1/bills/${created.body.id}/void`);
+    assert.equal(voided.status, 200, JSON.stringify(voided.body));
+
+    const snake = body => Object.keys(body).filter(k => k.includes('_'));
+    for (const [label, body] of [
+      ['create', created.body], ['read', read.body], ['open', open.body],
+      ['list item', list.body.data[0]], ['void', voided.body]
+    ]) {
+      assert.deepEqual(snake(body), [], `${label} leaks database column names`);
+      assert.ok(body.totalDueVes !== undefined, `${label} is missing totalDueVes`);
+      assert.ok(body.usdReference, `${label} is missing usdReference`);
+    }
+
+    // And the tables and menu surfaces, which had the same problem.
+    const tables = await request('GET', '/api/v1/tables?limit=1');
+    assert.deepEqual(snake(tables.body.data[0]), []);
+    const settings = await request('GET', '/api/v1/menu/settings');
+    assert.deepEqual(snake(settings.body), []);
+    assert.ok(settings.body.menuCurrency, 'menu settings still name the currency');
   });
 
   it('resolves a table to its open bill and quotes a split', async () => {
@@ -226,8 +280,8 @@ describe('bill routes over HTTP', { skip }, () => {
     assert.ok(paid.body.paymentId, 'the response names the ledger row');
 
     const after = await request('GET', `/api/v1/bills/${billId}`);
-    assert.equal(after.body.amount_paid_ves, '2000');
-    assert.equal(after.body.remaining_ves, '3000');
+    assert.equal(after.body.amountPaidVes, '2000');
+    assert.equal(after.body.remainingVes, '3000');
 
     // The cache the route reads and the ledger must agree.
     const drift = await db.query('SELECT * FROM payment_ledger_drift WHERE bill_id = $1', [billId]);
@@ -243,7 +297,7 @@ describe('bill routes over HTTP', { skip }, () => {
       body: { tableId: bigTable.id, totalDueMinorUnits: total }
     });
     assert.equal(created.status, 201, JSON.stringify(created.body));
-    assert.equal(created.body.total_due_ves, total);
+    assert.equal(created.body.totalDueVes, total);
 
     const paid = await request('POST', `/api/v1/bills/${created.body.id}/payments`, {
       body: {
@@ -339,7 +393,7 @@ describe('bill routes over HTTP', { skip }, () => {
         body: { tableId: vesTable.id, totalDueMinorUnits: '4200' }
       });
       assert.equal(created.status, 201, JSON.stringify(created.body));
-      assert.equal(created.body.fx_rate_source, 'IDENTITY');
+      assert.equal(created.body.fxRateSource, 'IDENTITY');
       assert.equal(fetched, false, 'a VES bill made no upstream call');
     } finally {
       bcv.fetchRates = realFetch;
