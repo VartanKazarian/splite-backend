@@ -360,10 +360,46 @@
               "VOID"
             ]
           },
+          "subtotalMinor": {
+            "type": "string",
+            "pattern": "^[0-9]+$",
+            "description": "Sum of the line items, before charges.",
+            "examples": [
+              "756710"
+            ]
+          },
+          "vatBps": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 10000,
+            "description": "IVA rate in basis points, frozen when the bill opened. 1600 = 16%."
+          },
+          "vatMinor": {
+            "type": "string",
+            "pattern": "^[0-9]+$",
+            "description": "IVA, taken on the subtotal alone — never on the service charge.",
+            "examples": [
+              "756710"
+            ]
+          },
+          "serviceChargeBps": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 10000,
+            "description": "Servicio rate in basis points, frozen when the bill opened. 1000 = 10%."
+          },
+          "serviceChargeMinor": {
+            "type": "string",
+            "pattern": "^[0-9]+$",
+            "description": "Servicio, taken on the subtotal. Not taxed.",
+            "examples": [
+              "756710"
+            ]
+          },
           "totalDue": {
             "type": "string",
             "pattern": "^[0-9]+$",
-            "description": "Subtotal in the menu currency, for display.",
+            "description": "subtotalMinor + vatMinor + serviceChargeMinor, in the menu currency. The database refuses a row where those disagree.",
             "examples": [
               "756710"
             ]
@@ -942,10 +978,46 @@
               "EUR"
             ]
           },
+          "subtotalMinor": {
+            "type": "string",
+            "pattern": "^[0-9]+$",
+            "description": "Sum of the line items, before charges.",
+            "examples": [
+              "756710"
+            ]
+          },
+          "vatBps": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 10000,
+            "description": "IVA rate in basis points, frozen when the bill opened. 1600 = 16%."
+          },
+          "vatMinor": {
+            "type": "string",
+            "pattern": "^[0-9]+$",
+            "description": "IVA, taken on the subtotal alone — never on the service charge.",
+            "examples": [
+              "756710"
+            ]
+          },
+          "serviceChargeBps": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 10000,
+            "description": "Servicio rate in basis points, frozen when the bill opened. 1000 = 10%."
+          },
+          "serviceChargeMinor": {
+            "type": "string",
+            "pattern": "^[0-9]+$",
+            "description": "Servicio, taken on the subtotal. Not taxed.",
+            "examples": [
+              "756710"
+            ]
+          },
           "totalDue": {
             "type": "string",
             "pattern": "^[0-9]+$",
-            "description": "In the menu currency, for display.",
+            "description": "subtotalMinor + vatMinor + serviceChargeMinor, in the menu currency.",
             "examples": [
               "756710"
             ]

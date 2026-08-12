@@ -34,6 +34,8 @@ const router = express.Router();
 // amount_paid_ves are what Splite settles. The rate is frozen at bill creation.
 const BILL_COLUMNS = `id, restaurant_id, table_id, status,
                       total_due, currency,
+                      subtotal_minor, vat_bps, vat_minor,
+                      service_charge_bps, service_charge_minor,
                       total_due_ves, amount_paid_ves,
                       fx_rate_ves_per_unit, fx_rate_source, fx_value_date,
                       calculation_version, created_at, updated_at`;
@@ -146,10 +148,14 @@ router.post(
       // a currency that was correct moments earlier — and changing it is
       // already refused while any active product disagrees.
       const restaurant = await db.query(
-        'SELECT menu_currency FROM restaurants WHERE id = $1',
+        'SELECT menu_currency, vat_bps, service_charge_bps FROM restaurants WHERE id = $1',
         [req.user.restaurantId]
       );
       const menuCurrency = restaurant.rows[0]?.menu_currency ?? 'VES';
+      // Snapshotted onto the bill, like the FX rate and for the same reason:
+      // changing a restaurant's rates must not reprice a meal already eaten.
+      const vatBps = restaurant.rows[0]?.vat_bps ?? 0;
+      const serviceChargeBps = restaurant.rows[0]?.service_charge_bps ?? 0;
       const fx = await snapshotFx(menuCurrency, req.body.totalDueMinorUnits);
 
       const created = await db.withTransaction(async client => {
@@ -181,13 +187,18 @@ router.post(
         // The bill is denominated in whatever the menu quotes, at the rate
         // frozen above, before this transaction opened.
         const { rows } = await client.query(
-          `INSERT INTO bills (restaurant_id, table_id, total_due, currency,
+          // subtotal_minor mirrors total_due here so the sum-of-parts check
+          // holds for a bill opened with a fixed figure and no lines. Once it
+          // is itemised, recalculateTotals owns all five columns.
+          `INSERT INTO bills (restaurant_id, table_id, total_due, subtotal_minor, currency,
+                              vat_bps, service_charge_bps,
                               total_due_ves, fx_rate_ves_per_unit, fx_rate_source,
                               fx_value_date, fx_rate_as_of)
-           VALUES ($1, $2, $3, $4, $5, $6, $7, $8, NOW())
+           VALUES ($1, $2, $3, $3, $4, $5, $6, $7, $8, $9, $10, NOW())
            RETURNING ${BILL_COLUMNS}`,
           [
             req.user.restaurantId, req.body.tableId, req.body.totalDueMinorUnits, menuCurrency,
+            vatBps, serviceChargeBps,
             fx.totalDueVes, fx.rate, fx.source, fx.valueDate
           ]
         );

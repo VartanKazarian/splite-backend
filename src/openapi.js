@@ -97,7 +97,21 @@ const schemas = {
       restaurantId: { type: 'string', format: 'uuid' },
       tableId: { type: 'string', format: 'uuid' },
       status: { type: 'string', enum: ['OPEN', 'CLOSED', 'VOID'] },
-      totalDue: { ...minorUnits, description: 'Subtotal in the menu currency, for display.' },
+      subtotalMinor: { ...minorUnits, description: 'Sum of the line items, before charges.' },
+      vatBps: {
+        type: 'integer', minimum: 0, maximum: 10000,
+        description: 'IVA rate in basis points, frozen when the bill opened. 1600 = 16%.'
+      },
+      vatMinor: { ...minorUnits, description: 'IVA, taken on the subtotal alone — never on the service charge.' },
+      serviceChargeBps: {
+        type: 'integer', minimum: 0, maximum: 10000,
+        description: 'Servicio rate in basis points, frozen when the bill opened. 1000 = 10%.'
+      },
+      serviceChargeMinor: { ...minorUnits, description: 'Servicio, taken on the subtotal. Not taxed.' },
+      totalDue: {
+        ...minorUnits,
+        description: 'subtotalMinor + vatMinor + serviceChargeMinor, in the menu currency. The database refuses a row where those disagree.'
+      },
       currency: {
         type: 'string', enum: ['VES', 'USD', 'EUR'],
         description: 'The currency the menu quoted. Settlement is always VES.'
@@ -360,7 +374,21 @@ const schemas = {
       tableId: { type: 'string', format: 'uuid' },
       status: { type: 'string', enum: ['OPEN'] },
       currency: { type: 'string', enum: ['VES', 'USD', 'EUR'] },
-      totalDue: { ...minorUnits, description: 'In the menu currency, for display.' },
+      subtotalMinor: { ...minorUnits, description: 'Sum of the line items, before charges.' },
+      vatBps: {
+        type: 'integer', minimum: 0, maximum: 10000,
+        description: 'IVA rate in basis points, frozen when the bill opened. 1600 = 16%.'
+      },
+      vatMinor: { ...minorUnits, description: 'IVA, taken on the subtotal alone — never on the service charge.' },
+      serviceChargeBps: {
+        type: 'integer', minimum: 0, maximum: 10000,
+        description: 'Servicio rate in basis points, frozen when the bill opened. 1000 = 10%.'
+      },
+      serviceChargeMinor: { ...minorUnits, description: 'Servicio, taken on the subtotal. Not taxed.' },
+      totalDue: {
+        ...minorUnits,
+        description: 'subtotalMinor + vatMinor + serviceChargeMinor, in the menu currency.'
+      },
       totalDueVes: { ...minorUnits, description: 'Authoritative amount to settle.' },
       amountPaidVes: minorUnits,
       remainingVes: minorUnits,

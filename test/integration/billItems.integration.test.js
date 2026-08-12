@@ -109,6 +109,98 @@ describe('bill items', { skip }, () => {
     assert.equal(summed.toString(), updated.total_due, 'the stored total is the sum of the lines');
   });
 
+  it('adds IVA and servicio without compounding one on the other', async () => {
+    await db.query(
+      'UPDATE restaurants SET vat_bps = 1600, service_charge_bps = 1000 WHERE id = $1',
+      [restaurant.id]
+    );
+    try {
+      const t = await fixtures.createTable(restaurant.id, { name: `V${++seq}` });
+      const bill = await fixtures.createBill({
+        restaurantId: restaurant.id, tableId: t.id, totalDue: 0,
+        currency: 'USD', totalDueVes: 0, fxRate: USD_RATE
+      });
+      // The fixture inserts directly, so put the snapshot on by hand -- the
+      // route does this from the restaurant when a bill is opened.
+      await db.query('UPDATE bills SET vat_bps = 1600, service_charge_bps = 1000 WHERE id = $1', [bill.id]);
+
+      const dish = await product('Taxed', 10000);   // $100.00
+      const { bill: updated } = await add(bill.id, dish.id, 1);
+
+      assert.equal(updated.subtotal_minor, '10000');
+      assert.equal(updated.vat_minor, '1600', '16% of the subtotal');
+      assert.equal(updated.service_charge_minor, '1000', '10% of the subtotal');
+
+      // 12600, not 12760. Taxing subtotal + service would give 1760 of IVA and
+      // overstate every bill; this is the assertion that catches that.
+      assert.equal(updated.total_due, '12600');
+      assert.notEqual(updated.vat_minor, '1760', 'IVA must not be charged on the servicio');
+
+      const parts = BigInt(updated.subtotal_minor) + BigInt(updated.vat_minor) +
+        BigInt(updated.service_charge_minor);
+      assert.equal(parts.toString(), updated.total_due, 'the total is exactly its parts');
+    } finally {
+      await db.query(
+        'UPDATE restaurants SET vat_bps = 0, service_charge_bps = 0 WHERE id = $1', [restaurant.id]
+      );
+    }
+  });
+
+  it('keeps the total equal to its parts at every rate and amount', async () => {
+    // The property, not an example. Rounding each charge independently is
+    // exactly where a céntimo goes missing, and the database CHECK would
+    // reject the write rather than store a total that disagrees with itself.
+    const { applyBps } = require('../../src/services/money');
+
+    // Half-up, computed a different way, so this checks the implementation
+    // rather than restating it.
+    const expected = (amount, bps) => {
+      const scaled = amount * BigInt(bps);
+      return scaled / 10000n + ((scaled % 10000n) * 2n >= 10000n ? 1n : 0n);
+    };
+
+    for (const subtotal of [1n, 7n, 333n, 9999n, 123457n, 9007199254740993n]) {
+      for (const [vatBps, svcBps] of [[0, 0], [1600, 0], [0, 1000], [1600, 1000], [875, 333]]) {
+        const vat = applyBps(subtotal, vatBps);
+        const svc = applyBps(subtotal, svcBps);
+
+        assert.equal(vat, expected(subtotal, vatBps), `IVA on ${subtotal} at ${vatBps}bps`);
+        assert.equal(svc, expected(subtotal, svcBps), `servicio on ${subtotal} at ${svcBps}bps`);
+
+        // Neither charge may be taken on the other: at 1600/1000 the total is
+        // subtotal x 1.26, never x 1.276.
+        // Whether IVA compounds on the servicio is deliberately *not* asserted
+        // here. At small subtotals the two computations round to the same
+        // céntimo -- at 7, both give 1 -- so the property is unobservable and
+        // the assertion would only be testing the sizes chosen. The explicit
+        // $100 case above is where compounding is caught.
+      }
+    }
+  });
+
+  it('does not reprice a served bill when the restaurant changes its rates', async () => {
+    const t = await fixtures.createTable(restaurant.id, { name: `V${++seq}` });
+    const bill = await fixtures.createBill({
+      restaurantId: restaurant.id, tableId: t.id, totalDue: 0,
+      currency: 'USD', totalDueVes: 0, fxRate: USD_RATE
+    });
+    await db.query('UPDATE bills SET vat_bps = 1600 WHERE id = $1', [bill.id]);
+
+    const dish = await product('Frozen', 10000);
+    await add(bill.id, dish.id, 1);
+
+    // The restaurant's rate moves; the open bill keeps the one it snapshotted.
+    await db.query('UPDATE restaurants SET vat_bps = 2000 WHERE id = $1', [restaurant.id]);
+    try {
+      const { bill: after } = await add(bill.id, dish.id, 1);
+      assert.equal(after.vat_bps, 1600, 'the bill keeps the rate it opened with');
+      assert.equal(after.subtotal_minor, '20000');
+      assert.equal(after.vat_minor, '3200', '16% still, not 20%');
+    } finally {
+      await db.query('UPDATE restaurants SET vat_bps = 0 WHERE id = $1', [restaurant.id]);
+    }
+  });
+
   it('updates and removes lines, recomputing the total each time', async () => {
     const bill = await itemisableBill();
     const beer = await product('Beer', 500);

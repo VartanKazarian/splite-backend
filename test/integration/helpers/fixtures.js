@@ -32,10 +32,13 @@ async function createBill({
   totalDueVes = null, fxRate = '1'
 }) {
   const { rows } = await db.query(
-    `INSERT INTO bills (restaurant_id, table_id, total_due, currency, status,
+    // subtotal_minor mirrors total_due, as the route does when opening a bill
+    // with a fixed figure: CHECK (total_due = subtotal + vat + service) must
+    // hold on every row, not only on ones the application wrote.
+    `INSERT INTO bills (restaurant_id, table_id, total_due, subtotal_minor, currency, status,
                         total_due_ves, amount_paid_ves,
                         fx_rate_ves_per_unit, fx_rate_source, fx_rate_as_of)
-     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, 'IDENTITY', NOW())
+     VALUES ($1, $2, $3, $3, $4, $5, $6, $7, $8, 'IDENTITY', NOW())
      RETURNING id, total_due, currency, status, total_due_ves, amount_paid_ves, fx_rate_ves_per_unit`,
     [
       restaurantId, tableId, String(totalDue), currency, status,

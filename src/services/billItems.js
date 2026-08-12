@@ -1,7 +1,7 @@
 const db = require('../connectors/base');
 const config = require('../config');
 const { ApiError } = require('../errors');
-const { toMinor, parseRate, applyRate } = require('./money');
+const { toMinor, parseRate, applyRate, applyBps } = require('./money');
 
 /**
  * Bill line items, and the totals derived from them.
@@ -34,7 +34,7 @@ const ITEM_COLUMNS = `id, bill_id, product_id, name_snapshot,
 async function lockOpenBill(client, { restaurantId, billId }) {
   const { rows } = await client.query(
     `SELECT id, status, currency, total_due, total_due_ves, amount_paid_ves,
-            fx_rate_ves_per_unit
+            fx_rate_ves_per_unit, service_charge_bps, vat_bps
        FROM bills
       WHERE id = $1 AND restaurant_id = $2
       FOR UPDATE`,
@@ -64,10 +64,21 @@ async function recalculateTotals(client, bill) {
   );
   const subtotal = toMinor(rows[0].subtotal, 'Bill subtotal');
 
+  // subtotal + IVA + servicio, with both charges taken on the subtotal and
+  // neither compounding on the other. IVA is *not* charged on the service
+  // charge; taxing subtotal + service would overstate IVA on every bill.
+  //
+  // Both rates are the ones snapshotted when the bill opened, never today's,
+  // for the same reason the FX rate is frozen: changing a restaurant's
+  // configuration must not reprice a meal already eaten.
+  const vat = applyBps(subtotal, bill.vat_bps ?? 0, 'IVA');
+  const serviceCharge = applyBps(subtotal, bill.service_charge_bps ?? 0, 'Service charge');
+  const total = subtotal + vat + serviceCharge;
+
   // The rate frozen when the bill opened. A VES bill carries the identity rate
   // rather than a null, so there is no branch here.
   const scaledRate = parseRate(bill.fx_rate_ves_per_unit ?? '1');
-  const totalDueVes = applyRate(subtotal, scaledRate, 'Bill total in VES');
+  const totalDueVes = applyRate(total, scaledRate, 'Bill total in VES');
 
   // CHECK (amount_paid_ves <= total_due_ves) would otherwise raise a 23514 and
   // surface as a 500. Removing a line that somebody has already paid for is a
@@ -83,13 +94,19 @@ async function recalculateTotals(client, bill) {
 
   const updated = await client.query(
     `UPDATE bills
-        SET total_due = $1, total_due_ves = $2
-      WHERE id = $3
+        SET subtotal_minor = $1, vat_minor = $2, service_charge_minor = $3,
+            total_due = $4, total_due_ves = $5
+      WHERE id = $6
     RETURNING id, restaurant_id, table_id, status, total_due, currency,
+              subtotal_minor, vat_bps, vat_minor,
+              service_charge_bps, service_charge_minor,
               total_due_ves, amount_paid_ves, fx_rate_ves_per_unit,
               fx_rate_source, fx_value_date, calculation_version,
               created_at, updated_at`,
-    [subtotal.toString(), totalDueVes.toString(), bill.id]
+    [
+      subtotal.toString(), vat.toString(), serviceCharge.toString(),
+      total.toString(), totalDueVes.toString(), bill.id
+    ]
   );
   return updated.rows[0];
 }

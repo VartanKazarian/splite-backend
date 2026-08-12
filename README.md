@@ -263,6 +263,37 @@ counting the bill twice — open it with a total of `0` to itemise it. A composi
 foreign key on `(bill_id, restaurant_id, currency)` ties every line to its bill,
 its tenant and its currency at once, so a EUR line cannot sit on a USD bill.
 
+## Charges: IVA and servicio
+
+A bill total is not just the sum of its lines. Both charges are configured per
+restaurant in **basis points** as integers — `1600` is 16%, `1000` is 10% — and
+are **snapshotted onto the bill when it opens**, for the same reason the FX rate
+is: changing a restaurant's rates must never reprice a meal already eaten.
+
+```
+  subtotal          sum of the line items
++ IVA               vat_bps x subtotal
++ service charge    service_charge_bps x subtotal, NOT taxed
+= total
+```
+
+**IVA is not charged on the servicio.** Both are taken on the subtotal
+independently and summed; the service charge never enters the taxable base.
+Compounding them — taxing subtotal + service — overstates IVA on every bill, so
+there is an explicit test asserting a $100 subtotal at 16/10 totals 126.00 and
+not 127.60.
+
+`CHECK (total_due = subtotal_minor + service_charge_minor + vat_minor)` means a
+total that disagrees with its parts cannot be stored at all, by the application
+or by anything else. Every insert has to write a consistent row.
+
+Both rates default to **zero**, including for Venezuela's statutory 16%: a
+restaurant is configured deliberately, and a migration must never silently move
+an existing total.
+
+A voluntary tip is deliberately not modelled here. It is untaxed and chosen by
+the payer rather than the restaurant, so it belongs with the payment.
+
 ## Splitting a bill
 
 `POST /api/v1/bills/{id}/split/preview` — and the guest equivalent at
@@ -612,10 +643,8 @@ yet.
 
 From the working copy, onto the current model:
 
-- Service charge, VAT and tip, rebuilt on `services/money.js` rather than the
-  incoming `Number`/`Math.round` arithmetic. `applyBps` is written and unused,
-  waiting on a product decision about where the rates live — per restaurant, or
-  per bill.
+- Tip. Untaxed and chosen by the payer, so it belongs on the payment rather
+  than the bill, and lands with the payment work.
 - POS settlement: HMAC request signing, timestamp and nonce replay protection,
   and an external-reference idempotency key.
 - Guest sessions bound to the current bill. The incoming version moves them from

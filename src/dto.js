@@ -67,6 +67,15 @@ function bill(row) {
     status: row.status,
     // What the menu quoted, kept for display.
     currency: row.currency,
+    // The breakdown behind the total. A bill that shows only a grand total is
+    // not one a diner can check, and IVA has to be visible on a Venezuelan
+    // receipt. Rates ride along as basis points so a client can label the line
+    // ("IVA 16%") without hardcoding the number.
+    subtotalMinor: row.subtotal_minor,
+    vatBps: row.vat_bps,
+    vatMinor: row.vat_minor,
+    serviceChargeBps: row.service_charge_bps,
+    serviceChargeMinor: row.service_charge_minor,
     totalDue: row.total_due,
     // What Splite settles, always VES céntimos.
     totalDueVes: row.total_due_ves,
@@ -149,6 +158,15 @@ function guestBill(row, items = []) {
     tableId: row.table_id,
     status: row.status,
     currency: row.currency,
+    // The breakdown behind the total. A bill that shows only a grand total is
+    // not one a diner can check, and IVA has to be visible on a Venezuelan
+    // receipt. Rates ride along as basis points so a client can label the line
+    // ("IVA 16%") without hardcoding the number.
+    subtotalMinor: row.subtotal_minor,
+    vatBps: row.vat_bps,
+    vatMinor: row.vat_minor,
+    serviceChargeBps: row.service_charge_bps,
+    serviceChargeMinor: row.service_charge_minor,
     totalDue: row.total_due,
     totalDueVes: row.total_due_ves,
     amountPaidVes: row.amount_paid_ves,
