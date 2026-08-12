@@ -67,6 +67,26 @@ async function main() {
   console.log('\nauthentication');
   const login = await call('POST', '/api/v1/auth/login', { auth: false, body: { email: EMAIL, password: PASSWORD } });
   if (!check('login', login.status === 200, why(login))) {
+    // The API returns the same error for an unknown email and a wrong
+    // password, deliberately, so that it cannot be used to enumerate accounts.
+    // That is right for the API and unhelpful here, where the overwhelmingly
+    // common cause is that a fresh deployment was never seeded -- migrations
+    // create the schema, not an owner.
+    if (login.body?.error?.code === 'INVALID_CREDENTIALS') {
+      console.log([
+        '',
+        '  The API cannot say whether the email is unknown or the password is wrong;',
+        '  it answers identically either way so accounts cannot be enumerated.',
+        '',
+        '  On a fresh deployment the usual cause is that no owner exists yet.',
+        '  Check the users table, and if it is empty:',
+        '',
+        '    ALLOW_PRODUCTION_SEED=true SEED_OWNER_EMAIL=… SEED_OWNER_PASSWORD=… npm run seed',
+        '',
+        '  The seed is idempotent: re-running it resets that owner\'s password',
+        '  rather than creating a second restaurant.'
+      ].join('\n'));
+    }
     console.log('\nCannot continue without a session.\n');
     process.exit(1);
   }
