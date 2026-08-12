@@ -589,6 +589,14 @@ different hostname.
 app, and rate limiting is keyed on `req.ip`. Leave it unset and every client
 shares one bucket.
 
+## Building a frontend
+
+`docs/FRONTEND_BRIEF.md` is written to be handed to a frontend developer or
+pasted into an AI builder. It states the conventions a client cannot infer from
+the spec alone: that money is never a number, that `/auth/refresh` must not be
+used to identify a user, that guest requests carry two headers, and that split
+arithmetic belongs on the server.
+
 ## Generating a frontend client
 
 `openapi.json` is committed at the repository root and CI fails if it drifts from
