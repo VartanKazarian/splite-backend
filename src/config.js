@@ -31,45 +31,74 @@ function secret(name) {
   return `${DEV_PLACEHOLDER}-${name.toLowerCase()}`;
 }
 
-const secrets = {
-  jwtAccessSecret: secret('JWT_ACCESS_SECRET'),
-  jwtRefreshSecret: secret('JWT_REFRESH_SECRET'),
-  qrSigningSecret: secret('QR_SIGNING_SECRET'),
-  webhookSecret: secret('WEBHOOK_SECRET')
+const SECRET_ENV = {
+  jwtAccessSecret: 'JWT_ACCESS_SECRET',
+  jwtRefreshSecret: 'JWT_REFRESH_SECRET',
+  qrSigningSecret: 'QR_SIGNING_SECRET',
+  webhookSecret: 'WEBHOOK_SECRET'
 };
 
-if (isProduction) {
-  for (const [name, value] of Object.entries(secrets)) {
-    if (value.includes(DEV_PLACEHOLDER)) throw new Error(`Insecure default secret configured: ${name}`);
-    if (value.length < MIN_SECRET_LENGTH) throw new Error(`${name} must be at least ${MIN_SECRET_LENGTH} characters`);
-  }
-  const distinct = new Set(Object.values(secrets));
-  if (distinct.size !== Object.keys(secrets).length) throw new Error('Signing secrets must all be distinct');
-  if (!process.env.DATABASE_URL && !process.env.DB_PASSWORD) throw new Error('DATABASE_URL or DB_PASSWORD is required in production');
-  if (!process.env.CORS_ORIGINS) throw new Error('CORS_ORIGINS is required in production');
+// Resolved on first read rather than at import. `npm run migrate` needs a
+// database URL and nothing else, and importing config used to demand all four
+// signing secrets -- so a deploy's pre-deploy step failed on a
+// JWT_ACCESS_SECRET the migration would never read.
+const resolved = new Map();
+function secretValue(key) {
+  if (!resolved.has(key)) resolved.set(key, secret(SECRET_ENV[key]));
+  return resolved.get(key);
 }
 
 const corsOrigins = (process.env.CORS_ORIGINS || 'http://localhost:5173')
   .split(',').map(v => v.trim()).filter(Boolean);
 
-if (isProduction && corsOrigins.includes('*')) throw new Error('Wildcard CORS origin is not allowed in production');
+/**
+ * Everything a process that *serves traffic* must have before it accepts any.
+ *
+ * Called by src/server.js at startup, deliberately not at import time. A
+ * command-line tool that only touches the database gets to run without the
+ * app's signing secrets, while the server still fails fast rather than
+ * discovering a missing secret on its first login.
+ */
+function assertProductionConfig() {
+  if (!isProduction) return;
+
+  const values = Object.fromEntries(
+    Object.keys(SECRET_ENV).map(key => [key, secretValue(key)])
+  );
+  for (const [name, value] of Object.entries(values)) {
+    if (value.includes(DEV_PLACEHOLDER)) throw new Error(`Insecure default secret configured: ${name}`);
+    if (value.length < MIN_SECRET_LENGTH) throw new Error(`${name} must be at least ${MIN_SECRET_LENGTH} characters`);
+  }
+  // Reusing one secret for two purposes means a token minted for one is valid
+  // for the other.
+  if (new Set(Object.values(values)).size !== Object.keys(values).length) {
+    throw new Error('Signing secrets must all be distinct');
+  }
+
+  if (!process.env.DATABASE_URL && !process.env.DB_PASSWORD) {
+    throw new Error('DATABASE_URL or DB_PASSWORD is required in production');
+  }
+  if (!process.env.CORS_ORIGINS) throw new Error('CORS_ORIGINS is required in production');
+  if (corsOrigins.includes('*')) throw new Error('Wildcard CORS origin is not allowed in production');
+}
 
 module.exports = {
+  assertProductionConfig,
   port: integer('PORT', 3000),
   env: process.env.NODE_ENV || 'development',
   isProduction,
   corsOrigins,
   jwt: {
-    accessSecret: secrets.jwtAccessSecret,
-    refreshSecret: secrets.jwtRefreshSecret,
+    get accessSecret() { return secretValue('jwtAccessSecret'); },
+    get refreshSecret() { return secretValue('jwtRefreshSecret'); },
     accessTtl: process.env.JWT_ACCESS_TTL || '15m',
     refreshTtlSeconds: integer('JWT_REFRESH_TTL_SECONDS', 60 * 60 * 24 * 30),
     issuer: 'splite-api',
     audience: 'splite'
   },
-  qrSigningSecret: secrets.qrSigningSecret,
+  get qrSigningSecret() { return secretValue('qrSigningSecret'); },
   qrTtlSeconds: integer('QR_TTL_SECONDS', 60 * 60 * 24 * 30),
-  webhookSecret: secrets.webhookSecret,
+  get webhookSecret() { return secretValue('webhookSecret'); },
   webhookToleranceSeconds: integer('WEBHOOK_TOLERANCE_SECONDS', 300),
   guest: {
     sessionTtlSeconds: integer('GUEST_SESSION_TTL_SECONDS', 60 * 60 * 2)

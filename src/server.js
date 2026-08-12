@@ -81,6 +81,13 @@ function installProcessHandlers(shutdown) {
 }
 
 async function start() {
+  // Before anything else, and before a single request is accepted: a missing
+  // or reused signing secret must stop the process, not surface on the first
+  // login. Secrets are resolved lazily so that command-line tools which only
+  // touch the database can run without them; this is where that laziness is
+  // paid back.
+  config.assertProductionConfig();
+
   // Fail fast: a container that cannot reach its dependencies should never
   // report healthy to the orchestrator.
   await db.query('SELECT 1');
