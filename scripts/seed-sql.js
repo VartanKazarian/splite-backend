@@ -52,34 +52,43 @@ argon2.hash(password, { type: argon2.argon2id, memoryCost: 19456, timeCost: 2, p
   .then(hash => {
     console.log(`
 -- Splite: create the first restaurant and its owner.
--- Contains a password hash, not the password. Safe to paste into a SQL console.
--- Idempotent: re-running resets this owner's password and adds no second restaurant.
+-- Contains a password hash, not the password.
+--
+-- ONE statement on purpose. A managed database console usually runs only a
+-- single statement, or silently only the last one, which looks like the seed
+-- having no effect.
+--
+-- Idempotent without relying on a unique constraint over restaurants.name,
+-- because there is not one: re-running resets this owner's password and adds
+-- no second restaurant.
 
-WITH upserted_restaurant AS (
+WITH existing AS (
+  SELECT id FROM restaurants WHERE name = ${quote(restaurantName)} LIMIT 1
+), created AS (
   INSERT INTO restaurants (name, menu_currency)
-  VALUES (${quote(restaurantName)}, 'VES')
-  ON CONFLICT DO NOTHING
+  SELECT ${quote(restaurantName)}, 'VES'
+  WHERE NOT EXISTS (SELECT 1 FROM existing)
   RETURNING id
 ), restaurant AS (
-  SELECT id FROM upserted_restaurant
+  SELECT id FROM existing
   UNION ALL
-  SELECT id FROM restaurants WHERE name = ${quote(restaurantName)}
-  LIMIT 1
+  SELECT id FROM created
+), owner AS (
+  INSERT INTO users (restaurant_id, email, password_hash, role)
+  SELECT id, ${quote(email.toLowerCase())}, ${quote(hash)}, 'OWNER' FROM restaurant
+  ON CONFLICT (lower(email)) WHERE email IS NOT NULL
+  DO UPDATE SET password_hash = EXCLUDED.password_hash, active = TRUE
+  RETURNING email, role
+), seats AS (
+  INSERT INTO tables (restaurant_id, name)
+  SELECT restaurant.id, v.name FROM restaurant, (VALUES ('T1'), ('T2')) AS v(name)
+  ON CONFLICT (restaurant_id, name) DO NOTHING
+  RETURNING id
 )
-INSERT INTO users (restaurant_id, email, password_hash, role)
-SELECT id, ${quote(email.toLowerCase())}, ${quote(hash)}, 'OWNER' FROM restaurant
-ON CONFLICT (lower(email)) WHERE email IS NOT NULL
-DO UPDATE SET password_hash = EXCLUDED.password_hash, active = TRUE;
-
--- Two tables to start with, so a bill can be opened immediately.
-INSERT INTO tables (restaurant_id, name)
-SELECT id, t.name FROM restaurants, (VALUES ('T1'), ('T2')) AS t(name)
-WHERE restaurants.name = ${quote(restaurantName)}
-ON CONFLICT (restaurant_id, name) DO NOTHING;
-
--- Confirm:
-SELECT u.email, u.role, u.active, r.name AS restaurant
-  FROM users u JOIN restaurants r ON r.id = u.restaurant_id;
+SELECT (SELECT id FROM restaurant)      AS restaurant_id,
+       (SELECT email FROM owner)        AS owner_email,
+       (SELECT role FROM owner)         AS role,
+       (SELECT count(*) FROM seats)     AS tables_added;
 `);
   })
   .catch(err => { console.error(err.message); process.exit(1); });
