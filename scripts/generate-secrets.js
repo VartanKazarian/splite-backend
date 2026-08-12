@@ -24,13 +24,15 @@ const SECRETS = [
   ['WEBHOOK_SECRET', 'verifies inbound payment callbacks']
 ];
 
-const width = Math.max(...SECRETS.map(([name]) => name.length));
-
 console.log('\nPaste these into your hosting provider\'s variables. Do not commit them.\n');
 
+// Emitted as bare KEY=value with no alignment padding. These lines are meant
+// to be pasted straight into a variables editor, and a name padded to a common
+// width creates a variable called "WEBHOOK_SECRET    " -- which the app then
+// reports as missing, from a config file that looks correct.
 for (const [name, purpose] of SECRETS) {
   console.log(`# ${purpose}`);
-  console.log(`${name.padEnd(width)}=${randomBytes(64).toString('base64url')}\n`);
+  console.log(`${name}=${randomBytes(64).toString('base64url')}\n`);
 }
 
 console.log('Generated fresh on every run -- re-running gives different values,');
