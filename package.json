@@ -12,6 +12,7 @@
     "migrate": "node scripts/migrate.js",
     "seed": "node scripts/seed.js",
     "secrets": "node scripts/generate-secrets.js",
+    "smoke": "node scripts/smoke.js",
     "openapi:dump": "node scripts/dump-openapi.js",
     "openapi:check": "node scripts/dump-openapi.js --check",
     "lint": "find src scripts test -name '*.js' -print0 | xargs -0 -n 1 node --check",
