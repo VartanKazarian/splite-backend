@@ -403,6 +403,14 @@ posts the figure that takes effect on the next business day, so the page can be
 read at any hour — a rate read on a Saturday normally carries Monday's date. Do
 not key anything on "today".
 
+**A deployment less than a day old may have no rate at all.** BCV publishes
+after ~16:30 Caracas for the next business day, so a service started that
+evening sees a rate that is not yet in force and has no history to fall back
+on: `/api/v1/exchange-rate` answers 503 and a foreign-currency bill cannot be
+opened until midnight Caracas. Nothing is wrong, and nothing needs doing —
+the newly published rate is persisted as it arrives, and comes into force on
+its own. VES-priced bills are unaffected throughout.
+
 There is **no fallback rate anywhere**. A rate is rejected if it falls outside
 `FX_MIN_RATE`/`FX_MAX_RATE` or moves more than `FX_MAX_DEVIATION_PCT` from the
 last known good value, and a failure returns null rather than a stale or

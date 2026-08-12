@@ -96,7 +96,7 @@ async function main() {
   check('/auth/me identifies the caller', me.status === 200 && Boolean(me.body.user?.restaurantId), why(me));
   check('/auth/me is repeatable', (await call('GET', '/api/v1/auth/me')).status === 200);
 
-  console.log('\nexchange rate (reaches BCV from this host)');
+  console.log('\nexchange rate');
   const fx = await call('GET', '/api/v1/exchange-rate');
   if (fx.status === 200) {
     const usd = fx.body.rates?.USD;
@@ -104,8 +104,26 @@ async function main() {
     check('rate is a padded string, not a number', typeof usd?.rate === 'string' && /^\d+\.\d{8}$/.test(usd.rate),
       String(usd?.rate));
   } else {
-    check('BCV reachable', false,
-      `${why(fx)} — foreign-currency bills cannot be opened while this fails`);
+    // Deliberately not called "BCV unreachable": the commonest cause is not a
+    // network failure at all. BCV publishes around 16:30 Caracas for the *next*
+    // business day, so between then and midnight the page carries a rate that
+    // is not in force, and a deployment with no rate history yet has nothing to
+    // fall back on. It resolves itself at midnight Caracas.
+    check('a rate is in force', false, why(fx));
+    if (fx.body?.error?.code === 'FX_UNAVAILABLE') {
+      console.log([
+        '',
+        '  Two causes look identical here:',
+        '    1. BCV published for the next business day and today\'s rate was never',
+        '       recorded -- normal on a deployment less than a day old, and it clears',
+        '       at midnight Caracas without intervention.',
+        '    2. BCV is genuinely unreachable or has changed its page.',
+        '',
+        '  Check the logs for FX_NOT_YET_IN_FORCE (cause 1) or FX_UNAVAILABLE (cause 2).',
+        '  Either way, VES-priced bills are unaffected; only foreign-currency bills',
+        '  cannot be opened.'
+      ].join('\n'));
+    }
   }
 
   console.log('\nbill, items and split');
