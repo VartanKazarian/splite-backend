@@ -334,6 +334,39 @@ answered a strictly narrower version of the same question and was removed rather
 than left alongside this one, because two endpoints that nearly agree are a
 choice a client should not have to make.
 
+## Table QR codes
+
+`npm run qr` mints a code for every active table and writes a printable sheet:
+
+```
+QR_URL=https://your-api QR_EMAIL=you@example.com QR_PASSWORD='…' \
+QR_APP_URL=https://your-frontend npm run qr
+```
+
+Each code encodes `<QR_APP_URL>/t?qr=<token>`. The guest landing page reads that
+parameter and exchanges it at `POST /api/v1/guest/sessions`. That route has to
+exist in the frontend; nothing here renders it.
+
+The token is signed, not secret — it names its restaurant and table in plain
+base64url, and is useful only because the signature cannot be forged. The
+`nonce` inside it is checked against `tables.qr_nonce` on every scan.
+
+**A QR does not expire.** It is printed onto furniture, so a clock is the wrong
+control: revocation is rotating that table's nonce, which invalidates every
+code already printed for it, immediately.
+
+```
+POST /api/v1/guest/tables/{tableId}/qr/rotate
+```
+
+Set `QR_TTL_SECONDS` only for codes that *should* expire — one printed on a
+receipt rather than stuck to a table. The value is baked into each token when it
+is minted, so changing it later does not affect codes already printed.
+
+Minting goes through the API rather than the database so that it stays
+restricted to OWNER and MANAGER, stays tenant-scoped, and leaves a `QR_ISSUED`
+audit entry.
+
 ## Guest access
 
 A diner scans a table QR, exchanges it for a session, and reads their bill:

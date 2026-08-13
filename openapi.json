@@ -1464,10 +1464,15 @@
         "type": "object",
         "properties": {
           "token": {
-            "type": "string"
+            "type": "string",
+            "description": "Signed, and readable: it names its restaurant and table in plain base64url. It is useful only because it is signed, not because it is opaque."
           },
           "expiresIn": {
-            "type": "integer"
+            "type": [
+              "integer",
+              "null"
+            ],
+            "description": "Null by default, meaning the code never expires — it is printed onto a table. Rotating the table nonce is what revokes one. A positive value appears only where QR_TTL_SECONDS is set."
           }
         }
       },

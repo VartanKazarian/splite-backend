@@ -68,7 +68,19 @@ function verifyQrToken(token) {
   }
   if (!payload || typeof payload !== 'object') throw new Error('Malformed QR payload');
   if (!payload.tableId || !payload.restaurantId || !payload.nonce) throw new Error('Incomplete QR payload');
-  if (!Number.isInteger(payload.exp) || payload.exp < Math.floor(Date.now() / 1000)) throw new Error('QR token expired');
+  // A QR carries no expiry by default, because it is printed onto furniture.
+  // A code that stops scanning after a month means reprinting every table's
+  // sticker, and the clock is the wrong control here: rotating the table's
+  // nonce revokes every code already printed for it, immediately and by
+  // intent. `exp` is honoured when a deployment chooses to set one.
+  //
+  // It cannot be stripped to manufacture permanence: the payload is signed
+  // whole, so removing the field invalidates the signature.
+  if (payload.exp !== undefined) {
+    if (!Number.isInteger(payload.exp) || payload.exp < Math.floor(Date.now() / 1000)) {
+      throw new Error('QR token expired');
+    }
+  }
   return payload;
 }
 

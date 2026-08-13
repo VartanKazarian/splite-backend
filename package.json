@@ -14,6 +14,7 @@
     "secrets": "node scripts/generate-secrets.js",
     "smoke": "node scripts/smoke.js",
     "seed:sql": "node scripts/seed-sql.js",
+    "qr": "node scripts/qr.js",
     "openapi:dump": "node scripts/dump-openapi.js",
     "openapi:check": "node scripts/dump-openapi.js --check",
     "lint": "find src scripts test -name '*.js' -print0 | xargs -0 -n 1 node --check",
@@ -38,7 +39,8 @@
     "swagger-ui-express": "^5.0.1"
   },
   "devDependencies": {
-    "nodemon": "^3.1.7"
+    "nodemon": "^3.1.7",
+    "qrcode": "^1.5.4"
   },
   "engines": {
     "node": ">=20.0.0"

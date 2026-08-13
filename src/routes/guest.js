@@ -35,13 +35,17 @@ router.get(
       if (!table) throw new ApiError('TABLE_NOT_FOUND', 'Table not found');
 
       const now = Math.floor(Date.now() / 1000);
+      // `exp` is omitted entirely when no TTL is configured, rather than set to
+      // something distant: a field that is absent cannot be misread, and the
+      // signature covers its absence.
+      const ttl = config.qrTtlSeconds;
       const token = signQrPayload({
         v: 1,
         tableId: table.id,
         restaurantId: table.restaurant_id,
         nonce: table.qr_nonce,
         iat: now,
-        exp: now + config.qrTtlSeconds
+        ...(ttl > 0 ? { exp: now + ttl } : {})
       });
 
       await logAudit({
@@ -51,7 +55,7 @@ router.get(
         resourceId: table.id
       });
 
-      res.json({ token, expiresIn: config.qrTtlSeconds });
+      res.json({ token, expiresIn: ttl > 0 ? ttl : null });
     } catch (err) { next(err); }
   }
 );

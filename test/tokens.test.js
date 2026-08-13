@@ -64,3 +64,30 @@ test('safeEqual compares values without throwing on length mismatch', () => {
   assert.equal(safeEqual('abc', 'abcd'), false);
   assert.equal(safeEqual('', 'x'), false);
 });
+
+test('a QR without an expiry is permanent, because it is printed on furniture', () => {
+  // The default. A code that stops scanning after a month means reprinting
+  // every sticker in the restaurant; the nonce is what revokes one.
+  const permanent = signQrPayload({ v: 1, tableId: 't', restaurantId: 'r', nonce: 'n', iat: 1 });
+  const payload = verifyQrToken(permanent);
+  assert.equal(payload.tableId, 't');
+  assert.equal(payload.exp, undefined);
+});
+
+test('an expiry is still honoured when one is set', () => {
+  // A deployment that wants short-lived codes -- a printed receipt rather than
+  // a table sticker -- keeps the old behaviour by setting QR_TTL_SECONDS.
+  assert.equal(verifyQrToken(qr({ exp: future() })).tableId, 't');
+  assert.throws(() => verifyQrToken(qr({ exp: Math.floor(Date.now() / 1000) - 1 })), /expired/);
+});
+
+test('an expiry cannot be stripped to manufacture a permanent code', () => {
+  // The payload is signed whole, so editing it invalidates the signature.
+  const expiring = qr({ exp: Math.floor(Date.now() / 1000) - 1 });
+  const [body] = expiring.split('.');
+  const payload = JSON.parse(Buffer.from(body, 'base64url').toString('utf8'));
+  delete payload.exp;
+  const forged = `${Buffer.from(JSON.stringify(payload)).toString('base64url')}.${expiring.split('.')[1]}`;
+
+  assert.throws(() => verifyQrToken(forged), /Invalid QR signature/);
+});

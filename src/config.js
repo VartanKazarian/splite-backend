@@ -97,7 +97,10 @@ module.exports = {
     audience: 'splite'
   },
   get qrSigningSecret() { return secretValue('qrSigningSecret'); },
-  qrTtlSeconds: integer('QR_TTL_SECONDS', 60 * 60 * 24 * 30),
+  // 0 means no expiry, which is the default: a table QR is printed onto a
+  // sticker and has to keep working. Revocation is rotating the table's nonce,
+  // not waiting for a clock. Set a positive value to mint expiring codes.
+  qrTtlSeconds: integer('QR_TTL_SECONDS', 0),
   get webhookSecret() { return secretValue('webhookSecret'); },
   webhookToleranceSeconds: integer('WEBHOOK_TOLERANCE_SECONDS', 300),
   guest: {
