@@ -42,11 +42,55 @@ async function run() {
   }
 }
 
-run()
+/**
+ * Everything known about a failure, not just its message.
+ *
+ * Node throws an AggregateError when a host resolves to several addresses and
+ * every connection fails -- and an AggregateError's `message` is empty, so
+ * printing only that produced a bare "[Migrate]" and told us nothing. The
+ * causes live in `.errors`.
+ */
+function describe(err) {
+  const parts = [];
+  if (err?.message) parts.push(err.message);
+  if (err?.code) parts.push(`code=${err.code}`);
+  if (Array.isArray(err?.errors) && err.errors.length) {
+    parts.push('causes: ' + err.errors.map(e => `${e.code || e.name || 'error'} ${e.message || ''}`.trim()).join('; '));
+  }
+  if (!parts.length) parts.push(err?.name || String(err));
+  return parts.join(' | ');
+}
+
+/**
+ * Waits for the database to accept a connection before migrating.
+ *
+ * A pre-deploy step runs the instant the container starts, and on a managed
+ * platform the private network is not always routable that early. Failing on
+ * the first refused connection turns a few seconds of startup into a failed
+ * deploy, so this retries a bounded number of times and reports each attempt
+ * rather than dying silently.
+ */
+async function waitForDatabase({ attempts = 10, delayMs = 3000 } = {}) {
+  for (let attempt = 1; attempt <= attempts; attempt++) {
+    try {
+      await db.query('SELECT 1');
+      if (attempt > 1) console.log(`Database reachable after ${attempt} attempts`);
+      return;
+    } catch (err) {
+      if (attempt === attempts) throw err;
+      console.log(`Waiting for the database (${attempt}/${attempts}): ${describe(err)}`);
+      await new Promise(resolve => setTimeout(resolve, delayMs));
+    }
+  }
+}
+
+waitForDatabase()
+  .then(run)
   .then(() => db.close())
   .then(() => process.exit(0))
   .catch(async err => {
-    console.error('[Migrate]', err.message);
+    console.error('[Migrate]', describe(err));
+    if (err?.stack) console.error(err.stack);
     await db.close().catch(() => {});
     process.exit(1);
   });
