@@ -1098,6 +1098,176 @@
           }
         }
       },
+      "FloorTable": {
+        "allOf": [
+          {
+            "$ref": "#/components/schemas/Table"
+          },
+          {
+            "type": "object",
+            "description": "A table with whatever bill is open on it. `openBill` is null when the table is free — never absent.",
+            "properties": {
+              "openBill": {
+                "type": [
+                  "object",
+                  "null"
+                ],
+                "description": "Summary only: enough to render a floor plan, without the line items.",
+                "properties": {
+                  "id": {
+                    "type": "string",
+                    "format": "uuid"
+                  },
+                  "status": {
+                    "type": "string",
+                    "enum": [
+                      "OPEN"
+                    ]
+                  },
+                  "currency": {
+                    "type": "string",
+                    "enum": [
+                      "VES",
+                      "USD",
+                      "EUR"
+                    ]
+                  },
+                  "subtotalMinor": {
+                    "type": "string",
+                    "pattern": "^[0-9]+$",
+                    "description": "Integer minor units (céntimos) as a string, so values beyond 2^53 survive JSON.",
+                    "examples": [
+                      "756710"
+                    ]
+                  },
+                  "vatBps": {
+                    "type": "integer"
+                  },
+                  "vatMinor": {
+                    "type": "string",
+                    "pattern": "^[0-9]+$",
+                    "description": "Integer minor units (céntimos) as a string, so values beyond 2^53 survive JSON.",
+                    "examples": [
+                      "756710"
+                    ]
+                  },
+                  "serviceChargeBps": {
+                    "type": "integer"
+                  },
+                  "serviceChargeMinor": {
+                    "type": "string",
+                    "pattern": "^[0-9]+$",
+                    "description": "Integer minor units (céntimos) as a string, so values beyond 2^53 survive JSON.",
+                    "examples": [
+                      "756710"
+                    ]
+                  },
+                  "totalDue": {
+                    "type": "string",
+                    "pattern": "^[0-9]+$",
+                    "description": "Integer minor units (céntimos) as a string, so values beyond 2^53 survive JSON.",
+                    "examples": [
+                      "756710"
+                    ]
+                  },
+                  "totalDueVes": {
+                    "type": "string",
+                    "pattern": "^[0-9]+$",
+                    "description": "Integer minor units (céntimos) as a string, so values beyond 2^53 survive JSON.",
+                    "examples": [
+                      "756710"
+                    ]
+                  },
+                  "amountPaidVes": {
+                    "type": "string",
+                    "pattern": "^[0-9]+$",
+                    "description": "Integer minor units (céntimos) as a string, so values beyond 2^53 survive JSON.",
+                    "examples": [
+                      "756710"
+                    ]
+                  },
+                  "remainingVes": {
+                    "type": "string",
+                    "pattern": "^[0-9]+$",
+                    "description": "Integer minor units (céntimos) as a string, so values beyond 2^53 survive JSON.",
+                    "examples": [
+                      "756710"
+                    ]
+                  },
+                  "fxRateVesPerUnit": {
+                    "type": [
+                      "string",
+                      "null"
+                    ]
+                  },
+                  "usdReference": {
+                    "type": [
+                      "string",
+                      "null"
+                    ]
+                  },
+                  "itemCount": {
+                    "type": "integer"
+                  },
+                  "updatedAt": {
+                    "type": "string",
+                    "format": "date-time"
+                  }
+                }
+              }
+            }
+          }
+        ]
+      },
+      "FloorList": {
+        "type": "object",
+        "properties": {
+          "data": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/FloorTable"
+            }
+          }
+        }
+      },
+      "BulkTablesRequest": {
+        "type": "object",
+        "required": [
+          "count"
+        ],
+        "properties": {
+          "count": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 200,
+            "description": "How many tables the restaurant has."
+          },
+          "prefix": {
+            "type": "string",
+            "maxLength": 20,
+            "default": "Mesa",
+            "description": "Joined to the number with a space: \"Mesa\" gives \"Mesa 1\", \"Mesa 2\"."
+          }
+        }
+      },
+      "BulkTablesResult": {
+        "type": "object",
+        "properties": {
+          "created": {
+            "type": "integer"
+          },
+          "alreadyExisted": {
+            "type": "integer"
+          },
+          "data": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/Table"
+            },
+            "description": "Every active table afterwards."
+          }
+        }
+      },
       "TableList": {
         "type": "object",
         "properties": {
@@ -2226,6 +2396,101 @@
           },
           "409": {
             "$ref": "#/components/responses/Conflict"
+          },
+          "429": {
+            "$ref": "#/components/responses/TooManyRequests"
+          },
+          "500": {
+            "$ref": "#/components/responses/ServerError"
+          }
+        }
+      }
+    },
+    "/api/v1/tables/floor": {
+      "get": {
+        "tags": [
+          "Tables"
+        ],
+        "summary": "Every table with the bill open on it",
+        "operationId": "getFloor",
+        "description": "Any authenticated staff role. What an owner dashboard renders.\n\nOne call instead of 1 + N: listing tables and then asking each for its open bill costs\na request per table on every poll. `openBill` is null for a free table rather than absent,\nso the shape does not change with occupancy.",
+        "security": [
+          {
+            "staffAuth": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The floor.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/FloorList"
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "429": {
+            "$ref": "#/components/responses/TooManyRequests"
+          },
+          "500": {
+            "$ref": "#/components/responses/ServerError"
+          }
+        }
+      }
+    },
+    "/api/v1/tables/bulk": {
+      "post": {
+        "tags": [
+          "Tables"
+        ],
+        "summary": "Create the tables a restaurant has",
+        "operationId": "createTablesInBulk",
+        "x-required-roles": [
+          "OWNER",
+          "MANAGER"
+        ],
+        "description": "Roles: OWNER, MANAGER. Say how many tables the restaurant has and the missing ones are\ncreated as `<prefix> 1` … `<prefix> N`.\n\nIdempotent, and it never deletes: raising the count later adds only the new tables, and\nlowering it removes nothing — a table that already carries bills is not something a\nnumber in a form should be able to destroy.",
+        "security": [
+          {
+            "staffAuth": []
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/BulkTablesRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "Tables created.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BulkTablesResult"
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "403": {
+            "$ref": "#/components/responses/Forbidden"
           },
           "429": {
             "$ref": "#/components/responses/TooManyRequests"

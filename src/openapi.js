@@ -415,6 +415,66 @@ const schemas = {
     }
   },
 
+  FloorTable: {
+    allOf: [
+      ref('Table'),
+      {
+        type: 'object',
+        description: 'A table with whatever bill is open on it. `openBill` is null when the table is free — never absent.',
+        properties: {
+          openBill: {
+            type: ['object', 'null'],
+            description: 'Summary only: enough to render a floor plan, without the line items.',
+            properties: {
+              id: { type: 'string', format: 'uuid' },
+              status: { type: 'string', enum: ['OPEN'] },
+              currency: { type: 'string', enum: ['VES', 'USD', 'EUR'] },
+              subtotalMinor: minorUnits,
+              vatBps: { type: 'integer' },
+              vatMinor: minorUnits,
+              serviceChargeBps: { type: 'integer' },
+              serviceChargeMinor: minorUnits,
+              totalDue: minorUnits,
+              totalDueVes: minorUnits,
+              amountPaidVes: minorUnits,
+              remainingVes: minorUnits,
+              fxRateVesPerUnit: { type: ['string', 'null'] },
+              usdReference: { type: ['string', 'null'] },
+              itemCount: { type: 'integer' },
+              updatedAt: { type: 'string', format: 'date-time' }
+            }
+          }
+        }
+      }
+    ]
+  },
+
+  FloorList: {
+    type: 'object',
+    properties: { data: { type: 'array', items: ref('FloorTable') } }
+  },
+
+  BulkTablesRequest: {
+    type: 'object',
+    required: ['count'],
+    properties: {
+      count: { type: 'integer', minimum: 1, maximum: 200, description: 'How many tables the restaurant has.' },
+      prefix: {
+        type: 'string', maxLength: 20, default: 'Mesa',
+        description: 'Joined to the number with a space: "Mesa" gives "Mesa 1", "Mesa 2".'
+      }
+    }
+  },
+
+  BulkTablesResult: {
+    type: 'object',
+    properties: {
+      created: { type: 'integer' },
+      alreadyExisted: { type: 'integer' },
+      data: { type: 'array', items: ref('Table'), description: 'Every active table afterwards.' }
+    }
+  },
+
   TableList: {
     type: 'object',
     properties: {
@@ -978,6 +1038,50 @@ const paths = {
         ...commonErrors,
         403: response('Forbidden'),
         409: response('Conflict')
+      }
+    }
+  },
+
+  '/api/v1/tables/floor': {
+    get: {
+      tags: ['Tables'],
+      summary: 'Every table with the bill open on it',
+      operationId: 'getFloor',
+      description: [
+        'Any authenticated staff role. What an owner dashboard renders.',
+        '',
+        'One call instead of 1 + N: listing tables and then asking each for its open bill costs',
+        'a request per table on every poll. `openBill` is null for a free table rather than absent,',
+        'so the shape does not change with occupancy.'
+      ].join('\n'),
+      security: staff,
+      responses: {
+        200: { description: 'The floor.', content: { 'application/json': { schema: ref('FloorList') } } },
+        ...commonErrors
+      }
+    }
+  },
+
+  '/api/v1/tables/bulk': {
+    post: {
+      tags: ['Tables'],
+      summary: 'Create the tables a restaurant has',
+      operationId: 'createTablesInBulk',
+      'x-required-roles': ['OWNER', 'MANAGER'],
+      description: [
+        'Roles: OWNER, MANAGER. Say how many tables the restaurant has and the missing ones are',
+        'created as `<prefix> 1` … `<prefix> N`.',
+        '',
+        'Idempotent, and it never deletes: raising the count later adds only the new tables, and',
+        'lowering it removes nothing — a table that already carries bills is not something a',
+        'number in a form should be able to destroy.'
+      ].join('\n'),
+      security: staff,
+      requestBody: { required: true, content: { 'application/json': { schema: ref('BulkTablesRequest') } } },
+      responses: {
+        201: { description: 'Tables created.', content: { 'application/json': { schema: ref('BulkTablesResult') } } },
+        ...commonErrors,
+        403: response('Forbidden')
       }
     }
   },

@@ -124,6 +124,17 @@ const paginationKeys = {
   offset: Joi.number().integer().min(0).default(0)
 };
 
+// "I have 12 tables" -- the owner states how many the restaurant has and the
+// missing ones are created. 200 is well past any real dining room and bounds a
+// single request.
+// The number is joined to the prefix with a space -- "Mesa" becomes "Mesa 1"
+// -- rather than the caller having to supply a trailing space that trimming
+// would silently remove and turn into "Mesa1".
+const bulkTablesSchema = Joi.object({
+  count: Joi.number().integer().min(1).max(200).required(),
+  prefix: Joi.string().trim().min(1).max(20).default('Mesa')
+});
+
 const listTablesQuerySchema = Joi.object({
   ...paginationKeys,
   active: Joi.boolean()
@@ -198,6 +209,7 @@ module.exports = {
   minorUnits,
   positiveMinorUnits,
   createTableSchema,
+  bulkTablesSchema,
   updateTableSchema,
   createBillSchema,
   addBillItemSchema,

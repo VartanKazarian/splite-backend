@@ -193,6 +193,42 @@ function table(row) {
   };
 }
 
+/**
+ * A table on the floor, with whatever bill is open on it.
+ *
+ * `openBill` is null when the table is free, never absent, so a client can read
+ * `table.openBill?.remainingVes` without first checking which shape it got.
+ * The bill here is a summary: enough to render a floor plan and decide what to
+ * open, not the full bill with its lines.
+ */
+function floorTable(row) {
+  const rate = row.fx_rate_ves_per_unit ?? null;
+  const openBill = row.bill_id
+    ? {
+      id: row.bill_id,
+      status: row.bill_status,
+      currency: row.currency,
+      subtotalMinor: row.subtotal_minor,
+      vatBps: row.vat_bps,
+      vatMinor: row.vat_minor,
+      serviceChargeBps: row.service_charge_bps,
+      serviceChargeMinor: row.service_charge_minor,
+      totalDue: row.total_due,
+      totalDueVes: row.total_due_ves,
+      amountPaidVes: row.amount_paid_ves,
+      remainingVes: (BigInt(row.total_due_ves) - BigInt(row.amount_paid_ves)).toString(),
+      fxRateVesPerUnit: rate,
+      usdReference: usdReference(
+        (BigInt(row.total_due_ves) - BigInt(row.amount_paid_ves)).toString(), rate
+      ),
+      itemCount: row.item_count ?? 0,
+      updatedAt: isoTimestamp(row.bill_updated_at)
+    }
+    : null;
+
+  return { ...table(row), openBill };
+}
+
 function product(row) {
   return {
     id: row.id,
@@ -234,5 +270,5 @@ function menuSettings(row) {
 module.exports = {
   isoDate, isoTimestamp,
   bill, billItem, billWithItems, guestBill,
-  table, product, publicProduct, menuSettings
+  table, floorTable, product, publicProduct, menuSettings
 };

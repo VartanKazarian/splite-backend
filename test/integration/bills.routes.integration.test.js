@@ -744,6 +744,105 @@ describe('bill routes over HTTP', { skip }, () => {
     assert.deepEqual(after, before, 'the bill is untouched by a preview');
   });
 
+  it('creates the tables a restaurant says it has, idempotently', async () => {
+    const tenant = await usdRestaurant('USD');
+
+    const first = await request('POST', '/api/v1/tables/bulk', {
+      body: { count: 4, prefix: 'Salon' }, token: tenant.token
+    });
+    assert.equal(first.status, 201, JSON.stringify(first.body));
+    assert.equal(first.body.created, 4);
+    assert.deepEqual(first.body.data.map(t => t.name), ['Salon 1', 'Salon 2', 'Salon 3', 'Salon 4']);
+
+    // Running it again creates nothing rather than failing.
+    const again = await request('POST', '/api/v1/tables/bulk', {
+      body: { count: 4, prefix: 'Salon' }, token: tenant.token
+    });
+    assert.equal(again.body.created, 0);
+    assert.equal(again.body.alreadyExisted, 4);
+    assert.equal(again.body.data.length, 4, 'still four tables, not eight');
+
+    // Raising the count adds only the new ones.
+    const more = await request('POST', '/api/v1/tables/bulk', {
+      body: { count: 6, prefix: 'Salon' }, token: tenant.token
+    });
+    assert.equal(more.body.created, 2);
+    assert.equal(more.body.data.length, 6);
+
+    // Lowering it destroys nothing.
+    const fewer = await request('POST', '/api/v1/tables/bulk', {
+      body: { count: 2, prefix: 'Salon' }, token: tenant.token
+    });
+    assert.equal(fewer.body.created, 0);
+    assert.equal(fewer.body.data.length, 6, 'a smaller number must never delete tables');
+  });
+
+  it('renders the whole floor in one call, with bills attached', async () => {
+    const tenant = await usdRestaurant('USD');
+    await request('POST', '/api/v1/tables/bulk', { body: { count: 3, prefix: 'F' }, token: tenant.token });
+
+    const tables = await request('GET', '/api/v1/tables', { token: tenant.token });
+    const target = tables.body.data.find(t => t.name === 'F 2');
+
+    const { rows } = await db.query(
+      `INSERT INTO menu_products (restaurant_id, name, price_minor_units, currency)
+       VALUES ($1, 'Floor Dish', 2000, 'USD') RETURNING id`, [tenant.id]
+    );
+    const bill = await request('POST', '/api/v1/bills', {
+      body: { tableId: target.id, totalDueMinorUnits: '0' }, token: tenant.token
+    });
+    await request('POST', `/api/v1/bills/${bill.body.id}/items`, {
+      body: { productId: rows[0].id, quantity: 2 }, token: tenant.token
+    });
+
+    const floor = await request('GET', '/api/v1/tables/floor', { token: tenant.token });
+    assert.equal(floor.status, 200, JSON.stringify(floor.body));
+    assert.equal(floor.body.data.length, 3);
+
+    const busy = floor.body.data.find(t => t.name === 'F 2');
+    const free = floor.body.data.find(t => t.name === 'F 1');
+
+    assert.equal(busy.openBill.id, bill.body.id);
+    assert.equal(busy.openBill.itemCount, 1);
+    assert.equal(busy.openBill.totalDue, '4000');
+    assert.equal(busy.openBill.remainingVes, busy.openBill.totalDueVes);
+
+    // Null, not absent: the shape must not change with occupancy.
+    assert.equal(free.openBill, null);
+    assert.ok('openBill' in free, 'a free table still carries the key');
+
+    // Closing the bill frees the table again.
+    await request('POST', `/api/v1/bills/${bill.body.id}/void`, { token: tenant.token });
+    const after = await request('GET', '/api/v1/tables/floor', { token: tenant.token });
+    assert.equal(after.body.data.find(t => t.name === 'F 2').openBill, null);
+  });
+
+  it('the floor shows only the caller\'s own tables', async () => {
+    const mine = await usdRestaurant('USD');
+    const theirs = await usdRestaurant('USD');
+    await request('POST', '/api/v1/tables/bulk', { body: { count: 2, prefix: 'Mine' }, token: mine.token });
+    await request('POST', '/api/v1/tables/bulk', { body: { count: 2, prefix: 'Theirs' }, token: theirs.token });
+
+    const floor = await request('GET', '/api/v1/tables/floor', { token: mine.token });
+    assert.deepEqual(floor.body.data.map(t => t.name).sort(), ['Mine 1', 'Mine 2']);
+  });
+
+  it('bulk table creation is refused to a waiter', async () => {
+    const tenant = await usdRestaurant('USD');
+    const { rows } = await db.query(
+      `INSERT INTO users (restaurant_id, email, password_hash, role)
+       VALUES ($1, $2, $3, 'WAITER') RETURNING id`,
+      [tenant.id, `waiter-${tenant.id}@example.com`, await hashPassword('irrelevant-for-this-test')]
+    );
+    const waiterToken = signAccessToken({ id: rows[0].id, restaurantId: tenant.id, role: 'WAITER' });
+
+    const res = await request('POST', '/api/v1/tables/bulk', {
+      body: { count: 3 }, token: waiterToken
+    });
+    assert.equal(res.status, 403);
+    assert.equal(res.body.error.code, 'FORBIDDEN_ROLE');
+  });
+
   it('scopes every read to the caller\'s restaurant', async () => {
     const other = await fixtures.createRestaurant({ name: 'Other Routes Tenant' });
     try {

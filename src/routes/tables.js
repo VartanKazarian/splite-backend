@@ -6,6 +6,7 @@ const {
   validateParams,
   validateQuery,
   createTableSchema,
+  bulkTablesSchema,
   updateTableSchema,
   listTablesQuerySchema,
   tableIdParamSchema
@@ -70,6 +71,84 @@ router.post('/', requireRole('OWNER', 'MANAGER'), validateBody(createTableSchema
     res.status(201).json(dto.table(rows[0]));
   } catch (err) { next(err); }
 });
+
+/**
+ * The floor: every table with whatever bill is open on it.
+ *
+ * A dashboard rendering N tables otherwise makes 1 + N calls -- list the
+ * tables, then ask each one for its open bill -- and repeats that on every
+ * poll. One LEFT JOIN answers it, and the one-open-bill invariant is what makes
+ * the join safe: a table cannot match two rows here.
+ */
+router.get('/floor', async (req, res, next) => {
+  try {
+    const { rows } = await db.query(
+      `SELECT t.id, t.restaurant_id, t.name, t.active, t.created_at,
+              b.id   AS bill_id,      b.status AS bill_status,
+              b.currency, b.total_due, b.subtotal_minor, b.vat_bps, b.vat_minor,
+              b.service_charge_bps, b.service_charge_minor,
+              b.total_due_ves, b.amount_paid_ves, b.fx_rate_ves_per_unit,
+              b.updated_at AS bill_updated_at,
+              (SELECT count(*)::int FROM bill_items i WHERE i.bill_id = b.id) AS item_count
+         FROM tables t
+         LEFT JOIN bills b
+           ON b.table_id = t.id AND b.restaurant_id = t.restaurant_id AND b.status = 'OPEN'
+        WHERE t.restaurant_id = $1 AND t.active = true
+        ORDER BY t.name`,
+      [req.user.restaurantId]
+    );
+
+    res.json({ data: rows.map(dto.floorTable) });
+  } catch (err) { next(err); }
+});
+
+/**
+ * Creates the tables a restaurant says it has.
+ *
+ * Idempotent: it fills in whatever is missing from `<prefix> 1` to
+ * `<prefix> N` and leaves the rest alone, so running it twice is not an error
+ * and raising the count later adds only the new ones. It never deletes -- a
+ * table that already carries bills is not something a number in a form should
+ * be able to remove.
+ */
+router.post(
+  '/bulk',
+  requireRole('OWNER', 'MANAGER'),
+  validateBody(bulkTablesSchema),
+  async (req, res, next) => {
+    try {
+      const names = Array.from({ length: req.body.count }, (_, i) => `${req.body.prefix} ${i + 1}`);
+
+      const { rows } = await db.query(
+        `INSERT INTO tables (restaurant_id, name)
+         SELECT $1, name FROM unnest($2::text[]) AS name
+         ON CONFLICT (restaurant_id, name) DO NOTHING
+         RETURNING ${TABLE_COLUMNS}`,
+        [req.user.restaurantId, names]
+      );
+
+      await logAudit({
+        ...auditContext(req),
+        action: 'TABLES_BULK_CREATED',
+        resourceType: 'restaurant',
+        resourceId: req.user.restaurantId,
+        details: { requested: req.body.count, created: rows.length, prefix: req.body.prefix }
+      });
+
+      const all = await db.query(
+        `SELECT ${TABLE_COLUMNS} FROM tables
+          WHERE restaurant_id = $1 AND active = true ORDER BY name`,
+        [req.user.restaurantId]
+      );
+
+      res.status(201).json({
+        created: rows.length,
+        alreadyExisted: req.body.count - rows.length,
+        data: all.rows.map(dto.table)
+      });
+    } catch (err) { next(err); }
+  }
+);
 
 router.patch(
   '/:tableId',
