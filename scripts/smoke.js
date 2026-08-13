@@ -168,6 +168,43 @@ async function main() {
     check('split preview', false, why(split));
   }
 
+  console.log('\nowner dashboard');
+  // Short prefix: the schema caps it at 20 characters, and the smoke tag is
+  // longer than that.
+  const prefix = `S${String(Date.now()).slice(-6)}`;
+  const bulk = await call('POST', '/api/v1/tables/bulk', { body: { count: 2, prefix } });
+  check('bulk-create tables', bulk.status === 201 && bulk.body.created === 2, why(bulk));
+
+  const again = await call('POST', '/api/v1/tables/bulk', { body: { count: 2, prefix } });
+  check('bulk create is idempotent', again.body?.created === 0 && again.body?.alreadyExisted === 2,
+    `created=${again.body?.created} existed=${again.body?.alreadyExisted}`);
+
+  const bulkTables = (bulk.body?.data || []).filter(t => t.name.startsWith(prefix));
+  const orderTable = bulkTables[0];
+
+  // The waiter path: a table and a list of things, no bill id.
+  const order = await call('POST', `/api/v1/bills/tables/${orderTable.id}/order`, {
+    body: { items: [{ productId: product.body.id, quantity: 2 }] }
+  });
+  check('order opens a bill for a table', order.status === 201 && order.body.opened === true, why(order));
+  check('order lines land', order.body?.bill?.itemCount === 1 && order.body?.bill?.subtotalMinor === '2500',
+    `${order.body?.bill?.itemCount} line, subtotal ${order.body?.bill?.subtotalMinor}`);
+
+  const second = await call('POST', `/api/v1/bills/tables/${orderTable.id}/order`, {
+    body: { items: [{ productId: product.body.id, quantity: 1 }] }
+  });
+  check('a second order joins the same bill', second.body?.opened === false
+    && second.body?.bill?.id === order.body?.bill?.id, why(second));
+
+  const floor = await call('GET', '/api/v1/tables/floor');
+  const busy = (floor.body?.data || []).find(t => t.id === orderTable.id);
+  const free = (floor.body?.data || []).find(t => t.name === bulkTables[1]?.name);
+  check('floor view returns every table in one call', floor.status === 200 && floor.body.data.length > 0,
+    `${floor.body?.data?.length} tables`);
+  check('floor shows the open bill on the busy table', busy?.openBill?.itemCount === 2, why(floor));
+  check('a free table carries openBill: null, not absent',
+    free !== undefined && free.openBill === null && 'openBill' in free);
+
   console.log('\nguest flow');
   const qr = await call('GET', `/api/v1/guest/tables/${table.body.id}/qr`);
   if (check('mint a table QR', qr.status === 200, why(qr))) {
@@ -203,6 +240,15 @@ async function main() {
   console.log('\ncleanup');
   const voided = await call('POST', `/api/v1/bills/${bill.body.id}/void`);
   check('void the bill', voided.status === 200, why(voided));
+  // The order bill carries lines, so remove them before voiding: a bill with
+  // payments cannot be voided, and one with lines should not be left open.
+  if (order.body?.bill?.id) {
+    for (const item of (await call('GET', `/api/v1/bills/${order.body.bill.id}/items`)).body?.data || []) {
+      await call('DELETE', `/api/v1/bills/${order.body.bill.id}/items/${item.id}`);
+    }
+    await call('POST', `/api/v1/bills/${order.body.bill.id}/void`);
+  }
+  for (const t of bulkTables) await call('PATCH', `/api/v1/tables/${t.id}`, { body: { active: false } });
   await call('DELETE', `/api/v1/menu/products/${product.body.id}`);
   await call('PATCH', `/api/v1/tables/${table.body.id}`, { body: { active: false } });
   console.log(`  left behind: table, product and bill named ${tag}`);
