@@ -126,6 +126,7 @@ const DETAILS = {
   FORBIDDEN_ROLE: { requiredRoles: 'string[] -- roles that would have been accepted' },
   FX_UNAVAILABLE: { currency: 'string -- the currency with no usable rate, when specific to one' },
   RATE_LIMITED: { retryAfterSeconds: 'integer -- matches the Retry-After header' },
+  CORS_ORIGIN_NOT_ALLOWED: { origin: 'string -- the rejected Origin, so it can be copied into CORS_ORIGINS' },
   RATE_LIMITER_UNAVAILABLE: { retryAfterSeconds: 'integer -- matches the Retry-After header' }
 };
 

@@ -41,7 +41,16 @@ app.use(cors({
   origin(origin, callback) {
     // No Origin header: server-to-server, curl, mobile clients.
     if (!origin || config.corsOrigins.includes(origin)) return callback(null, true);
-    return callback(new ApiError('CORS_ORIGIN_NOT_ALLOWED', 'CORS origin not allowed'));
+    // The rejected origin is echoed back deliberately. A browser reports a
+    // blocked request as a generic CORS failure and never says which origin
+    // the server refused, so the one fact needed to fix it -- the exact string
+    // to add to CORS_ORIGINS -- is the one nobody can see. It reveals nothing:
+    // the caller sent it.
+    return callback(new ApiError(
+      'CORS_ORIGIN_NOT_ALLOWED',
+      `Origin ${origin} is not allowed. Add it to CORS_ORIGINS.`,
+      { origin }
+    ));
   },
   credentials: true,
   methods: ['GET', 'POST', 'PATCH', 'DELETE', 'OPTIONS'],
