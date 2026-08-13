@@ -6,6 +6,8 @@ const {
   validateParams,
   validateQuery,
   menuCurrencySchema,
+  menuChargesSchema,
+  deleteProductQuerySchema,
   createProductSchema,
   updateProductSchema,
   listProductsQuerySchema,
@@ -57,12 +59,14 @@ router.use(authenticateToken);
 
 router.get('/settings', async (req, res, next) => {
   try {
+    // Carries the charge rates too: a settings screen needs to show what IVA
+    // and servicio are currently set to before it can offer to change them.
     const { rows } = await db.query(
-      'SELECT id, name, menu_currency FROM restaurants WHERE id = $1',
+      'SELECT id, name, menu_currency, vat_bps, service_charge_bps FROM restaurants WHERE id = $1',
       [req.user.restaurantId]
     );
     if (!rows.length) throw new ApiError('RESTAURANT_NOT_FOUND', 'Restaurant not found');
-    res.json(dto.menuSettings(rows[0]));
+    res.json(dto.menuCharges(rows[0]));
   } catch (err) { next(err); }
 });
 
@@ -107,6 +111,53 @@ router.patch(
       });
 
       res.json(dto.menuSettings(rows[0]));
+    } catch (err) { next(err); }
+  }
+);
+
+/**
+ * IVA and servicio rates.
+ *
+ * Both are snapshotted onto a bill when it opens, so changing them here never
+ * reprices a meal already being eaten -- and equally, a bill that is already
+ * open keeps the rates it started with. Close or void an open bill if it needs
+ * the new figures.
+ */
+router.patch(
+  '/settings/charges',
+  requireRole('OWNER', 'MANAGER'),
+  validateBody(menuChargesSchema),
+  async (req, res, next) => {
+    try {
+      const { rows } = await db.query(
+        `UPDATE restaurants
+            SET vat_bps = COALESCE($1, vat_bps),
+                service_charge_bps = COALESCE($2, service_charge_bps)
+          WHERE id = $3
+        RETURNING id, name, menu_currency, vat_bps, service_charge_bps`,
+        [req.body.vatBps ?? null, req.body.serviceChargeBps ?? null, req.user.restaurantId]
+      );
+      if (!rows.length) throw new ApiError('RESTAURANT_NOT_FOUND', 'Restaurant not found');
+
+      await logAudit({
+        ...auditContext(req),
+        action: 'MENU_CHARGES_CHANGED',
+        resourceType: 'restaurant',
+        resourceId: req.user.restaurantId,
+        details: { vatBps: req.body.vatBps, serviceChargeBps: req.body.serviceChargeBps }
+      });
+
+      const open = await db.query(
+        "SELECT count(*)::int AS n FROM bills WHERE restaurant_id = $1 AND status = 'OPEN'",
+        [req.user.restaurantId]
+      );
+
+      res.json({
+        ...dto.menuCharges(rows[0]),
+        // Said out loud rather than left to be discovered: these bills keep the
+        // rates they opened with.
+        openBillsUnaffected: open.rows[0].n
+      });
     } catch (err) { next(err); }
   }
 );
@@ -224,22 +275,40 @@ router.patch(
   }
 );
 
-/** Soft delete: a product referenced by an existing bill must remain readable. */
+/**
+ * Removes a product.
+ *
+ * Deactivates by default, which is the safe thing to do to something a bill
+ * might reference. `?permanent=true` deletes the row outright, which is safe
+ * because `bill_items.product_id` is ON DELETE SET NULL and every line carries
+ * its own name and price snapshot -- an old bill stays exactly as it was
+ * served, it just loses the reporting link.
+ *
+ * Permanent removal exists because deactivated products accumulate: after a
+ * menu-currency change the old ones linger in the list forever with no way to
+ * clear them.
+ */
 router.delete(
   '/products/:id',
   requireRole('OWNER', 'MANAGER'),
   validateParams(productIdParamSchema),
+  validateQuery(deleteProductQuerySchema),
   async (req, res, next) => {
     try {
-      const { rows } = await db.query(
-        'UPDATE menu_products SET active = false WHERE id = $1 AND restaurant_id = $2 RETURNING id',
-        [req.params.id, req.user.restaurantId]
-      );
+      const { rows } = req.query.permanent
+        ? await db.query(
+          'DELETE FROM menu_products WHERE id = $1 AND restaurant_id = $2 RETURNING id',
+          [req.params.id, req.user.restaurantId]
+        )
+        : await db.query(
+          'UPDATE menu_products SET active = false WHERE id = $1 AND restaurant_id = $2 RETURNING id',
+          [req.params.id, req.user.restaurantId]
+        );
       if (!rows.length) throw new ApiError('PRODUCT_NOT_FOUND', 'Product not found');
 
       await logAudit({
         ...auditContext(req),
-        action: 'MENU_PRODUCT_DEACTIVATED',
+        action: req.query.permanent ? 'MENU_PRODUCT_DELETED' : 'MENU_PRODUCT_DEACTIVATED',
         resourceType: 'menu_product',
         resourceId: rows[0].id
       });

@@ -925,6 +925,106 @@ describe('bill routes over HTTP', { skip }, () => {
     assert.equal(open.body.error.code, 'OPEN_BILL_NOT_FOUND');
   });
 
+  it('sets IVA and servicio, and applies them to a new bill', async () => {
+    const tenant = await usdRestaurant('VES');
+
+    const before = await request('GET', '/api/v1/menu/settings', { token: tenant.token });
+    assert.equal(before.body.vatBps, 0, 'rates start at zero, never guessed by a migration');
+
+    const set = await request('PATCH', '/api/v1/menu/settings/charges', {
+      body: { vatBps: 1600, serviceChargeBps: 1000 }, token: tenant.token
+    });
+    assert.equal(set.status, 200, JSON.stringify(set.body));
+    assert.equal(set.body.vatBps, 1600);
+    assert.equal(set.body.serviceChargeBps, 1000);
+
+    const read = await request('GET', '/api/v1/menu/settings', { token: tenant.token });
+    assert.equal(read.body.vatBps, 1600, 'a settings screen can read back what it set');
+
+    // A bill opened afterwards carries the new rates.
+    await request('POST', '/api/v1/tables/bulk', { body: { count: 1, prefix: 'Iva' }, token: tenant.token });
+    const t = (await request('GET', '/api/v1/tables', { token: tenant.token })).body.data
+      .find(x => x.name === 'Iva 1');
+    const { rows } = await db.query(
+      `INSERT INTO menu_products (restaurant_id, name, price_minor_units, currency)
+       VALUES ($1, 'Con IVA', 10000, 'VES') RETURNING id`, [tenant.id]
+    );
+    const order = await request('POST', `/api/v1/bills/tables/${t.id}/order`, {
+      body: { items: [{ productId: rows[0].id, quantity: 1 }] }, token: tenant.token
+    });
+    assert.equal(order.status, 201, JSON.stringify(order.body));
+    assert.equal(order.body.bill.subtotalMinor, '10000');
+    assert.equal(order.body.bill.vatMinor, '1600', '16% of the subtotal');
+    assert.equal(order.body.bill.serviceChargeMinor, '1000', '10% of the subtotal, untaxed');
+    assert.equal(order.body.bill.totalDue, '12600', 'not 12760 — IVA is not charged on the servicio');
+  });
+
+  it('a bill already open keeps the rates it opened with', async () => {
+    const tenant = await usdRestaurant('VES');
+    await request('POST', '/api/v1/tables/bulk', { body: { count: 1, prefix: 'Keep' }, token: tenant.token });
+    const t = (await request('GET', '/api/v1/tables', { token: tenant.token })).body.data
+      .find(x => x.name === 'Keep 1');
+    const { rows } = await db.query(
+      `INSERT INTO menu_products (restaurant_id, name, price_minor_units, currency)
+       VALUES ($1, 'Sin IVA', 5000, 'VES') RETURNING id`, [tenant.id]
+    );
+
+    // Opened while the rates are still zero.
+    const opened = await request('POST', `/api/v1/bills/tables/${t.id}/order`, {
+      body: { items: [{ productId: rows[0].id, quantity: 1 }] }, token: tenant.token
+    });
+    assert.equal(opened.body.bill.vatMinor, '0');
+
+    const set = await request('PATCH', '/api/v1/menu/settings/charges', {
+      body: { vatBps: 1600 }, token: tenant.token
+    });
+    assert.equal(set.body.openBillsUnaffected, 1, 'the response says how many bills keep the old rates');
+
+    // Adding to that bill must not retroactively apply the new rate.
+    const more = await request('POST', `/api/v1/bills/tables/${t.id}/order`, {
+      body: { items: [{ productId: rows[0].id, quantity: 1 }] }, token: tenant.token
+    });
+    assert.equal(more.body.bill.subtotalMinor, '10000');
+    assert.equal(more.body.bill.vatMinor, '0', 'the bill keeps the rate it opened with');
+  });
+
+  it('permanently deletes a product, leaving served bills intact', async () => {
+    const tenant = await usdRestaurant('VES');
+    await request('POST', '/api/v1/tables/bulk', { body: { count: 1, prefix: 'Del' }, token: tenant.token });
+    const t = (await request('GET', '/api/v1/tables', { token: tenant.token })).body.data
+      .find(x => x.name === 'Del 1');
+    const { rows } = await db.query(
+      `INSERT INTO menu_products (restaurant_id, name, price_minor_units, currency)
+       VALUES ($1, 'Temporal', 500, 'VES') RETURNING id`, [tenant.id]
+    );
+    const productId = rows[0].id;
+
+    const order = await request('POST', `/api/v1/bills/tables/${t.id}/order`, {
+      body: { items: [{ productId, quantity: 1 }] }, token: tenant.token
+    });
+    assert.equal(order.status, 201, JSON.stringify(order.body));
+
+    // Default is a soft deactivate.
+    await request('DELETE', `/api/v1/menu/products/${productId}`, { token: tenant.token });
+    const soft = await request('GET', '/api/v1/menu/products', { token: tenant.token });
+    assert.ok(soft.body.data.some(p => p.id === productId && p.active === false),
+      'a deactivated product is still listed');
+
+    // Permanent removal clears it for good.
+    const gone = await request('DELETE', `/api/v1/menu/products/${productId}?permanent=true`, {
+      token: tenant.token
+    });
+    assert.equal(gone.status, 204);
+    const after = await request('GET', '/api/v1/menu/products', { token: tenant.token });
+    assert.ok(!after.body.data.some(p => p.id === productId), 'and it is gone from the menu');
+
+    // The bill it was served on is untouched.
+    const bill = await request('GET', `/api/v1/bills/${order.body.bill.id}`, { token: tenant.token });
+    assert.equal(bill.body.items[0].name, 'Temporal', 'the bill still says what was served');
+    assert.equal(bill.body.items[0].unitPriceMinor, '500', 'and what it cost');
+    assert.equal(bill.body.items[0].productId, null, 'only the reporting link is cleared');
+  });
+
   it('scopes every read to the caller\'s restaurant', async () => {
     const other = await fixtures.createRestaurant({ name: 'Other Routes Tenant' });
     try {

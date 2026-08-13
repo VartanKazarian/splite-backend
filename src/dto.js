@@ -259,6 +259,17 @@ function publicProduct(row) {
   };
 }
 
+/** The restaurant's charge configuration, as basis points. */
+function menuCharges(row) {
+  return {
+    id: row.id,
+    name: row.name,
+    menuCurrency: row.menu_currency,
+    vatBps: row.vat_bps,
+    serviceChargeBps: row.service_charge_bps
+  };
+}
+
 function menuSettings(row) {
   return {
     id: row.id,
@@ -270,5 +281,5 @@ function menuSettings(row) {
 module.exports = {
   isoDate, isoTimestamp,
   bill, billItem, billWithItems, guestBill,
-  table, floorTable, product, publicProduct, menuSettings
+  table, floorTable, product, publicProduct, menuSettings, menuCharges
 };

@@ -603,6 +603,43 @@ const schemas = {
     }
   },
 
+  MenuCharges: {
+    type: 'object',
+    description: 'Restaurant settings including the charge rates, as basis points.',
+    properties: {
+      id: { type: 'string', format: 'uuid' },
+      name: { type: 'string' },
+      menuCurrency: { type: 'string', enum: ['VES', 'USD', 'EUR'] },
+      vatBps: { type: 'integer', minimum: 0, maximum: 10000, description: 'IVA. 1600 = 16%.' },
+      serviceChargeBps: { type: 'integer', minimum: 0, maximum: 10000, description: 'Servicio. 1000 = 10%.' }
+    }
+  },
+
+  MenuChargesRequest: {
+    type: 'object',
+    minProperties: 1,
+    description: 'At least one rate. Basis points, so no float touches a rate.',
+    properties: {
+      vatBps: { type: 'integer', minimum: 0, maximum: 10000 },
+      serviceChargeBps: { type: 'integer', minimum: 0, maximum: 10000 }
+    }
+  },
+
+  MenuChargesResult: {
+    allOf: [
+      ref('MenuCharges'),
+      {
+        type: 'object',
+        properties: {
+          openBillsUnaffected: {
+            type: 'integer',
+            description: 'Bills already open, which keep the rates they opened with.'
+          }
+        }
+      }
+    ]
+  },
+
   MenuCurrencyRequest: {
     type: 'object',
     required: ['currency'],
@@ -1466,8 +1503,37 @@ const paths = {
       description: 'Any authenticated staff role.',
       security: staff,
       responses: {
-        200: { description: 'Settings.', content: { 'application/json': { schema: ref('MenuSettings') } } },
+        200: { description: 'Settings, including charge rates.', content: { 'application/json': { schema: ref('MenuCharges') } } },
         ...commonErrors,
+        404: response('NotFound')
+      }
+    }
+  },
+
+  '/api/v1/menu/settings/charges': {
+    patch: {
+      tags: ['Menu'],
+      summary: 'Set the IVA and service charge rates',
+      operationId: 'setMenuCharges',
+      'x-required-roles': ['OWNER', 'MANAGER'],
+      description: [
+        'Roles: OWNER, MANAGER. Rates are **basis points**: 1600 is 16%, 1000 is 10%. Send either,',
+        'or both.',
+        '',
+        'Both are snapshotted onto a bill when it opens, so changing them never reprices a meal',
+        'already being eaten — and a bill that is already open **keeps the rates it started with**.',
+        'The response reports how many open bills are therefore unaffected; close or void one if it',
+        'needs the new figures.',
+        '',
+        'Both default to 0, including for Venezuela\'s statutory 16%: a restaurant is configured',
+        'deliberately rather than by a migration guessing.'
+      ].join('\n'),
+      security: staff,
+      requestBody: { required: true, content: { 'application/json': { schema: ref('MenuChargesRequest') } } },
+      responses: {
+        200: { description: 'Updated.', content: { 'application/json': { schema: ref('MenuChargesResult') } } },
+        ...commonErrors,
+        403: response('Forbidden'),
         404: response('NotFound')
       }
     }
@@ -1544,12 +1610,22 @@ const paths = {
     },
     delete: {
       tags: ['Menu'],
-      summary: 'Deactivate a menu product',
+      summary: 'Remove a menu product',
       'x-required-roles': ['OWNER', 'MANAGER'],
-      description:
-        'Roles: OWNER, MANAGER. A soft delete: a bill already referencing the product must stay readable.',
+      description: [
+        'Roles: OWNER, MANAGER. Deactivates by default — a bill already referencing the product',
+        'must stay readable.',
+        '',
+        '`?permanent=true` deletes the row outright. That is safe: `bill_items.product_id` is',
+        'ON DELETE SET NULL and every line carries its own name and price snapshot, so an old bill',
+        'stays exactly as it was served and only loses the reporting link. Use it to clear products',
+        'left behind by a menu-currency change.'
+      ].join('\n'),
       security: staff,
-      parameters: [{ $ref: '#/components/parameters/ProductId' }],
+      parameters: [
+        { $ref: '#/components/parameters/ProductId' },
+        { name: 'permanent', in: 'query', schema: { type: 'boolean', default: false } }
+      ],
       responses: {
         204: { description: 'Deactivated.' },
         ...commonErrors,

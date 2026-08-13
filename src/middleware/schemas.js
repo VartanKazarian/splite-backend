@@ -156,6 +156,19 @@ const listBillsQuerySchema = Joi.object({
 
 const MENU_CURRENCIES = ['VES', 'USD', 'EUR'];
 
+// Basis points, so no float touches a rate. 1600 = 16%, 1000 = 10%.
+// Both optional, but at least one has to be present or the call does nothing.
+const menuChargesSchema = Joi.object({
+  vatBps: Joi.number().integer().min(0).max(10000),
+  serviceChargeBps: Joi.number().integer().min(0).max(10000)
+}).min(1);
+
+// Permanent removal is opt-in. The default stays a soft deactivate, because
+// that is the safe thing to do to something a bill might reference.
+const deleteProductQuerySchema = Joi.object({
+  permanent: Joi.boolean().default(false)
+});
+
 const menuCurrencySchema = Joi.object({
   currency: Joi.string().valid(...MENU_CURRENCIES).required()
 });
@@ -229,6 +242,8 @@ module.exports = {
   listBillsQuerySchema,
   MENU_CURRENCIES,
   menuCurrencySchema,
+  menuChargesSchema,
+  deleteProductQuerySchema,
   createProductSchema,
   updateProductSchema,
   listProductsQuerySchema,
