@@ -343,9 +343,11 @@ QR_URL=https://your-api QR_EMAIL=you@example.com QR_PASSWORD='…' \
 QR_APP_URL=https://your-frontend npm run qr
 ```
 
-Each code encodes `<QR_APP_URL>/t?qr=<token>`. The guest landing page reads that
-parameter and exchanges it at `POST /api/v1/guest/sessions`. That route has to
-exist in the frontend; nothing here renders it.
+Each code encodes `<QR_APP_URL><QR_APP_PATH>?qr=<token>` — a **frontend** URL,
+not an API one. Scanning it opens the guest app, which exchanges the token at
+`POST /api/v1/guest/sessions` and renders that table's bill. `QR_APP_PATH`
+defaults to `/t` and should match whatever route the frontend actually serves;
+it is inside the printed code, so confirm it before printing.
 
 The token is signed, not secret — it names its restaurant and table in plain
 base64url, and is useful only because the signature cannot be forged. The

@@ -16,16 +16,25 @@ const QRCode = require('qrcode');
  * audit entry. A script that reached into `tables` directly would skip all
  * three and produce codes nobody can account for.
  *
- * Each code encodes  <QR_APP_URL>/t?qr=<token>  — the guest landing page reads
- * that parameter and exchanges it at POST /api/v1/guest/sessions. Nothing about
- * the token is secret: it names its restaurant and table in plain base64url,
- * and is useful only because it is signed.
+ * Each code encodes  <QR_APP_URL><QR_APP_PATH>?qr=<token>  — a *frontend* URL,
+ * not an API one. Scanning it opens the guest app, which exchanges the token at
+ * POST /api/v1/guest/sessions and then renders that table's bill.
+ *
+ * QR_APP_PATH defaults to /t and exists because the route belongs to whoever
+ * builds the frontend. Set it to match, and mint before printing: the path is
+ * inside the printed code and cannot be changed afterwards.
+ *
+ * Nothing about the token is secret: it names its restaurant and table in plain
+ * base64url, and is useful only because it is signed.
  */
 
 const API = (process.env.QR_URL || '').replace(/\/$/, '');
 const EMAIL = process.env.QR_EMAIL;
 const PASSWORD = process.env.QR_PASSWORD;
 const APP = (process.env.QR_APP_URL || '').replace(/\/$/, '');
+// The guest landing route in the frontend. Leading slash enforced so that
+// QR_APP_PATH=t and QR_APP_PATH=/t produce the same code.
+const APP_PATH = `/${(process.env.QR_APP_PATH || '/t').replace(/^\//, '')}`;
 const OUT = process.env.QR_OUT || 'qr-codes.html';
 
 if (!API || !EMAIL || !PASSWORD || !APP) {
@@ -33,7 +42,8 @@ if (!API || !EMAIL || !PASSWORD || !APP) {
     'QR_URL, QR_EMAIL, QR_PASSWORD and QR_APP_URL are required.',
     '',
     '  QR_URL      the API, e.g. https://splite-backend-production.up.railway.app',
-    '  QR_APP_URL  the frontend that handles /t?qr=…, e.g. https://splite.lovable.app'
+    '  QR_APP_URL   the guest frontend, e.g. https://splite.lovable.app',
+    '  QR_APP_PATH  its landing route, default /t'
   ].join('\n'));
   process.exit(2);
 }
@@ -91,7 +101,7 @@ async function main() {
     }
     ttlSeconds = qr.body.expiresIn;
 
-    const url = `${APP}/t?qr=${encodeURIComponent(qr.body.token)}`;
+    const url = `${APP}${APP_PATH}?qr=${encodeURIComponent(qr.body.token)}`;
     // Error correction M, so a code survives a smudge or a curled corner and
     // still scans from a table top.
     const svg = await QRCode.toString(url, { type: 'svg', errorCorrectionLevel: 'M', margin: 1 });
@@ -151,7 +161,8 @@ async function main() {
     console.log('These do not expire. To revoke one, rotate that table\'s nonce:');
     console.log('  POST /api/v1/guest/tables/{tableId}/qr/rotate');
   }
-  console.log(`Each encodes ${APP}/t?qr=… — that route must exist in the frontend.`);
+  console.log(`Each encodes ${APP}${APP_PATH}?qr=… — that route must exist in the guest frontend.`);
+  console.log('The path is inside the printed code, so confirm it before printing.');
 }
 
 main().catch(err => { console.error(err.message); process.exit(1); });

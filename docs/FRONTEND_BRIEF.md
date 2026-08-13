@@ -255,9 +255,35 @@ cheap. Only the single-bill read includes them.
 
 ### Guest
 
-1. **Landing** — read the QR token from the URL, `POST /guest/sessions`, store both values.
-2. **Bill** — `GET /guest/bill`, poll while the screen is open (there is no realtime channel yet; every few seconds is fine).
-3. **Split** — `POST /guest/bill/split/preview`.
+This is what a table QR opens. The printed code points at **this app**, not at
+the API:
+
+```
+scan → https://your-app/t?qr=<token>
+```
+
+1. **Landing (`/t`)** — read `qr` from the query string and `POST /guest/sessions`
+   with it. Store `sessionId` and `guestToken`, then redirect to the bill. Do not
+   leave the token in the URL afterwards; replace the history entry.
+   A `401 QR_INVALID` means the code was rotated or altered — say "ask staff for
+   a new code", not "something went wrong".
+   The route name is baked into every printed sticker, so settle it before
+   anyone prints: whatever you choose goes in `QR_APP_PATH` when the codes are
+   minted.
+2. **Bill** — `GET /guest/bill`. Show the lines, then `subtotalMinor`, `vatMinor`
+   labelled with `vatBps` ("IVA 16%"), `serviceChargeMinor`, and `totalDue`.
+   Poll every few seconds while the screen is open; there is no realtime channel,
+   and the bill changes as staff add items.
+   `404 OPEN_BILL_NOT_FOUND` is normal between sittings — show "no open bill",
+   not an error.
+3. **Split** — `POST /guest/bill/split/preview`. Let the diner pick a mode,
+   render `allocations` exactly as returned, and never compute a share locally.
+
+**Paying is not yet possible.** There is no guest payment endpoint: a diner can
+see their share and cannot settle it, and a member of staff takes the money.
+Build the guest flow to end at "this is what you owe" and leave room for a pay
+step rather than stubbing one — the shape of that screen depends on the rail,
+which is still being chosen.
 
 > **A guest cannot pay yet.** There is no guest payment endpoint. The diner sees
 > their share and a member of staff settles the bill. Design the guest flow to
