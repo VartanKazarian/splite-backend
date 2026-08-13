@@ -141,7 +141,10 @@ router.post('/sessions', validateBody(guestSessionSchema), async (req, res, next
  */
 async function openBillForGuest(guest) {
   const { rows } = await db.query(
-    `SELECT id, table_id, status, currency, total_due, total_due_ves, amount_paid_ves,
+    `SELECT id, table_id, status, currency, total_due,
+            subtotal_minor, vat_bps, vat_minor,
+            service_charge_bps, service_charge_minor,
+            total_due_ves, amount_paid_ves,
             fx_rate_ves_per_unit, updated_at
        FROM bills
       WHERE restaurant_id = $1 AND table_id = $2 AND status = 'OPEN'`,

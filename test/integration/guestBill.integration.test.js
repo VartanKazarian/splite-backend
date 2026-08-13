@@ -8,6 +8,7 @@ const fixtures = require('./helpers/fixtures');
 const app = require('../../src/app');
 const { signQrPayload, signAccessToken } = require('../../src/utils/tokens');
 const config = require('../../src/config');
+const { document } = require('../../src/openapi');
 
 /**
  * Guest bill access, over HTTP.
@@ -150,6 +151,32 @@ describe('guest bill access', { skip }, () => {
       assert.equal(res.body[field], undefined, `${field} must not reach a guest`);
     }
     assert.deepEqual(Object.keys(res.body).filter(k => k.includes('_')), [], 'camelCase here too');
+  });
+
+  it('publishes every field the GuestBill schema promises', async () => {
+    // The withholding test above checks the allowlist from one side only, and a
+    // one-sided allowlist is how this broke in production: dto.guestBill mapped
+    // `row.subtotal_minor`, the route's SELECT never fetched the column, the
+    // mapper produced `undefined`, and JSON.stringify dropped the key without a
+    // sound. The documented contract said the field was there; the response did
+    // not have it, and the client crashed formatting it.
+    //
+    // Asserting against the OpenAPI properties rather than a hand-copied list is
+    // what makes this hold: adding a field to the schema without adding it to
+    // the SELECT fails here instead of on a diner's phone.
+    const t = await tableWithNonce(`G${++seq}`);
+    await fixtures.createBill({ restaurantId: restaurant.id, tableId: t.id, totalDue: 1000 });
+    const guest = await scan(t);
+
+    const res = await request('GET', '/api/v1/guest/bill', guest);
+    assert.equal(res.status, 200);
+
+    const promised = Object.keys(document.components.schemas.GuestBill.properties);
+    const missing = promised.filter(k => res.body[k] === undefined);
+    assert.deepEqual(missing, [], `GuestBill schema promises fields the route does not send`);
+
+    const undocumented = Object.keys(res.body).filter(k => !promised.includes(k));
+    assert.deepEqual(undocumented, [], 'the route sends fields the schema does not document');
   });
 
   it('cannot reach another table\'s bill, because it never names one', async () => {
