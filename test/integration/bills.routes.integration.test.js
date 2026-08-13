@@ -843,6 +843,72 @@ describe('bill routes over HTTP', { skip }, () => {
     assert.equal(res.body.error.code, 'FORBIDDEN_ROLE');
   });
 
+  it('takes an order for a table, opening the bill on the first one', async () => {
+    const tenant = await usdRestaurant('USD');
+    await request('POST', '/api/v1/tables/bulk', { body: { count: 1, prefix: 'Ord' }, token: tenant.token });
+    const t = (await request('GET', '/api/v1/tables', { token: tenant.token })).body.data
+      .find(x => x.name === 'Ord 1');
+
+    const menu = async (name, price) => (await db.query(
+      `INSERT INTO menu_products (restaurant_id, name, price_minor_units, currency)
+       VALUES ($1, $2, $3, 'USD') RETURNING id`, [tenant.id, name, price]
+    )).rows[0].id;
+    const beer = await menu('Beer', 300);
+    const burger = await menu('Burger', 1250);
+
+    // No bill yet: the order opens one.
+    const first = await request('POST', `/api/v1/bills/tables/${t.id}/order`, {
+      body: { items: [{ productId: beer, quantity: 2 }, { productId: burger, quantity: 1 }] },
+      token: tenant.token
+    });
+    assert.equal(first.status, 201, JSON.stringify(first.body));
+    assert.equal(first.body.opened, true, 'this order opened the bill');
+    assert.equal(first.body.bill.itemCount, 2);
+    assert.equal(first.body.bill.subtotalMinor, '1850', '2 x 300 + 1250');
+
+    // A second order joins the same bill rather than opening another.
+    const second = await request('POST', `/api/v1/bills/tables/${t.id}/order`, {
+      body: { items: [{ productId: beer, quantity: 1 }] }, token: tenant.token
+    });
+    assert.equal(second.body.opened, false, 'the table already had a bill');
+    assert.equal(second.body.bill.id, first.body.bill.id);
+    assert.equal(second.body.bill.itemCount, 3);
+    assert.equal(second.body.bill.subtotalMinor, '2150');
+
+    // And the floor shows it.
+    const floor = await request('GET', '/api/v1/tables/floor', { token: tenant.token });
+    assert.equal(floor.body.data.find(x => x.name === 'Ord 1').openBill.itemCount, 3);
+  });
+
+  it('a bad line rolls back the whole order', async () => {
+    const tenant = await usdRestaurant('USD');
+    await request('POST', '/api/v1/tables/bulk', { body: { count: 1, prefix: 'Roll' }, token: tenant.token });
+    const t = (await request('GET', '/api/v1/tables', { token: tenant.token })).body.data
+      .find(x => x.name === 'Roll 1');
+    const { rows } = await db.query(
+      `INSERT INTO menu_products (restaurant_id, name, price_minor_units, currency)
+       VALUES ($1, 'Real', 500, 'USD') RETURNING id`, [tenant.id]
+    );
+
+    // Second line names a product that does not exist. Neither line may land,
+    // and no empty bill may be left behind.
+    const res = await request('POST', `/api/v1/bills/tables/${t.id}/order`, {
+      body: {
+        items: [
+          { productId: rows[0].id, quantity: 1 },
+          { productId: '11111111-1111-4111-8111-111111111111', quantity: 1 }
+        ]
+      },
+      token: tenant.token
+    });
+    assert.equal(res.status, 404);
+    assert.equal(res.body.error.code, 'PRODUCT_NOT_FOUND');
+
+    const open = await request('GET', `/api/v1/bills/tables/${t.id}/open`, { token: tenant.token });
+    assert.equal(open.status, 404, 'the failed order left no bill behind');
+    assert.equal(open.body.error.code, 'OPEN_BILL_NOT_FOUND');
+  });
+
   it('scopes every read to the caller\'s restaurant', async () => {
     const other = await fixtures.createRestaurant({ name: 'Other Routes Tenant' });
     try {

@@ -193,6 +193,57 @@ async function addItem({ restaurantId, billId, productId, quantity }) {
   }, { statementTimeoutMs: config.db.paymentStatementTimeoutMs });
 }
 
+/**
+ * Adds several lines in one transaction, recalculating the total once.
+ *
+ * An order is usually more than one thing, and calling addItem in a loop would
+ * take the bill lock and recompute the total once per line -- and leave half an
+ * order behind if the third one failed. Either the whole order lands or none of
+ * it does.
+ *
+ * The caller passes an already-locked bill, because opening one requires an FX
+ * snapshot that must not happen inside a transaction.
+ */
+async function addItemsInTransaction(client, { restaurantId, bill, items }) {
+  assertItemisable(bill, await countItems(client, bill.id));
+
+  const added = [];
+  for (const line of items) {
+    const { rows } = await client.query(
+      'SELECT id, name, price_minor_units, currency, active FROM menu_products WHERE id = $1 AND restaurant_id = $2',
+      [line.productId, restaurantId]
+    );
+    const product = rows[0];
+    if (!product) {
+      throw new ApiError('PRODUCT_NOT_FOUND', 'Product not found', { productId: line.productId });
+    }
+    if (!product.active) {
+      throw new ApiError('PRODUCT_INACTIVE', `${product.name} is no longer on the menu`, {
+        productId: product.id
+      });
+    }
+    if (product.currency !== bill.currency) {
+      throw new ApiError(
+        'MENU_CURRENCY_MISMATCH',
+        `This bill settles a ${bill.currency} menu; ${product.name} is priced in ${product.currency}`,
+        { billCurrency: bill.currency, productCurrency: product.currency }
+      );
+    }
+
+    const inserted = await client.query(
+      `INSERT INTO bill_items
+         (restaurant_id, bill_id, product_id, name_snapshot, unit_price_minor, currency, quantity)
+       VALUES ($1, $2, $3, $4, $5, $6, $7)
+       RETURNING ${ITEM_COLUMNS}`,
+      [restaurantId, bill.id, product.id, product.name, product.price_minor_units,
+        product.currency, line.quantity]
+    );
+    added.push(inserted.rows[0]);
+  }
+
+  return { added, bill: await recalculateTotals(client, bill) };
+}
+
 /** Changes a line's quantity. The snapshotted price is never revisited. */
 async function updateQuantity({ restaurantId, billId, itemId, quantity }) {
   return db.withTransaction(async client => {
@@ -224,4 +275,7 @@ async function removeItem({ restaurantId, billId, itemId }) {
   }, { statementTimeoutMs: config.db.paymentStatementTimeoutMs });
 }
 
-module.exports = { listForBill, addItem, updateQuantity, removeItem, recalculateTotals };
+module.exports = {
+  listForBill, addItem, addItemsInTransaction, updateQuantity, removeItem,
+  recalculateTotals, lockOpenBill
+};

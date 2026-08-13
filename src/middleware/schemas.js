@@ -92,6 +92,14 @@ const updateBillItemSchema = Joi.object({
   quantity: quantity.required()
 });
 
+// A waiter takes an order, not a line: "two beers and a burger" is one action.
+const orderSchema = Joi.object({
+  items: Joi.array().min(1).max(50).required().items(Joi.object({
+    productId: uuid.required(),
+    quantity: quantity.default(1)
+  }))
+});
+
 const billItemIdParamSchema = Joi.object({
   id: uuid.required(),
   itemId: uuid.required()
@@ -213,6 +221,7 @@ module.exports = {
   updateTableSchema,
   createBillSchema,
   addBillItemSchema,
+  orderSchema,
   updateBillItemSchema,
   billItemIdParamSchema,
   splitPreviewSchema,

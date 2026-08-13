@@ -1,5 +1,6 @@
 const express = require('express');
 const db = require('../connectors/base');
+const config = require('../config');
 const { authenticateToken, requireRole } = require('../middleware/auth');
 const rateLimit = require('../middleware/rateLimit');
 const {
@@ -9,6 +10,7 @@ const {
   splitPaymentSchema,
   createBillSchema,
   addBillItemSchema,
+  orderSchema,
   updateBillItemSchema,
   billItemIdParamSchema,
   splitPreviewSchema,
@@ -228,6 +230,99 @@ router.post(
       }
       next(err);
     }
+  }
+);
+
+/**
+ * Takes an order for a table, opening its bill if there is not one yet.
+ *
+ * This is the shape of the job: a waiter has a table and a list of things, not
+ * a bill id. Doing it with the primitives means asking whether a bill exists,
+ * creating one if not, and then posting each line -- three or more calls, with
+ * the client handling the not-yet-open case and able to leave half an order
+ * behind if one of them fails.
+ *
+ * Everything that can touch the network happens before BEGIN, for the same
+ * reason POST /bills does it: an FX lookup inside a transaction holds a row
+ * lock across an 8-second upstream.
+ */
+router.post(
+  '/tables/:tableId/order',
+  requireRole('OWNER', 'MANAGER', 'CASHIER', 'WAITER'),
+  validateParams(tableIdParamSchema),
+  validateBody(orderSchema),
+  async (req, res, next) => {
+    try {
+      const restaurantId = req.user.restaurantId;
+
+      // Read the open bill first: when one exists no rate is needed at all, and
+      // the common case should not pay for a BCV round trip.
+      const existing = await db.query(
+        "SELECT id FROM bills WHERE restaurant_id = $1 AND table_id = $2 AND status = 'OPEN'",
+        [restaurantId, req.params.tableId]
+      );
+
+      let fx = null;
+      let menuCurrency = null;
+      let vatBps = 0;
+      let serviceChargeBps = 0;
+      if (!existing.rows.length) {
+        const restaurant = await db.query(
+          'SELECT menu_currency, vat_bps, service_charge_bps FROM restaurants WHERE id = $1',
+          [restaurantId]
+        );
+        menuCurrency = restaurant.rows[0]?.menu_currency ?? 'VES';
+        vatBps = restaurant.rows[0]?.vat_bps ?? 0;
+        serviceChargeBps = restaurant.rows[0]?.service_charge_bps ?? 0;
+        fx = await snapshotFx(menuCurrency, '0');
+      }
+
+      const result = await db.withTransaction(async client => {
+        const table = await client.query(
+          'SELECT id FROM tables WHERE id = $1 AND restaurant_id = $2 AND active = true FOR UPDATE',
+          [req.params.tableId, restaurantId]
+        );
+        if (!table.rows.length) throw new ApiError('TABLE_NOT_FOUND', 'Table not found');
+
+        let opened = false;
+        let billId = existing.rows[0]?.id;
+
+        if (!billId) {
+          const created = await client.query(
+            `INSERT INTO bills (restaurant_id, table_id, total_due, subtotal_minor, currency,
+                                vat_bps, service_charge_bps,
+                                total_due_ves, fx_rate_ves_per_unit, fx_rate_source,
+                                fx_value_date, fx_rate_as_of)
+             VALUES ($1, $2, 0, 0, $3, $4, $5, 0, $6, $7, $8, NOW())
+             RETURNING id`,
+            [restaurantId, req.params.tableId, menuCurrency, vatBps, serviceChargeBps,
+              fx.rate, fx.source, fx.valueDate]
+          );
+          billId = created.rows[0].id;
+          opened = true;
+        }
+
+        // Locked here, so two waiters ordering for one table serialise rather
+        // than both recomputing the total from a stale set of lines.
+        const bill = await billItems.lockOpenBill(client, { restaurantId, billId });
+        const { bill: updated } = await billItems.addItemsInTransaction(client, {
+          restaurantId, bill, items: req.body.items
+        });
+        return { bill: updated, opened };
+      }, { statementTimeoutMs: config.db.paymentStatementTimeoutMs });
+
+      const items = await billItems.listForBill({ restaurantId, billId: result.bill.id });
+
+      await logAudit({
+        ...auditContext(req),
+        action: result.opened ? 'BILL_OPENED_BY_ORDER' : 'ORDER_ADDED',
+        resourceType: 'bill',
+        resourceId: result.bill.id,
+        details: { tableId: req.params.tableId, lines: req.body.items.length }
+      });
+
+      res.status(201).json({ opened: result.opened, bill: dto.billWithItems(result.bill, items) });
+    } catch (err) { next(err); }
   }
 );
 

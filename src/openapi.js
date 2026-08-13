@@ -196,6 +196,33 @@ const schemas = {
     }
   },
 
+  OrderRequest: {
+    type: 'object',
+    required: ['items'],
+    description: 'What a table just ordered. One call, however many things.',
+    properties: {
+      items: {
+        type: 'array', minItems: 1, maxItems: 50,
+        items: {
+          type: 'object',
+          required: ['productId'],
+          properties: {
+            productId: { type: 'string', format: 'uuid' },
+            quantity: { type: 'integer', minimum: 1, maximum: 999, default: 1 }
+          }
+        }
+      }
+    }
+  },
+
+  OrderResult: {
+    type: 'object',
+    properties: {
+      opened: { type: 'boolean', description: 'True when this order opened the table\'s bill.' },
+      bill: ref('BillWithItems')
+    }
+  },
+
   AddBillItemRequest: {
     type: 'object',
     required: ['productId'],
@@ -1151,6 +1178,37 @@ const paths = {
         200: { description: 'The open bill.', content: { 'application/json': { schema: ref('Bill') } } },
         ...commonErrors,
         404: response('NotFound')
+      }
+    }
+  },
+
+  '/api/v1/bills/tables/{tableId}/order': {
+    post: {
+      tags: ['Bills'],
+      summary: 'Take an order for a table',
+      operationId: 'orderForTable',
+      'x-required-roles': ['OWNER', 'MANAGER', 'CASHIER', 'WAITER'],
+      description: [
+        'Roles: OWNER, MANAGER, CASHIER, WAITER. **Opens the table\'s bill if it does not have one**,',
+        'then adds every line in a single transaction.',
+        '',
+        'This is the shape of the work: a waiter has a table and a list of things, not a bill id.',
+        'Doing it with the primitives means asking whether a bill exists, creating one if not, and',
+        'posting each line — and leaving half an order behind if one call fails.',
+        '',
+        '`opened` says whether this call started the bill, so the UI can say "table opened" rather',
+        'than guessing. Prices are snapshotted per line, as everywhere else.'
+      ].join('\n'),
+      security: staff,
+      parameters: [{ $ref: '#/components/parameters/TableId' }],
+      requestBody: { required: true, content: { 'application/json': { schema: ref('OrderRequest') } } },
+      responses: {
+        201: { description: 'Order taken.', content: { 'application/json': { schema: ref('OrderResult') } } },
+        ...commonErrors,
+        403: response('Forbidden'),
+        404: response('NotFound'),
+        409: response('Conflict'),
+        503: response('ServiceUnavailable')
       }
     }
   },
