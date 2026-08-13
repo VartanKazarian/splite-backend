@@ -37,17 +37,30 @@ describe('guest bill access', { skip }, () => {
     return { status: res.status, body: text ? JSON.parse(text) : null };
   };
 
-  /** Scans the table's QR the way a phone would, and returns the session. */
-  const scan = async (tableRow) => {
+  /**
+   * Builds a QR payload the way the route does.
+   *
+   * `exp` is omitted when no TTL is configured, rather than set to `now + 0`.
+   * That is not cosmetic: a token stamped `exp = now` is valid for less than a
+   * second, so this suite passed locally and failed on a slower CI runner
+   * whenever minting and verifying landed either side of a second boundary.
+   */
+  const mintQr = (tableRow) => {
     const now = Math.floor(Date.now() / 1000);
-    const qrToken = signQrPayload({
+    const ttl = config.qrTtlSeconds;
+    return signQrPayload({
       v: 1,
       tableId: tableRow.id,
       restaurantId: tableRow.restaurant_id ?? restaurant.id,
       nonce: tableRow.qr_nonce,
       iat: now,
-      exp: now + config.qrTtlSeconds
+      ...(ttl > 0 ? { exp: now + ttl } : {})
     });
+  };
+
+  /** Scans the table's QR the way a phone would, and returns the session. */
+  const scan = async (tableRow) => {
+    const qrToken = mintQr(tableRow);
     const res = await request('POST', '/api/v1/guest/sessions', { body: { qrToken } });
     assert.equal(res.status, 201, JSON.stringify(res.body));
     return { session: res.body.sessionId, token: res.body.guestToken };
@@ -179,11 +192,7 @@ describe('guest bill access', { skip }, () => {
 
   it('a rotated QR stops working immediately', async () => {
     const t = await tableWithNonce(`G${++seq}`);
-    const now = Math.floor(Date.now() / 1000);
-    const stale = signQrPayload({
-      v: 1, tableId: t.id, restaurantId: restaurant.id, nonce: t.qr_nonce,
-      iat: now, exp: now + config.qrTtlSeconds
-    });
+    const stale = mintQr(t);
 
     // Reprinting the code rotates the nonce; anything already printed dies.
     await db.query('UPDATE tables SET qr_nonce = gen_random_uuid() WHERE id = $1', [t.id]);
