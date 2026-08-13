@@ -34,18 +34,27 @@ router.get(
       const table = rows[0];
       if (!table) throw new ApiError('TABLE_NOT_FOUND', 'Table not found');
 
-      const now = Math.floor(Date.now() / 1000);
-      // `exp` is omitted entirely when no TTL is configured, rather than set to
-      // something distant: a field that is absent cannot be misread, and the
-      // signature covers its absence.
+      // A permanent code must be *stable*, not merely long-lived: the same
+      // table and nonce have to produce the same token every time, or the QR
+      // on screen differs from the one already stuck to the table and changes
+      // on every refresh.
+      //
+      // That means no `iat`. Verification never reads it, so it bought nothing
+      // and made the token a function of the clock. With it gone the token is a
+      // pure function of (table, restaurant, nonce, secret), and the only thing
+      // that changes it is rotating the nonce -- which is exactly what revoking
+      // a printed code should mean.
+      //
+      // A configured TTL is the other case: those codes are time-bounded by
+      // design, so they carry iat and exp and are expected to differ per mint.
       const ttl = config.qrTtlSeconds;
+      const now = Math.floor(Date.now() / 1000);
       const token = signQrPayload({
         v: 1,
         tableId: table.id,
         restaurantId: table.restaurant_id,
         nonce: table.qr_nonce,
-        iat: now,
-        ...(ttl > 0 ? { exp: now + ttl } : {})
+        ...(ttl > 0 ? { iat: now, exp: now + ttl } : {})
       });
 
       await logAudit({

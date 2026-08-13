@@ -1,4 +1,4 @@
-const { describe, it, before, after } = require('node:test');
+const { describe, it, before, beforeEach, after } = require('node:test');
 const assert = require('node:assert/strict');
 
 const { skip } = require('./helpers/env');
@@ -6,7 +6,7 @@ const db = require('../../src/connectors/base');
 const { redis, closeRedis } = require('../../src/connectors/redis');
 const fixtures = require('./helpers/fixtures');
 const app = require('../../src/app');
-const { signQrPayload } = require('../../src/utils/tokens');
+const { signQrPayload, signAccessToken } = require('../../src/utils/tokens');
 const config = require('../../src/config');
 
 /**
@@ -22,6 +22,7 @@ describe('guest bill access', { skip }, () => {
   let restaurant;
   let table;
   let seq = 0;
+  let staffToken;
 
   const request = async (method, path, { body, session, token } = {}) => {
     const res = await fetch(base + path, {
@@ -72,14 +73,40 @@ describe('guest bill access', { skip }, () => {
     return rows[0];
   };
 
+
+  /**
+   * These suites drive real HTTP, so every request in them comes from
+   * 127.0.0.1 against an app-level limit of 120 a minute. The limiter is
+   * correct -- the harness is what shares one address across a hundred
+   * requests -- so the buckets are cleared before each test rather than once
+   * per suite, which stopped being enough as the suites grew.
+   */
+  const clearIpRateLimits = () => redis.del(
+    'api:::ffff:127.0.0.1', 'api:127.0.0.1',
+    'auth:::ffff:127.0.0.1', 'auth:127.0.0.1',
+    'guest:::ffff:127.0.0.1', 'guest:127.0.0.1'
+  );
+
+  beforeEach(clearIpRateLimits);
+
   before(async () => {
     // Guest routes are limited to 30 requests a minute per IP, and this suite
     // shares 127.0.0.1 with every other HTTP test. Clearing the bucket isolates
     // the run from whatever else has already spent it.
-    await redis.del('guest:::ffff:127.0.0.1', 'guest:127.0.0.1', 'api:::ffff:127.0.0.1', 'api:127.0.0.1');
+    await clearIpRateLimits();
 
     restaurant = await fixtures.createRestaurant({ name: 'Guest Tenant' });
     table = await tableWithNonce(`G${++seq}`);
+
+    // Minting a QR is staff-only, so this suite needs one staff credential
+    // alongside its guest sessions.
+    const { hashPassword } = require('../../src/services/auth');
+    const { rows } = await db.query(
+      `INSERT INTO users (restaurant_id, email, password_hash, role)
+       VALUES ($1, $2, $3, 'OWNER') RETURNING id`,
+      [restaurant.id, `guest-staff-${restaurant.id}@example.com`, await hashPassword('irrelevant-here-123')]
+    );
+    staffToken = signAccessToken({ id: rows[0].id, restaurantId: restaurant.id, role: 'OWNER' });
 
     server = app.listen(0);
     server.unref();
@@ -89,6 +116,7 @@ describe('guest bill access', { skip }, () => {
 
   after(async () => {
     if (server) await new Promise(resolve => server.close(resolve));
+    if (restaurant) await db.query('DELETE FROM users WHERE restaurant_id = $1', [restaurant.id]);
     await fixtures.destroyRestaurant(restaurant?.id);
     await db.close();
     await closeRedis();
@@ -188,6 +216,38 @@ describe('guest bill access', { skip }, () => {
       session: '11111111-1111-4111-8111-111111111111', token: guest.token
     });
     assert.equal(wrongSession.status, 401);
+  });
+
+  it('mints the same code every time, until the nonce rotates', async () => {
+    // A sticker on a table cannot change when someone refreshes the dashboard.
+    // The token used to carry `iat`, which made it a function of the clock and
+    // produced a different image on every mint -- valid, but not the code
+    // already stuck to the table.
+    const t = await tableWithNonce(`G${++seq}`);
+
+    const mint = async () => {
+      const res = await request('GET', `/api/v1/guest/tables/${t.id}/qr`, { token: staffToken });
+      assert.equal(res.status, 200, JSON.stringify(res.body));
+      return res.body.token;
+    };
+
+    const first = await mint();
+    await new Promise(resolve => setTimeout(resolve, 1100)); // cross a second boundary
+    const second = await mint();
+
+    // Asserted against the configured mode rather than assuming one. A
+    // deployment that sets QR_TTL_SECONDS is minting time-bounded codes, and
+    // those are *supposed* to differ per mint; permanent codes, the default and
+    // what production runs, must not.
+    if (config.qrTtlSeconds > 0) {
+      assert.notEqual(first, second, 'a time-bounded code carries iat/exp and differs per mint');
+    } else {
+      assert.equal(first, second, 'the same table and nonce must mint the same code');
+
+      // Rotating the nonce is the one thing that changes a permanent code.
+      await request('POST', `/api/v1/guest/tables/${t.id}/qr/rotate`, { token: staffToken });
+      assert.notEqual(await mint(), first, 'rotation must produce a new code');
+    }
   });
 
   it('a rotated QR stops working immediately', async () => {

@@ -1,4 +1,4 @@
-const { describe, it, before, after } = require('node:test');
+const { describe, it, before, beforeEach, after } = require('node:test');
 const assert = require('node:assert/strict');
 
 const { skip } = require('./helpers/env');
@@ -76,6 +76,22 @@ describe('bill routes over HTTP', { skip }, () => {
     };
   };
 
+
+  /**
+   * These suites drive real HTTP, so every request in them comes from
+   * 127.0.0.1 against an app-level limit of 120 a minute. The limiter is
+   * correct -- the harness is what shares one address across a hundred
+   * requests -- so the buckets are cleared before each test rather than once
+   * per suite, which stopped being enough as the suites grew.
+   */
+  const clearIpRateLimits = () => redis.del(
+    'api:::ffff:127.0.0.1', 'api:127.0.0.1',
+    'auth:::ffff:127.0.0.1', 'auth:127.0.0.1',
+    'guest:::ffff:127.0.0.1', 'guest:127.0.0.1'
+  );
+
+  beforeEach(clearIpRateLimits);
+
   before(async () => {
     // A fixed rate, so the arithmetic below is deterministic rather than
     // dependent on what BCV publishes today.
@@ -91,7 +107,7 @@ describe('bill routes over HTTP', { skip }, () => {
     // and fails on 429 that has nothing to do with the code under test. Clearing
     // the two IP-keyed buckets isolates the run from its own predecessor; the
     // per-user `bills:` buckets are keyed on fresh ids and need no help.
-    await redis.del('api:::ffff:127.0.0.1', 'auth:::ffff:127.0.0.1', 'api:127.0.0.1', 'auth:127.0.0.1');
+    await clearIpRateLimits();
 
     restaurant = await fixtures.createRestaurant({ name: 'Routes Tenant' });
     table = await newTable();
