@@ -99,6 +99,12 @@ function assertProductionConfig() {
   }
   if (!process.env.MAIL_FROM) throw new Error('MAIL_FROM is required when onboarding is enabled');
   if (!process.env.APP_BASE_URL) throw new Error('APP_BASE_URL is required when onboarding is enabled');
+  // The registration form's entire purpose is to reach this address. Defaulting
+  // it in production would mean submissions succeed, return 202, and are read
+  // by nobody -- the failure mode a lead-capture form cannot be allowed to have.
+  if (!process.env.ONBOARDING_TEAM_EMAIL) {
+    throw new Error('ONBOARDING_TEAM_EMAIL is required when onboarding is enabled');
+  }
   if (mailTransport === 'resend' && !process.env.MAIL_API_KEY) {
     throw new Error('MAIL_API_KEY is required for MAIL_TRANSPORT=resend');
   }
@@ -149,7 +155,12 @@ module.exports = {
     trialDays: integer('TRIAL_DAYS', 30),
     // Where the verification link points -- the frontend, not this API. The
     // page there reads the token and posts it back to /onboarding/verify.
-    appBaseUrl: (process.env.APP_BASE_URL || 'http://localhost:5173').replace(/\/+$/, '')
+    appBaseUrl: (process.env.APP_BASE_URL || 'http://localhost:5173').replace(/\/+$/, ''),
+    // Who at Splite reads the submissions and telephones the restaurant. This
+    // is the address the whole flow exists to reach: the applicant's
+    // acknowledgement is courtesy, but a lead nobody is told about is a lead
+    // that dies in a table.
+    teamEmail: process.env.ONBOARDING_TEAM_EMAIL || 'onboarding@localhost'
   },
   db: {
     connectionString: process.env.DATABASE_URL,

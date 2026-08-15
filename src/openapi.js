@@ -783,7 +783,7 @@ const onboardingSchemas = {
 
   SignupRequest: {
     type: 'object',
-    required: ['restaurantName', 'rif', 'email'],
+    required: ['restaurantName', 'rif', 'email', 'phone'],
     properties: {
       restaurantName: { type: 'string', minLength: 2, maxLength: 120 },
       rif: {
@@ -793,6 +793,12 @@ const onboardingSchemas = {
         examples: ['J-12345678-4']
       },
       email: { type: 'string', format: 'email', maxLength: 254, description: "The owner's address. No password is collected here." },
+      phone: {
+        type: 'string', minLength: 7, maxLength: 40,
+        description:
+          'Required: the next thing that happens to this submission is that somebody telephones it. Validated loosely on purpose — `+58 412 1234567`, `0412-1234567` and `04121234567` are the same line written by different people, and rejecting two of those spellings loses the restaurant rather than teaching it ours.',
+        examples: ['+58 412 1234567']
+      },
       menuCurrency: { type: 'string', enum: ['VES', 'USD', 'EUR'], default: 'VES' },
       profile: ref('SignupProfile')
     }
@@ -803,7 +809,7 @@ const onboardingSchemas = {
     description:
       'Identical whether or not the address was already registered. Anything else would make this endpoint an account-enumeration oracle, which is the exact thing /auth/login goes to the trouble of a decoy password hash to avoid.',
     properties: {
-      status: { type: 'string', enum: ['PENDING_VERIFICATION'] },
+      status: { type: 'string', enum: ['RECEIVED'] },
       email: { type: 'string', format: 'email' }
     }
   },
@@ -935,19 +941,23 @@ const onboardingPaths = {
   '/api/v1/onboarding/restaurants': {
     post: {
       tags: ['Onboarding'],
-      summary: 'Register a restaurant',
-      operationId: 'requestSignup',
+      summary: 'Submit a restaurant for review',
+      operationId: 'submitLead',
       description: [
-        'Public. Creates **nothing** — it records the intent and emails a verification link.',
+        'Public. Creates **no tenant and no account.** It records the submission and emails the',
+        'Splite onboarding team, who read it and telephone the restaurant. The applicant gets an',
+        'acknowledgement saying exactly that.',
         '',
-        'The tenant is created only by `POST /api/v1/onboarding/verify`, and that ordering is a',
-        'security property rather than a UX preference: staff email is globally unique, so an',
-        'unverified insert into `users` would let anyone permanently claim an address they cannot',
-        'read, locking the real owner out of ever registering.',
+        'Access is granted later, by a person: after the call, the team runs',
+        '`npm run onboarding -- invite <id>`, which mails the single-use link that',
+        '`POST /api/v1/onboarding/verify` consumes. There is no HTTP route for that step —',
+        'every authenticated surface here is scoped to a tenant the caller belongs to, and there',
+        'is no platform-operator role to authorise it.',
         '',
-        'Returns the same 202 whether or not the address or RIF is already registered. Anything',
-        'else would make this an account-enumeration oracle. Someone whose address is already',
-        'on file is told so by email, where only they can read it.',
+        'Returns the same 202 to everyone, including when the address or RIF already belongs to a',
+        'live account. Anything else would make this an account-enumeration oracle, which is what',
+        '`/auth/login` pays for a decoy Argon2 hash to avoid. The duplicate is reported to the',
+        'reviewer instead, which is where a human should be looking at it anyway.',
         '',
         'Rate limited to 5/hour per source address **and** 3/hour per recipient, both fail-closed.',
         'The per-recipient limit is the one that matters: this endpoint sends mail to an address the',
@@ -958,7 +968,7 @@ const onboardingPaths = {
       requestBody: { required: true, content: { 'application/json': { schema: ref('SignupRequest') } } },
       responses: {
         202: {
-          description: 'Accepted. A verification email is on its way; no account exists yet.',
+          description: 'Received. The onboarding team has been notified; no account exists yet.',
           content: { 'application/json': { schema: ref('SignupAccepted') } }
         },
         400: response('BadRequest'),
@@ -975,12 +985,17 @@ const onboardingPaths = {
       summary: 'Consume the link, create the restaurant, sign the owner in',
       operationId: 'verifySignup',
       description: [
-        'Public, but requires a token that was delivered by email.',
+        'Public, but requires a token that the Splite team sent by email after approving the',
+        'submission. Nothing mints that token except `npm run onboarding -- invite <id>`.',
         '',
         'Creates the restaurant, its OWNER user and the menu defaults (IVA 1600 bps, servicio',
         '1000 bps) in **one transaction**, then issues a session — the address is proven and the',
         'password was chosen in this same request, so a login screen here would only ask for what',
         'was just typed.',
+        '',
+        'A human having approved the lead is *not* why this step exists: being vouched for is not',
+        'the same as controlling the inbox, and staff email is globally unique. The tenant is still',
+        'born only inside the transaction that spends the token.',
         '',
         'The link is single-use and expiring. `ONBOARDING_TOKEN_INVALID` covers absent, spent and',
         'expired alike: a caller has no legitimate use for the difference, and separating them would',

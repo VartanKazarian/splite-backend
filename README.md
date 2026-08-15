@@ -42,8 +42,11 @@ opens so a diner's total cannot move while they eat.
 - CI: syntax check, OpenAPI drift check, unit tests, dependency audit,
   invisible-character guard, image build
 
-Not yet built: a payment provider, persisted split participants, and
-onboarding. See [Open points](#open-points).
+Restaurants arrive through a reviewed registration form rather than a seed
+script — see [Registering a restaurant](#registering-a-restaurant).
+
+Not yet built: a payment provider and persisted split participants. See
+[Open points](#open-points).
 
 ## Local development
 
@@ -224,53 +227,68 @@ without first knowing which route produced it.
 
 ## Registering a restaurant
 
-Self-service, behind `ONBOARDING_ENABLED`. While the flag is off the routes are
-not mounted at all — this is the only public surface that creates a tenant and
-sends mail, so its absence is the default rather than something to remember.
+A reviewed lead, not self-service. Behind `ONBOARDING_ENABLED`; while the flag
+is off the routes are not mounted at all.
 
 ```
-POST /api/v1/onboarding/restaurants   -> 202   records intent, emails a link
-POST /api/v1/onboarding/verify        -> 201   creates everything, signs you in
+POST /api/v1/onboarding/restaurants   -> 202   records a lead, emails the team
+   (a person reads it and telephones the restaurant)
+npm run onboarding -- invite <id>              mails the single-use link
+POST /api/v1/onboarding/verify        -> 201   creates everything, signs them in
 ```
 
-**The tenant does not exist until the link is used.** That ordering is the
-security property, not a UX preference. Migration 002 made staff email globally
-unique:
+**The form creates nothing.** No tenant, no account, no token. It records the
+submission and emails the onboarding team the name, RIF, address, phone and the
+qualifying answers, so somebody can read it and pick up the phone. The applicant
+gets an acknowledgement saying a person will call, and no link.
+
+There is deliberately no HTTP route for the invite step. Every authenticated
+surface in this API is scoped to a restaurant the caller belongs to, and there is
+no platform-operator role — inventing one to serve a handful of approvals a week
+would be a second authentication model to secure and keep correct forever. The
+team uses:
+
+```bash
+npm run onboarding -- list NEW
+```
+
+then `show <id>`, `contacted <id> [notas]`, `invite <id>`, `reject <id> [notas]`.
+
+**`restaurants` and `users` are still only created inside the transaction that
+spends the token**, even though a human has already vouched for the lead. Being
+vouched for is not the same as controlling the inbox, and migration 002 made
+staff email globally unique:
 
 ```sql
 CREATE UNIQUE INDEX users_email_unique_idx ON users (lower(email))
 ```
 
-so a public endpoint that inserted into `users` would let anyone claim
-`owner@somerealrestaurant.com` without ever reading that inbox, and nothing in
-the codebase can release an address afterwards. One script against a list of
-restaurants would lock every real owner out of registering, permanently. So an
-unverified signup lives in `restaurant_signups`, which references nothing, and
-`restaurants` + `users` are created inside the single transaction that consumes
-the token.
+so an insert before the address is proven would let anyone permanently claim an
+address they cannot read, and nothing in the codebase releases one afterwards.
 
 Consequences worth knowing before changing any of it:
 
 | Decision | Why |
 | --- | --- |
-| No password at signup | A credential stored against an unproven address, and Argon2id at 19 MiB per call on an endpoint anyone can reach. The verification token *is* the set-password token. |
-| Identical 202 either way | An endpoint that says "that email is taken" is an account-enumeration oracle. `/auth/login` pays for a decoy Argon2 hash to close exactly this; a chatty signup would reopen it. The already-registered case is told by email, where only its owner reads it. |
+| Phone is required | The next thing that happens to a lead is a phone call. Validated loosely — `+58 412 1234567`, `0412-1234567` and `04121234567` are one line written three ways, and rejecting two of them loses the restaurant rather than teaching it ours. |
+| No password until the link | A credential stored against an unproven address, and Argon2id at 19 MiB per call on an endpoint anyone can reach. The invitation token *is* the set-password token. |
+| Identical 202 either way | An endpoint that says "that email is taken" is an account-enumeration oracle. `/auth/login` pays for a decoy Argon2 hash to close exactly this. Duplicates are flagged to the reviewer instead, which is where a human should be looking at them. |
 | One error code for the token | `ONBOARDING_TOKEN_INVALID` covers absent, spent and expired. A caller has no use for the difference and separating them reveals which links exist. |
-| Two rate limiters | Per source address bounds registrations. It does nothing about the other abuse — this endpoint mails an address the *caller* chooses, so a distributed caller stays inside any per-IP budget while filling one person's inbox. The per-recipient limiter is what stops that. Both fail closed. |
-| RIF checksum recorded, not enforced | The mod-11 rule is implemented here for the first time and unproven against real data. Turning away a real restaurant at the form is worse than storing one malformed tax id. `restaurant_signups.rif_checksum_ok` is the evidence for promoting it later. Note that `J-00000000-0` passes the checksum — it catches transcription slips, not invention. |
+| Two rate limiters | Per source address bounds submissions. It does nothing about the other abuse — this endpoint mails an address the *caller* chooses, so a distributed caller stays inside any per-IP budget while filling one person's inbox. The per-recipient limiter stops that. Both fail closed. |
+| RIF checksum recorded, not enforced | The mod-11 rule is implemented here for the first time and unproven against real data. Turning away a real restaurant at the form is worse than storing one malformed tax id; the reviewer is shown the mismatch and decides. Note `J-00000000-0` passes — it catches transcription slips, not invention. |
 | Trial reported, never enforced | `GET /api/v1/account` returns `plan.trialEndsAt` and `trialDaysRemaining` so a client can warn. Nothing refuses service when it lapses: which action a lapsed restaurant loses is a pricing decision, and the obvious candidate is wrong — cutting off bills mid-service strands a dining room full of seated diners over an unpaid invoice. |
 
-A new restaurant is created with IVA at 1600 bps and servicio at 1000 bps.
-Migration 011 defaults both to zero so that running it could not reprice an
-existing restaurant's open bills; one created today has no such history. Both
-are changeable through `PATCH /api/v1/menu/settings/charges`.
+A restaurant is created with IVA at 1600 bps and servicio at 1000 bps. Migration
+011 defaults both to zero so that running it could not reprice an existing
+restaurant's open bills; one created today has no such history. Both are
+changeable through `PATCH /api/v1/menu/settings/charges`.
 
 Mail goes through `src/services/mailer.js`, a port with two adapters. `log`
 writes the message and its link to the logger and sends nothing; it is refused
 in production once onboarding is on. `resend` posts to api.resend.com over
 `fetch`. Adding SES or Postmark means adding a function to `TRANSPORTS` and
 nothing else. Picking a provider also means a domain with SPF and DKIM — without
-it the verification mail goes to spam and the funnel dies at step one.
+it the mail goes to spam and the team never learns a restaurant applied.
 
 ## Sessions
 

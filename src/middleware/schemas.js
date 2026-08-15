@@ -188,6 +188,16 @@ const onboardingSignupSchema = Joi.object({
     return hasRifShape(normalised) ? normalised : helpers.error('any.invalid');
   }, 'RIF shape').required(),
   email: Joi.string().email({ minDomainSegments: 2 }).max(254).lowercase().required(),
+  // Required, because the next thing that happens to this lead is that somebody
+  // telephones it. A lead with no number cannot be worked, and making the field
+  // optional only moves the problem to the reviewer.
+  //
+  // Deliberately loose: digits, spaces and the usual punctuation, 7 to 20
+  // characters. Venezuelan numbers are written +58 412 1234567, 0412-1234567
+  // and 04121234567 by different people meaning the same line, and a form that
+  // rejects two of those spellings loses the restaurant rather than teaching it
+  // ours.
+  phone: Joi.string().trim().min(7).max(40).pattern(/^[+()\-.\s\d]+$/).required(),
   // The menu currency the restaurant quotes in. Changeable afterwards, but only
   // while the menu is empty, so asking now saves a support conversation.
   menuCurrency: Joi.string().valid(...MENU_CURRENCIES).default('VES'),

@@ -15,6 +15,12 @@ const router = express.Router();
  * The only unauthenticated write surface in the API besides the guest session
  * exchange, and unlike that one it is not gated by a signed QR -- anyone on the
  * internet can reach it. Everything below follows from that.
+ *
+ * Note what is *not* here: there is no route that invites a lead. That step is
+ * taken by the Splite team after they have telephoned the restaurant, and every
+ * authenticated surface in this API is scoped to a tenant the caller belongs to
+ * -- there is no platform-operator role to authorise it. It lives in
+ * `npm run onboarding` instead. See src/services/onboarding.js.
  */
 
 const requestMeta = req => ({
@@ -64,10 +70,10 @@ router.post(
   validateBody(onboardingSignupSchema),
   async (req, res, next) => {
     try {
-      const result = await onboarding.requestSignup(req.body, requestMeta(req));
-      // 202, not 201: nothing was created. The only thing that has happened is
-      // that an email is on its way, and the body says exactly that in both the
-      // new-registration and already-registered cases.
+      const result = await onboarding.submitLead(req.body, requestMeta(req));
+      // 202, not 201: no tenant was created and none will be until somebody at
+      // Splite has read this and telephoned them. The body says the same thing
+      // to every caller.
       res.status(202).json(result);
     } catch (err) { next(err); }
   }

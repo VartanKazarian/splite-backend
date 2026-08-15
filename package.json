@@ -11,6 +11,7 @@
     "test:integration": "LOG_LEVEL=silent node --test test/integration/*.test.js",
     "migrate": "node scripts/migrate.js",
     "seed": "node scripts/seed.js",
+    "onboarding": "node scripts/onboarding.js",
     "secrets": "node scripts/generate-secrets.js",
     "smoke": "node scripts/smoke.js",
     "seed:sql": "node scripts/seed-sql.js",
