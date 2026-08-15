@@ -26,7 +26,7 @@ router.use(rateLimit({ windowSeconds: 60, max: 240, keyPrefix: 'webhook' }));
 
 router.post('/:provider', validateParams(webhookProviderParamSchema), async (req, res, next) => {
   try {
-    const result = await handleDelivery(req, req.params.provider.toUpperCase());
+    const result = await handleDelivery(req, res, req.params.provider.toUpperCase());
 
     // 202, always, once the signature is good. The provider is being told the
     // delivery was accepted, which is a different question from whether it

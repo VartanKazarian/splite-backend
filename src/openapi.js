@@ -2023,10 +2023,14 @@ const paths = {
         'No session: a provider has no login. The **HMAC signature is the credential**, and it is',
         'verified before the body is read, recorded or acted on.',
         '',
-        'Headers: `X-Splite-Signature` (hex HMAC-SHA256) and `X-Splite-Timestamp` (unix seconds).',
+        'Headers: `X-Webhook-Signature` (hex HMAC-SHA256) and `X-Webhook-Timestamp` (unix seconds).',
         'The signed value is `{timestamp}.{rawBody}`, so a captured signature cannot be replayed',
         'against a different body, and the timestamp is inside the MAC rather than merely beside it.',
-        'Deliveries outside the tolerance window are rejected.',
+        'The tolerance window is two-sided: a far-future timestamp is as invalid as a stale one.',
+        '',
+        'A signature may be used **once**. Single-use is enforced in Redis and fails closed — if the',
+        'replay store is unreachable this answers 503 `WEBHOOK_REPLAY_PROTECTION_UNAVAILABLE`',
+        'rather than risk handling a money-moving callback twice.',
         '',
         'The **amount is taken from our own record, never from the body.** A valid signature proves',
         'who sent the delivery and nothing more; settling whatever figure it names would let a',
@@ -2049,8 +2053,10 @@ const paths = {
         400: response('BadRequest'),
         401: response('Unauthorized'),
         404: response('NotFound'),
+        409: response('Conflict'),
         429: response('TooManyRequests'),
-        500: response('ServerError')
+        500: response('ServerError'),
+        503: response('ServiceUnavailable')
       }
     }
   },

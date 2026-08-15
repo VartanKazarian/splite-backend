@@ -818,6 +818,31 @@ Everything known to be incomplete, in rough priority order. Nothing here is a
 surprise waiting to be found; it is the list of things deliberately not done
 yet.
 
+### Waiting on a decision
+
+Beta. These are not unfinished code — they are questions whose answers change
+what gets built, and they are parked deliberately rather than guessed at.
+
+| Open question | What it blocks | What happens meanwhile |
+| --- | --- | --- |
+| **Which mail provider, and on what domain?** | All of onboarding. `MAIL_TRANSPORT=log` writes the message to the log and sends nothing, and is refused in production. | `ONBOARDING_ENABLED=false`, so the form is not served at all. Needs SPF and DKIM on a real domain too, or the mail reaches spam and the team never learns a restaurant applied. |
+| **Which card acquirer?** | Card payments entirely, and paying inside the app. | Diners declare Pago Móvil and staff confirm. |
+| **What does a lapsed trial lose?** | Nothing today — `plan_tier` and `trial_ends_at` are reported by `GET /api/v1/account` and enforced nowhere. | Clients can warn. The obvious answer is the wrong one: cutting off bills mid-service strands a dining room full of seated diners over an unpaid invoice. |
+| **Should a failing RIF check digit be rejected?** | Nothing. The mod-11 result is recorded in `restaurant_signups.rif_checksum_ok` and shown to the reviewer. | Accepted either way. Turning away a real restaurant at the form is worse than storing one malformed tax id, and the column is the evidence for deciding later. Note `J-00000000-0` passes — the checksum catches transcription slips, not invention. |
+
+Two smaller ones, same character:
+
+- **No admin surface.** Inviting a lead is `npm run onboarding -- invite <id>`,
+  not an endpoint, because every authenticated surface here is scoped to a
+  restaurant the caller belongs to and there is no platform-operator role.
+  Inventing one for a handful of approvals a week is a second authentication
+  model to secure forever. If volume justifies a console, it calls the same
+  functions the CLI does.
+- **Staff are not told when a claim arrives.** They poll
+  `GET /api/v1/payments/claims`. A diner declaring a payment nobody looks at is
+  the failure mode to watch for in beta, and the fix — push, or a badge fed by
+  polling — is a frontend decision.
+
 ### Blocking real use
 
 - **Split claims are not persisted.** The split engine is advisory: it computes
@@ -826,16 +851,29 @@ yet.
   overpayment ceiling. Participants are client-owned ids today; making them
   durable is what turns the engine from advisory into authoritative, and it
   belongs with the guest session it hangs off.
-- **A guest cannot pay.** Settlement is staff-only: `POST /bills/{id}/payments`
-  records cash, card or any other tender a member of staff takes. A diner can
-  see their split and not act on it. Paying from the phone needs the provider
-  work below; marking a bill settled by other means already works.
-- **No onboarding.** Restaurants and their first owner are created by
-  `npm run seed`. Whether signup is self-service or invite-only is an open
-  product decision, and `registerSchema` sitting unused in
-  `middleware/schemas.js` is that decision in disguise.
-- **No payment provider.** Money is recorded, never actually moved: every
-  payment is entered by staff. See the webhook item below.
+- **A guest still cannot pay in the app.** They can now *declare* a Pago Móvil
+  sent from their own bank, which reaches staff as a claim and settles once
+  confirmed. That is a message, not a payment: the diner still leaves the app to
+  move the money. Paying inside Splite needs the acquirer below.
+- **Onboarding is built but not switched on.** A public form records a lead and
+  emails the team, who telephone the restaurant and then run
+  `npm run onboarding -- invite <id>`. It is mounted only under
+  `ONBOARDING_ENABLED`, which is off, because it cannot work without a mail
+  provider — see [Waiting on a decision](#waiting-on-a-decision). The frontend
+  page that consumes the invitation link, `/registro/verificar`, does not exist
+  yet either.
+- **No card payments, and no money actually moves.** A diner can declare a Pago
+  Móvil they sent from their own bank app and a member of staff confirms it
+  against the bank; a signed provider webhook can settle a bill. Neither is
+  Splite moving money. Card needs an acquirer, which is the open decision below,
+  and with one there is no matching problem at all — the acquirer answers
+  authoritatively.
+- **No automatic bank reconciliation.** Confirming a declared Pago Móvil is a
+  person reading a bank app. Reading the feed and matching movements to tables
+  is real work with a real trap: two tables with identical totals and a payment
+  with no reference must produce an exception for staff, never a guess. Guessing
+  closes the wrong bill *and* makes the other table pay twice, which is worse
+  than not confirming at all.
 
 ### Port still outstanding
 
@@ -852,12 +890,14 @@ From the working copy, onto the current model:
 
 ### Phase 2, not started
 
-- **Webhook route wiring.** `src/middleware/webhookSignature.js` is complete —
-  HMAC over the raw body, a two-sided timestamp window, Redis-backed replay
-  protection that fails closed — but it is not mounted on any route. Its
-  blocker is gone: migration 007 added the ledger, so a callback now has
-  `payments.provider_payment_id` to reconcile against. What remains is choosing
-  a Venezuelan rail and writing the route.
+- **A real provider adapter.** The webhook route is mounted and
+  `src/middleware/webhookSignature.js` is finally wired to it, but the only
+  provider defined is `SPLITE` — our own HMAC scheme. A Venezuelan rail is an
+  entry in `PROVIDERS` supplying its own verifier and parser, and nothing else
+  changes.
+- **`webhook_deliveries` has no retention.** Every delivery is kept, rejected
+  ones included, and nothing prunes it. Fine at beta volume; it belongs with the
+  scheduled purges below.
 - **Staff account lockout.** The rate limiter is per-IP, not per-account, so
   distributed attempts against one account are not slowed. MFA for staff logins
   is also unstarted.

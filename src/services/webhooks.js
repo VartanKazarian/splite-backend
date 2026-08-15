@@ -1,8 +1,7 @@
-const crypto = require('crypto');
 const db = require('../connectors/base');
 const config = require('../config');
 const { ApiError } = require('../errors');
-const { safeEqual } = require('../utils/tokens');
+const verifyWebhookSignature = require('../middleware/webhookSignature');
 const { applyToBill, settlementView } = require('./locks');
 const { transitionPayment } = require('./payments');
 const { logAudit } = require('./audit');
@@ -33,53 +32,35 @@ const { logger } = require('../connectors/logger');
  *     cannot be investigated.
  */
 
-const SIGNATURE_HEADER = 'x-splite-signature';
-const TIMESTAMP_HEADER = 'x-splite-timestamp';
+const SIGNATURE_HEADER = 'x-webhook-signature';
+const TIMESTAMP_HEADER = 'x-webhook-timestamp';
+
+/** Runs an express-style middleware as a promise. */
+const runMiddleware = (middleware, req, res) => new Promise((resolve, reject) => {
+  middleware(req, res, err => (err ? reject(err) : resolve()));
+});
 
 const PROVIDERS = {
   /**
    * Splite's own HMAC scheme.
    *
-   * Signed value is `${timestamp}.${rawBody}`, so a captured signature cannot be
-   * replayed with a different body, and the timestamp is inside the MAC rather
-   * than merely alongside it -- a timestamp an attacker can edit freely buys
-   * nothing.
+   * `verify` is the middleware that has sat complete and unmounted in
+   * `src/middleware/webhookSignature.js` since phase 1 -- signature over
+   * `${timestamp}.${rawBody}`, a two-sided tolerance window, and single-use
+   * enforcement in Redis that fails closed.
+   *
+   * This was very nearly a second implementation of the same three rules,
+   * written here because the first one was not mounted anywhere and so did not
+   * turn up in a search of the routes. The duplicate was the weaker of the two:
+   * identical signing, no replay protection. Two verifiers for one credential
+   * is how one of them quietly stops being the one that runs.
+   *
+   * Keeping it behind the provider entry preserves the seam that matters: an
+   * acquirer with its own scheme supplies its own `verify`, and nothing else
+   * changes.
    */
   SPLITE: {
-    authenticate(req) {
-      const signature = req.get(SIGNATURE_HEADER);
-      const timestamp = req.get(TIMESTAMP_HEADER);
-      if (!signature || !timestamp) {
-        throw new ApiError('WEBHOOK_SIGNATURE_MISSING', 'Signature headers are required');
-      }
-
-      const sent = Number(timestamp);
-      if (!Number.isFinite(sent)) {
-        throw new ApiError('WEBHOOK_SIGNATURE_INVALID', 'Malformed timestamp');
-      }
-      const drift = Math.abs(Math.floor(Date.now() / 1000) - sent);
-      if (drift > config.webhookToleranceSeconds) {
-        throw new ApiError(
-          'WEBHOOK_TIMESTAMP_OUT_OF_TOLERANCE',
-          'Timestamp is outside the accepted window'
-        );
-      }
-
-      // rawBody, never req.body. If the parser did not capture it there is
-      // nothing to verify and the only safe answer is to reject.
-      if (typeof req.rawBody !== 'string') {
-        throw new ApiError('WEBHOOK_BODY_UNVERIFIABLE', 'Raw body unavailable for verification');
-      }
-
-      const expected = crypto
-        .createHmac('sha256', config.webhookSecret)
-        .update(`${timestamp}.${req.rawBody}`)
-        .digest('hex');
-
-      if (!safeEqual(expected, signature)) {
-        throw new ApiError('WEBHOOK_SIGNATURE_INVALID', 'Signature does not match');
-      }
-    },
+    verify: verifyWebhookSignature({ replayProtection: true }),
 
     parse(body) {
       const providerPaymentId = body?.id ?? body?.paymentId ?? null;
@@ -121,7 +102,7 @@ const recordDelivery = (fields) =>
  * Ordering is deliberate: authenticate first so an unauthenticated body cannot
  * fill the evidence table, then record, then act.
  */
-async function handleDelivery(req, providerCode) {
+async function handleDelivery(req, res, providerCode) {
   const provider = PROVIDERS[providerCode];
   if (!provider) {
     throw new ApiError('WEBHOOK_PROVIDER_UNKNOWN', 'No adapter for that provider', {
@@ -133,12 +114,15 @@ async function handleDelivery(req, providerCode) {
   const rawBody = typeof req.rawBody === 'string' ? req.rawBody : '';
 
   try {
-    provider.authenticate(req);
+    await runMiddleware(provider.verify, req, res);
   } catch (err) {
     await recordDelivery({
       provider: providerCode, rawBody, signature,
-      outcome: err.code === 'WEBHOOK_TIMESTAMP_OUT_OF_TOLERANCE'
-        ? 'TIMESTAMP_OUT_OF_TOLERANCE' : 'SIGNATURE_INVALID',
+      outcome: {
+        WEBHOOK_TIMESTAMP_OUT_OF_TOLERANCE: 'TIMESTAMP_OUT_OF_TOLERANCE',
+        WEBHOOK_ALREADY_PROCESSED: 'REPLAYED',
+        WEBHOOK_REPLAY_PROTECTION_UNAVAILABLE: 'REPLAY_STORE_DOWN'
+      }[err.code] || 'SIGNATURE_INVALID',
       detail: err.message
     });
     logger.warn({ event: 'WEBHOOK_REJECTED', provider: providerCode, code: err.code, ip: req.ip },
