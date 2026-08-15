@@ -11,7 +11,7 @@ const { ApiError } = require('../errors');
  */
 
 const PAYMENT_COLUMNS = `id, restaurant_id, bill_id, amount_ves, status, payment_method,
-                         provider, provider_payment_id, idempotency_key,
+                         provider, provider_payment_id, declared_reference, idempotency_key,
                          payer_type, payer_id,
                          tendered_amount, tendered_currency, tendered_fx_rate,
                          metadata, created_at, updated_at`;
@@ -61,6 +61,10 @@ async function recordPayment(client, {
   paymentMethod = 'SPLITE',
   provider = null,
   providerPaymentId = null,
+  // A payer's own transcription of their bank reference. Distinct from
+  // providerPaymentId, which is an identifier a system handed us; this one is
+  // typed by a human off a receipt and may simply be wrong.
+  declaredReference = null,
   idempotencyKey = null,
   payerType = 'STAFF',
   payerId = null,
@@ -71,10 +75,10 @@ async function recordPayment(client, {
   const { rows } = await client.query(
     `INSERT INTO payments
        (restaurant_id, bill_id, amount_ves, status, payment_method,
-        provider, provider_payment_id, idempotency_key,
+        provider, provider_payment_id, declared_reference, idempotency_key,
         payer_type, payer_id,
         tendered_amount, tendered_currency, tendered_fx_rate, metadata)
-     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14)
+     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15)
      RETURNING ${PAYMENT_COLUMNS}`,
     [
       restaurantId,
@@ -84,6 +88,7 @@ async function recordPayment(client, {
       paymentMethod,
       provider,
       providerPaymentId,
+      declaredReference,
       idempotencyKey,
       payerType,
       payerId,

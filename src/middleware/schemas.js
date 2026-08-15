@@ -128,6 +128,50 @@ const splitPreviewSchema = Joi.object({
 });
 
 
+/**
+ * A diner declaring a Pago Móvil they have already sent.
+ *
+ * `reference` is what makes the claim checkable: it is the number the payer's
+ * bank assigned, and it is what a member of staff will look for in the bank
+ * app. Required for that reason -- a claim without one asks somebody to find an
+ * unidentified transfer among the evening's takings.
+ *
+ * Loose about how it is typed, strict about what it becomes: the service keeps
+ * digits only, so `0001234567`, `00012 34567` and `ref 0001234567` are one
+ * reference and cannot each claim the bill separately.
+ */
+const declareClaimSchema = Joi.object({
+  amountVes: positiveMinorUnits.required(),
+  reference: Joi.string().trim().min(4).max(32).pattern(/^[\d\s.-]+$/).required(),
+  // Optional corroboration. Neither is proof, and neither is required, but a
+  // member of staff scanning a bank app finds a movement far faster with the
+  // originating number than without it.
+  phoneOrigin: Joi.string().trim().min(7).max(40).pattern(/^[+()\-.\s\d]+$/),
+  bankOrigin: Joi.string().trim().max(60)
+});
+
+const listClaimsQuerySchema = Joi.object({
+  billId: uuid,
+  // PENDING by default: the queue somebody has to work is the reason this
+  // endpoint exists.
+  status: Joi.string().valid('PENDING', 'SUCCEEDED', 'FAILED', 'CANCELLED').default('PENDING'),
+  limit: Joi.number().integer().min(1).max(100).default(50)
+});
+
+const rejectClaimSchema = Joi.object({
+  // Free text, and worth capturing: "no aparece" and "el monto no coincide" are
+  // different problems, and the second one is the restaurant's to chase.
+  reason: Joi.string().trim().max(500)
+});
+
+const paymentIdParamSchema = Joi.object({ id: uuid.required() });
+
+// Bounded and pattern-checked because it is echoed back in the error details
+// when no adapter matches.
+const webhookProviderParamSchema = Joi.object({
+  provider: Joi.string().trim().min(2).max(40).pattern(/^[A-Za-z0-9_-]+$/).required()
+});
+
 const paginationKeys = {
   limit: Joi.number().integer().min(1).max(100).default(50),
   offset: Joi.number().integer().min(0).default(0)
@@ -291,6 +335,11 @@ module.exports = {
   onboardingVerifySchema,
   signupProfileSchema,
   splitPaymentSchema,
+  declareClaimSchema,
+  listClaimsQuerySchema,
+  rejectClaimSchema,
+  paymentIdParamSchema,
+  webhookProviderParamSchema,
   minorUnits,
   positiveMinorUnits,
   createTableSchema,

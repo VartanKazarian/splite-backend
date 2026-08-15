@@ -856,6 +856,69 @@ const onboardingSchemas = {
 
 Object.assign(schemas, onboardingSchemas);
 
+Object.assign(schemas, {
+  PaymentClaim: {
+    type: 'object',
+    description:
+      'A payment a diner says they made. It settles nothing on its own: `bills.amountPaidVes` is untouched while the claim is PENDING, because money Splite cannot see arrive is not money that has arrived.',
+    properties: {
+      id: { type: 'string', format: 'uuid' },
+      billId: { type: 'string', format: 'uuid' },
+      amountVes: minorUnits,
+      status: { type: 'string', enum: ['PENDING', 'SUCCEEDED', 'FAILED', 'CANCELLED'] },
+      paymentMethod: { type: 'string', enum: ['PAGO_MOVIL'] },
+      declaredReference: {
+        type: ['string', 'null'],
+        description: 'Normalised to digits. What the payer transcribed from their bank, and what staff will look for in the bank app.'
+      },
+      createdAt: { type: 'string', format: 'date-time' },
+      updatedAt: { type: 'string', format: 'date-time' }
+    }
+  },
+
+  StaffPaymentClaim: {
+    allOf: [
+      ref('PaymentClaim'),
+      {
+        type: 'object',
+        description: "The corroborating detail, which goes only to staff — `phoneOrigin` is a diner's personal number.",
+        properties: {
+          phoneOrigin: { type: ['string', 'null'] },
+          bankOrigin: { type: ['string', 'null'] },
+          declaredAt: { type: ['string', 'null'], format: 'date-time' }
+        }
+      }
+    ]
+  },
+
+  DeclareClaimRequest: {
+    type: 'object',
+    required: ['amountVes', 'reference'],
+    properties: {
+      amountVes: { ...minorUnits, description: 'VES céntimos. May be part of the bill: splitting is the point.' },
+      reference: {
+        type: 'string', minLength: 4, maxLength: 32,
+        description: 'The reference the payer\'s bank assigned. Required — a claim without one asks staff to find an unidentified transfer among the evening\'s takings. Digits, spaces, dots and dashes; normalised to digits before storage, so one reference cannot claim two bills by being typed differently.'
+      },
+      phoneOrigin: { type: 'string', description: 'Optional. Not proof, but it is how a movement is found quickly.' },
+      bankOrigin: { type: 'string', description: 'Optional.' }
+    }
+  },
+
+  WebhookAck: {
+    type: 'object',
+    properties: {
+      received: { type: 'boolean' },
+      settled: { type: 'boolean' },
+      reason: {
+        type: 'string',
+        enum: ['SETTLED', 'DUPLICATE', 'FAILED', 'IGNORED', 'PAYMENT_NOT_FOUND', 'UNATTRIBUTED'],
+        description: 'Why the delivery did or did not settle anything. Accepted and un-settled is a normal outcome, not an error.'
+      }
+    }
+  }
+});
+
 const responses = {
   BadRequest: {
     description: 'Validation failed, or the body contradicts the path.',
@@ -1820,6 +1883,176 @@ const paths = {
     }
   },
 
+  '/api/v1/guest/bill/payment-claims': {
+    post: {
+      tags: ['Guest'],
+      summary: 'Declare a Pago Móvil the diner has already sent',
+      operationId: 'declarePaymentClaim',
+      description: [
+        'Authenticated with a guest session. **Takes no bill id** — the table comes from the session.',
+        '',
+        'Creates a claim and settles nothing. The money went from the diner\'s bank to the',
+        'restaurant\'s without passing through Splite, so no API of ours can see it arrive; the only',
+        'honest thing this can do is carry the diner\'s word to somebody who can check the bank app.',
+        '',
+        '`bills.amountPaidVes` is untouched until a member of staff confirms it through',
+        '`POST /api/v1/payments/claims/{id}/confirm`. A bill that showed itself as paid because',
+        'somebody typed a number into a form would be worse than one showing nothing, because the',
+        'restaurant would stop asking.',
+        '',
+        'A claim is not a reservation: two diners may each claim the whole balance, and only the',
+        'first confirmation can succeed.'
+      ].join('\n'),
+      security: [{ guestAuth: [] }],
+      requestBody: { required: true, content: { 'application/json': { schema: ref('DeclareClaimRequest') } } },
+      responses: {
+        201: { description: 'Claim recorded, awaiting verification.', content: { 'application/json': { schema: ref('PaymentClaim') } } },
+        400: response('BadRequest'),
+        401: response('Unauthorized'),
+        404: response('NotFound'),
+        409: response('Conflict'),
+        429: response('TooManyRequests'),
+        500: response('ServerError')
+      }
+    }
+  },
+
+  '/api/v1/payments/claims': {
+    get: {
+      tags: ['Payments'],
+      summary: 'Declared payments awaiting verification',
+      operationId: 'listPaymentClaims',
+      description: 'Any authenticated staff role. Defaults to PENDING, which is the queue somebody has to work.',
+      security: staff,
+      parameters: [
+        { name: 'billId', in: 'query', schema: { type: 'string', format: 'uuid' } },
+        {
+          name: 'status', in: 'query',
+          schema: { type: 'string', enum: ['PENDING', 'SUCCEEDED', 'FAILED', 'CANCELLED'], default: 'PENDING' }
+        },
+        { name: 'limit', in: 'query', schema: { type: 'integer', minimum: 1, maximum: 100, default: 50 } }
+      ],
+      responses: {
+        200: {
+          description: 'Claims, oldest first.',
+          content: {
+            'application/json': {
+              schema: {
+                type: 'object',
+                properties: { data: { type: 'array', items: ref('StaffPaymentClaim') } }
+              }
+            }
+          }
+        },
+        ...commonErrors
+      }
+    }
+  },
+
+  '/api/v1/payments/claims/{id}/confirm': {
+    post: {
+      tags: ['Payments'],
+      summary: 'Confirm the money arrived, and settle the bill',
+      operationId: 'confirmPaymentClaim',
+      'x-required-roles': ['OWNER', 'MANAGER', 'CASHIER'],
+      description: [
+        'Roles: OWNER, MANAGER, CASHIER. A waiter can take an order; deciding that money arrived',
+        'is a cashier\'s job upwards.',
+        '',
+        'This is the moment the bill moves. It goes through the same settlement path as a staff',
+        'split and a provider webhook, so a confirmed claim cannot overpay a bill or close one that',
+        'was voided while it sat in the queue — 409 `PAYMENT_EXCEEDS_BALANCE` and `BILL_NOT_OPEN`',
+        'are both reachable here and both mean the claim should be rejected instead.'
+      ].join('\n'),
+      security: staff,
+      parameters: [{ name: 'id', in: 'path', required: true, schema: { type: 'string', format: 'uuid' } }],
+      responses: {
+        200: { description: 'Settled.', content: { 'application/json': { schema: ref('PaymentResult') } } },
+        ...commonErrors,
+        403: response('Forbidden'),
+        404: response('NotFound'),
+        409: response('Conflict')
+      }
+    }
+  },
+
+  '/api/v1/payments/claims/{id}/reject': {
+    post: {
+      tags: ['Payments'],
+      summary: 'Record that the money could not be found',
+      operationId: 'rejectPaymentClaim',
+      'x-required-roles': ['OWNER', 'MANAGER', 'CASHIER'],
+      description: [
+        'Roles: OWNER, MANAGER, CASHIER.',
+        '',
+        'FAILED rather than deleted: if a diner insists they paid, the record of what they declared',
+        'and who rejected it is the only way to settle the argument. Rejecting also releases the',
+        'reference, so a diner who simply mistyped can declare again.'
+      ].join('\n'),
+      security: staff,
+      parameters: [{ name: 'id', in: 'path', required: true, schema: { type: 'string', format: 'uuid' } }],
+      requestBody: {
+        required: false,
+        content: {
+          'application/json': {
+            schema: {
+              type: 'object',
+              properties: { reason: { type: 'string', maxLength: 500, description: '"No aparece" and "el monto no coincide" are different problems.' } }
+            }
+          }
+        }
+      },
+      responses: {
+        200: { description: 'Rejected.', content: { 'application/json': { schema: ref('StaffPaymentClaim') } } },
+        ...commonErrors,
+        403: response('Forbidden'),
+        404: response('NotFound'),
+        409: response('Conflict')
+      }
+    }
+  },
+
+  '/api/v1/webhooks/{provider}': {
+    post: {
+      tags: ['Webhooks'],
+      summary: 'Inbound payment notification from a provider',
+      operationId: 'receiveWebhook',
+      description: [
+        'No session: a provider has no login. The **HMAC signature is the credential**, and it is',
+        'verified before the body is read, recorded or acted on.',
+        '',
+        'Headers: `X-Splite-Signature` (hex HMAC-SHA256) and `X-Splite-Timestamp` (unix seconds).',
+        'The signed value is `{timestamp}.{rawBody}`, so a captured signature cannot be replayed',
+        'against a different body, and the timestamp is inside the MAC rather than merely beside it.',
+        'Deliveries outside the tolerance window are rejected.',
+        '',
+        'The **amount is taken from our own record, never from the body.** A valid signature proves',
+        'who sent the delivery and nothing more; settling whatever figure it names would let a',
+        'compromised provider key rewrite a bill.',
+        '',
+        'Always answers 202 once the signature is good, including for a redelivery of something',
+        'already settled — providers retry on any non-2xx, and on timeouts where we in fact',
+        'succeeded, so treating a duplicate as an error makes it retry forever. Read `settled` and',
+        '`reason` to find out what actually happened.',
+        '',
+        'Only the `SPLITE` provider exists today; a real acquirer is an entry in the adapter table.'
+      ].join('\n'),
+      security: [],
+      parameters: [
+        { name: 'provider', in: 'path', required: true, schema: { type: 'string' }, example: 'SPLITE' }
+      ],
+      requestBody: { required: true, content: { 'application/json': { schema: { type: 'object' } } } },
+      responses: {
+        202: { description: 'Delivery accepted. Check `settled`.', content: { 'application/json': { schema: ref('WebhookAck') } } },
+        400: response('BadRequest'),
+        401: response('Unauthorized'),
+        404: response('NotFound'),
+        429: response('TooManyRequests'),
+        500: response('ServerError')
+      }
+    }
+  },
+
   '/api/v1/account': {
     get: {
       tags: ['Account'],
@@ -1906,6 +2139,7 @@ const document = {
     { name: 'Payments' },
     { name: 'Menu' },
     { name: 'Exchange rate' },
+    { name: 'Webhooks' },
     { name: 'Account' },
     // Listed unconditionally even though its operations are only described when
     // ONBOARDING_ENABLED is on: a tag with no operations reads as a feature that

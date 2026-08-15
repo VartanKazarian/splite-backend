@@ -22,6 +22,8 @@ const menuRoutes = require('./routes/menu');
 const tableRoutes = require('./routes/tables');
 const onboardingRoutes = require('./routes/onboarding');
 const accountRoutes = require('./routes/account');
+const paymentRoutes = require('./routes/payments');
+const webhookRoutes = require('./routes/webhooks');
 
 const app = express();
 
@@ -145,6 +147,13 @@ app.use('/api/v1/exchange-rate', exchangeRateRoutes);
 // so it relies on the app-level limiter above.
 app.use('/api/v1/menu', menuRoutes);
 app.use('/api/v1/account', accountRoutes);
+app.use('/api/v1/payments', paymentRoutes);
+
+// A SEPARATE router object, mounted at exactly one path. Serving webhooks by
+// mounting the payments router under a second prefix makes every payment route
+// answer there too, and any middleware attached by prefix -- authentication,
+// rate limiting -- is then skipped by changing the URL.
+app.use('/api/v1/webhooks', webhookRoutes);
 
 // Mounted only when self-service registration is switched on. The route is the
 // one public write surface that creates tenants and sends mail, so its absence

@@ -68,6 +68,10 @@ const CODES = {
   PRODUCT_NOT_FOUND: 404,
   RESTAURANT_NOT_FOUND: 404,
   OPEN_BILL_NOT_FOUND: 404,
+  PAYMENT_CLAIM_NOT_FOUND: 404,
+  // A webhook for a provider this deployment has no adapter for. 404 rather
+  // than 400: the path segment names a resource that does not exist here.
+  WEBHOOK_PROVIDER_UNKNOWN: 404,
 
   // 409 -- valid request, incompatible with current state.
   OPEN_BILL_EXISTS: 409,
@@ -91,6 +95,11 @@ const CODES = {
   // address or a tax id is already on file. See src/services/onboarding.js.
   EMAIL_ALREADY_REGISTERED: 409,
   RIF_ALREADY_REGISTERED: 409,
+  // One bank reference settles one bill. Raised when a second diner declares a
+  // reference another claim already holds -- the cheapest attack on a manual
+  // confirmation flow is to repeat the number the next table read aloud.
+  PAYMENT_REFERENCE_ALREADY_USED: 409,
+  PAYMENT_CLAIM_NOT_PENDING: 409,
 
   // 429 / 503 -- try again, and the caller can tell whether it is their fault.
   RATE_LIMITED: 429,
@@ -134,6 +143,8 @@ const DETAILS = {
     submittedTotalVes: 'string -- what they actually summed to'
   },
   FORBIDDEN_ROLE: { requiredRoles: 'string[] -- roles that would have been accepted' },
+  PAYMENT_CLAIM_NOT_PENDING: { status: 'string -- the status the claim is actually in' },
+  WEBHOOK_PROVIDER_UNKNOWN: { provider: 'string -- the unrecognised provider segment' },
   FX_UNAVAILABLE: { currency: 'string -- the currency with no usable rate, when specific to one' },
   RATE_LIMITED: { retryAfterSeconds: 'integer -- matches the Retry-After header' },
   CORS_ORIGIN_NOT_ALLOWED: { origin: 'string -- the rejected Origin, so it can be copied into CORS_ORIGINS' },

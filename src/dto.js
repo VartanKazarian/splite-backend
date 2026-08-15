@@ -183,6 +183,47 @@ function guestBill(row, items = []) {
   };
 }
 
+/**
+ * A declared payment, as staff and the diner both see it.
+ *
+ * `declaredReference` is published deliberately: the person verifying needs to
+ * read it off the screen and find it in the bank app, and the diner needs to
+ * see that what arrived is what they typed. It is not a secret -- it is a
+ * number the payer already has and the restaurant is about to look up.
+ *
+ * What is not published is the raw metadata blob. `phoneOrigin` is a diner's
+ * personal number, and it goes only to staff, through `staffPaymentClaim`.
+ */
+function paymentClaim(row) {
+  return {
+    id: row.id,
+    billId: row.bill_id,
+    amountVes: row.amount_ves,
+    status: row.status,
+    paymentMethod: row.payment_method,
+    declaredReference: row.declared_reference ?? null,
+    createdAt: isoTimestamp(row.created_at),
+    updatedAt: isoTimestamp(row.updated_at)
+  };
+}
+
+/**
+ * The same claim, with the corroborating detail a verifier needs.
+ *
+ * Split from `paymentClaim` rather than made conditional: a field that is
+ * sometimes present is the ambiguity the DTO boundary exists to remove, and the
+ * field in question is somebody's phone number.
+ */
+function staffPaymentClaim(row) {
+  const metadata = row.metadata || {};
+  return {
+    ...paymentClaim(row),
+    phoneOrigin: metadata.phoneOrigin ?? null,
+    bankOrigin: metadata.bankOrigin ?? null,
+    declaredAt: metadata.declaredAt ?? null
+  };
+}
+
 function table(row) {
   return {
     id: row.id,
@@ -316,5 +357,5 @@ function menuSettings(row) {
 module.exports = {
   isoDate, isoTimestamp,
   bill, billItem, billWithItems, guestBill,
-  table, floorTable, product, publicProduct, menuSettings, menuCharges, account
+  table, floorTable, product, publicProduct, menuSettings, menuCharges, account, paymentClaim, staffPaymentClaim
 };

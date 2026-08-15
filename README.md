@@ -45,8 +45,13 @@ opens so a diner's total cannot move while they eat.
 Restaurants arrive through a reviewed registration form rather than a seed
 script — see [Registering a restaurant](#registering-a-restaurant).
 
-Not yet built: a payment provider and persisted split participants. See
-[Open points](#open-points).
+Bills settle from three directions — the till, a diner's declared Pago Móvil,
+and a signed provider webhook — all through one settlement function. See
+[Getting paid](#getting-paid). **Card payments are not built**: that needs an
+acquirer.
+
+Not yet built: card payments, automatic bank reconciliation, and persisted split
+participants. See [Open points](#open-points).
 
 ## Local development
 
@@ -361,6 +366,80 @@ an existing total.
 
 A voluntary tip is deliberately not modelled here. It is untaxed and chosen by
 the payer rather than the restaurant, so it belongs with the payment.
+
+## Getting paid
+
+Three ways money reaches a bill, and they all settle through **one** function —
+`applyToBill` in `src/services/locks.js`. That matters: the rules are that a
+bill must be OPEN, that the running total may never exceed what is due, and that
+CLOSED happens on exact equality and nowhere else. Each path had a reason to
+write its own version, and each version was subtly different — `>=` instead of
+`===` closes a bill on an overpayment and swallows the difference, and an
+omitted status check settles a bill that was voided an hour ago.
+
+| Path | Who says the money arrived | Verified by |
+| --- | --- | --- |
+| `POST /api/v1/bills/:id/payments` | staff at the till | the person taking it |
+| `POST /api/v1/guest/bill/payment-claims` → `confirm` | the diner | a person with the bank app open |
+| `POST /api/v1/webhooks/:provider` | the provider | an HMAC signature |
+
+### Declared Pago Móvil
+
+Splite never touches this money — it goes from the diner's bank to the
+restaurant's — so no API of ours can watch it arrive. A diner declares a payment
+and a reference; that creates a `payments` row in **PENDING** and touches
+`bills.amountPaidVes` not at all. A bill that showed itself as paid because
+somebody typed a number into a form would be worse than one showing nothing,
+because the restaurant would stop asking.
+
+Staff work the queue at `GET /api/v1/payments/claims` and either confirm
+(OWNER/MANAGER/CASHIER — a waiter can take an order, deciding money arrived is a
+cashier's job upwards) or reject with a reason.
+
+References are normalised to digits and hold a partial unique index per
+restaurant, excluding FAILED and CANCELLED. That closes the cheap attack —
+table A reads their reference aloud, table B with an identical total types the
+same number, and a member of staff glancing at a phone confirms both — while
+still letting a diner who mistyped correct it after a rejection.
+
+A claim is **not** a reservation. Two diners may each claim the whole balance;
+only the first confirmation can succeed, and the second gets 409.
+
+### Provider webhooks
+
+`POST /api/v1/webhooks/:provider`, its own router at its own path. Mounting the
+payments router under a second prefix to also serve webhooks makes every payment
+route answer there too, and middleware attached by prefix is then skipped by
+changing the URL — an authorisation bypass dressed as a convenience.
+
+There is no session; the signature is the credential. `X-Splite-Signature` is
+HMAC-SHA256 over `{timestamp}.{rawBody}`, with `X-Splite-Timestamp` in unix
+seconds. Three details are load-bearing:
+
+- It signs the **raw bytes**. `req.rawBody` is captured by the `express.json`
+  verify hook for exactly this. Signing a re-serialised `req.body` compares an
+  HMAC of our JSON formatting against one of theirs, and those differ over key
+  order and whitespace.
+- The timestamp is **inside** the MAC. Beside it, an attacker replays a captured
+  signature with a fresh timestamp and the window buys nothing.
+- The **amount comes from our record, never the body.** A valid signature proves
+  who sent the delivery and nothing more; settling whatever figure it names lets
+  a compromised provider key rewrite a bill.
+
+It answers 202 once the signature checks out, including for a redelivery of
+something already settled — providers retry on any non-2xx and on timeouts where
+we did succeed, so treating a duplicate as an error makes it retry forever. Read
+`settled` and `reason`.
+
+Every delivery is recorded in `webhook_deliveries`, rejected ones included:
+repeated signature failures are how a leaked or rotated secret announces itself,
+and a body we threw away cannot be investigated.
+
+Only the `SPLITE` provider exists today. A real acquirer is an entry in
+`PROVIDERS`, not an edit to anything around it. **Card payments are not built
+yet** — that needs an acquirer, and with one there is no matching problem at
+all: the acquirer answers authoritatively, so none of the reconciliation
+machinery above applies.
 
 ## Splitting a bill
 

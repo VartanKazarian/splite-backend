@@ -4,10 +4,12 @@ const config = require('../config');
 const { signQrPayload, verifyQrToken } = require('../utils/tokens');
 const { authenticateToken, requireRole } = require('../middleware/auth');
 const {
-  validateBody, validateParams, guestSessionSchema, tableIdParamSchema, splitPreviewSchema
+  validateBody, validateParams, guestSessionSchema, tableIdParamSchema, splitPreviewSchema,
+  declareClaimSchema
 } = require('../middleware/schemas');
 const { createGuestSession, destroyGuestSession, authenticateGuest } = require('../services/guest');
 const billItems = require('../services/billItems');
+const paymentClaims = require('../services/paymentClaims');
 const splitEngine = require('../services/splitEngine');
 const dto = require('../dto');
 const { logAudit, auditContext } = require('../services/audit');
@@ -161,6 +163,38 @@ router.get('/bill', authenticateGuest, async (req, res, next) => {
       restaurantId: req.guest.restaurantId, billId: bill.id
     });
     res.json(dto.guestBill(bill, items));
+  } catch (err) { next(err); }
+});
+
+/**
+ * "I paid by Pago Móvil, here is my reference."
+ *
+ * Creates a claim and settles nothing. The money moved between the diner's bank
+ * and the restaurant's without passing through Splite, so no API of ours can
+ * see it arrive -- the only honest thing this endpoint can do is carry the
+ * diner's word to a person who can check the bank app.
+ *
+ * `bills.amount_paid_ves` is untouched until that person confirms. A bill that
+ * showed itself as paid because somebody typed a number into a form would be
+ * worse than one that shows nothing, because the restaurant would stop asking.
+ *
+ * Takes no bill id, like every guest route: the table comes from the session.
+ */
+router.post('/bill/payment-claims', authenticateGuest, validateBody(declareClaimSchema), async (req, res, next) => {
+  try {
+    const bill = await openBillForGuest(req.guest);
+    const claim = await paymentClaims.declareClaim({
+      restaurantId: req.guest.restaurantId,
+      billId: bill.id,
+      amountVes: req.body.amountVes,
+      reference: req.body.reference,
+      phoneOrigin: req.body.phoneOrigin,
+      bankOrigin: req.body.bankOrigin,
+      payer: { type: 'GUEST', id: null },
+      meta: { ip: req.ip, userAgent: req.get('user-agent'), requestId: req.id }
+    });
+
+    res.status(201).json(dto.paymentClaim(claim));
   } catch (err) { next(err); }
 });
 
