@@ -1,5 +1,6 @@
 const Joi = require('joi');
 const { ApiError } = require('../errors');
+const { normaliseRif, hasRifShape } = require('../utils/rif');
 
 const uuid = Joi.string().uuid({ version: 'uuidv4' });
 
@@ -156,6 +157,56 @@ const listBillsQuerySchema = Joi.object({
 
 const MENU_CURRENCIES = ['VES', 'USD', 'EUR'];
 
+/**
+ * What the restaurant tells us about itself on the registration form.
+ *
+ * Every field is optional. These are qualifying questions, and a required
+ * qualifying question is a field somebody types "n/a" into -- which is worse
+ * than an absent one, because it looks like an answer. `notes` is the free box;
+ * the named fields exist so the common answers arrive as data rather than as
+ * prose somebody has to read.
+ */
+const signupProfileSchema = Joi.object({
+  tableCount: Joi.number().integer().min(1).max(1000),
+  staffCount: Joi.number().integer().min(1).max(2000),
+  // Whatever they run today: a POS name, "cuaderno", "Excel". Free text because
+  // an enum here would be a list of the systems we already thought of, and the
+  // interesting answers are the ones we did not.
+  posSystem: Joi.string().trim().max(120).allow(''),
+  monthlyCovers: Joi.number().integer().min(0).max(1000000),
+  notes: Joi.string().trim().max(2000).allow('')
+}).default({});
+
+const onboardingSignupSchema = Joi.object({
+  restaurantName: Joi.string().trim().min(2).max(120).required(),
+  // Accepted in any spelling -- J-12345678-9, j123456789 -- and normalised by
+  // the service before it is stored or compared. Validating the normalised
+  // shape here rather than the typed one keeps the form from rejecting a RIF
+  // over where somebody put the dashes.
+  rif: Joi.string().trim().max(20).custom((value, helpers) => {
+    const normalised = normaliseRif(value);
+    return hasRifShape(normalised) ? normalised : helpers.error('any.invalid');
+  }, 'RIF shape').required(),
+  email: Joi.string().email({ minDomainSegments: 2 }).max(254).lowercase().required(),
+  // The menu currency the restaurant quotes in. Changeable afterwards, but only
+  // while the menu is empty, so asking now saves a support conversation.
+  menuCurrency: Joi.string().valid(...MENU_CURRENCIES).default('VES'),
+  profile: signupProfileSchema
+});
+
+/**
+ * Verification, which is also where the password is set for the first time.
+ *
+ * Deliberately not collected at signup. A password submitted before the address
+ * is proven is a credential stored against an unverified row, and it makes the
+ * public endpoint run Argon2id -- 19 MiB per call by ARGON2_OPTIONS -- for
+ * anyone who can reach it.
+ */
+const onboardingVerifySchema = Joi.object({
+  token: Joi.string().trim().min(20).max(512).required(),
+  password: Joi.string().min(12).max(128).required()
+});
+
 // Basis points, so no float touches a rate. 1600 = 16%, 1000 = 10%.
 // Both optional, but at least one has to be present or the call does nothing.
 const menuChargesSchema = Joi.object({
@@ -226,6 +277,9 @@ module.exports = {
   loginSchema,
   refreshSchema,
   guestSessionSchema,
+  onboardingSignupSchema,
+  onboardingVerifySchema,
+  signupProfileSchema,
   splitPaymentSchema,
   minorUnits,
   positiveMinorUnits,

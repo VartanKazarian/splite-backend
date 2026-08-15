@@ -209,4 +209,8 @@ async function revokeAllSessionsForUser(userId) {
 }
 
 module.exports = {
-  currentUser, login, refresh, revokeSession, revokeAllSessionsForUser, hashPassword, ARGON2_OPTIONS };
+  // issueSession is exported for onboarding, which signs the owner in inside
+  // the same transaction that creates them -- so the refresh session it writes
+  // rolls back with the tenant if anything later in that transaction fails.
+  currentUser, login, refresh, revokeSession, revokeAllSessionsForUser, hashPassword, issueSession,
+  ARGON2_OPTIONS };

@@ -51,6 +51,11 @@ function secretValue(key) {
 const corsOrigins = (process.env.CORS_ORIGINS || 'http://localhost:5173')
   .split(',').map(v => v.trim()).filter(Boolean);
 
+// Read once here because assertProductionConfig and the exported object both
+// need them, and the guard runs before the export is consulted.
+const onboardingEnabled = boolean('ONBOARDING_ENABLED', false);
+const mailTransport = process.env.MAIL_TRANSPORT || 'log';
+
 /**
  * Everything a process that *serves traffic* must have before it accepts any.
  *
@@ -80,6 +85,23 @@ function assertProductionConfig() {
   }
   if (!process.env.CORS_ORIGINS) throw new Error('CORS_ORIGINS is required in production');
   if (corsOrigins.includes('*')) throw new Error('Wildcard CORS origin is not allowed in production');
+
+  // Scoped to the flag rather than asserted unconditionally, so that deploying
+  // self-service onboarding does not stop a running production API that has no
+  // mail provider configured yet. Turning ONBOARDING_ENABLED on is what makes
+  // these mandatory -- and it must, because a registration flow whose
+  // verification mail goes to a log file is a flow where nobody ever finishes
+  // registering.
+  if (!onboardingEnabled) return;
+
+  if (mailTransport === 'log') {
+    throw new Error('MAIL_TRANSPORT=log cannot be used in production with ONBOARDING_ENABLED=true');
+  }
+  if (!process.env.MAIL_FROM) throw new Error('MAIL_FROM is required when onboarding is enabled');
+  if (!process.env.APP_BASE_URL) throw new Error('APP_BASE_URL is required when onboarding is enabled');
+  if (mailTransport === 'resend' && !process.env.MAIL_API_KEY) {
+    throw new Error('MAIL_API_KEY is required for MAIL_TRANSPORT=resend');
+  }
 }
 
 module.exports = {
@@ -105,6 +127,29 @@ module.exports = {
   webhookToleranceSeconds: integer('WEBHOOK_TOLERANCE_SECONDS', 300),
   guest: {
     sessionTtlSeconds: integer('GUEST_SESSION_TTL_SECONDS', 60 * 60 * 2)
+  },
+  mail: {
+    transport: mailTransport,
+    from: process.env.MAIL_FROM || 'Splite <onboarding@localhost>',
+    // Not in SECRET_ENV: that set is the signing secrets, which are required in
+    // production, must be 32+ characters and must all differ from each other.
+    // A provider's API key satisfies none of those rules and would fail the
+    // start-up guard for a service that may not use mail at all.
+    apiKey: process.env.MAIL_API_KEY || null,
+    timeoutMs: integer('MAIL_TIMEOUT_MS', 10000)
+  },
+  onboarding: {
+    // Off by default. The routes are only mounted when this is on, so the
+    // public registration surface does not exist until somebody deliberately
+    // turns it on with a mail provider behind it.
+    enabled: onboardingEnabled,
+    // Long enough to survive a spam folder and a night's sleep; short enough
+    // that a link forwarded or logged somewhere stops working.
+    tokenTtlSeconds: integer('ONBOARDING_TOKEN_TTL_SECONDS', 60 * 60 * 48),
+    trialDays: integer('TRIAL_DAYS', 30),
+    // Where the verification link points -- the frontend, not this API. The
+    // page there reads the token and posts it back to /onboarding/verify.
+    appBaseUrl: (process.env.APP_BASE_URL || 'http://localhost:5173').replace(/\/+$/, '')
   },
   db: {
     connectionString: process.env.DATABASE_URL,

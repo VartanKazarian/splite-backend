@@ -270,6 +270,41 @@ function menuCharges(row) {
   };
 }
 
+/**
+ * The restaurant's own record, including what it is paying for.
+ *
+ * `trialDaysRemaining` is computed here rather than left to the client: a
+ * browser subtracting dates does it in the visitor's timezone with the
+ * visitor's clock, which is how a trial reads as expired a day early for
+ * somebody whose laptop is set wrong. The server owns the arithmetic and the
+ * client renders the number.
+ *
+ * Negative is meaningful and is not clamped -- "expired 3 days ago" is a
+ * different message from "expires today", and flattening both to 0 would make
+ * them indistinguishable.
+ */
+function account(row) {
+  const trialEndsAt = row.trial_ends_at ? new Date(row.trial_ends_at) : null;
+  const msPerDay = 24 * 60 * 60 * 1000;
+
+  return {
+    id: row.id,
+    name: row.name,
+    rif: row.rif ?? null,
+    menuCurrency: row.menu_currency,
+    vatBps: row.vat_bps,
+    serviceChargeBps: row.service_charge_bps,
+    plan: {
+      tier: row.plan_tier,
+      trialEndsAt: isoTimestamp(row.trial_ends_at),
+      trialDaysRemaining: trialEndsAt
+        ? Math.ceil((trialEndsAt.getTime() - Date.now()) / msPerDay)
+        : null
+    },
+    createdAt: isoTimestamp(row.created_at)
+  };
+}
+
 function menuSettings(row) {
   return {
     id: row.id,
@@ -281,5 +316,5 @@ function menuSettings(row) {
 module.exports = {
   isoDate, isoTimestamp,
   bill, billItem, billWithItems, guestBill,
-  table, floorTable, product, publicProduct, menuSettings, menuCharges
+  table, floorTable, product, publicProduct, menuSettings, menuCharges, account
 };

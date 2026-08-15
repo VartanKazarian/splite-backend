@@ -20,6 +20,8 @@ const billRoutes = require('./routes/bills');
 const exchangeRateRoutes = require('./routes/exchangeRate');
 const menuRoutes = require('./routes/menu');
 const tableRoutes = require('./routes/tables');
+const onboardingRoutes = require('./routes/onboarding');
+const accountRoutes = require('./routes/account');
 
 const app = express();
 
@@ -142,6 +144,17 @@ app.use('/api/v1/exchange-rate', exchangeRateRoutes);
 // The public menu endpoint inside this router is intentionally unauthenticated,
 // so it relies on the app-level limiter above.
 app.use('/api/v1/menu', menuRoutes);
+app.use('/api/v1/account', accountRoutes);
+
+// Mounted only when self-service registration is switched on. The route is the
+// one public write surface that creates tenants and sends mail, so its absence
+// is the default state rather than something that has to be remembered: a
+// deployment without a mail provider configured simply does not serve it, and
+// config.assertProductionConfig refuses to start if the flag is on without one.
+// Its limiters live in the router, keyed per source address and per recipient.
+if (config.onboarding.enabled) {
+  app.use('/api/v1/onboarding', onboardingRoutes);
+}
 
 app.use((req, res, next) => next(new ApiError('NOT_FOUND', 'Not found')));
 app.use(errorHandler);

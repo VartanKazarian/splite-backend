@@ -43,6 +43,11 @@ const CODES = {
   INVALID_CREDENTIALS: 401,
   GUEST_SESSION_MISSING: 401,
   GUEST_SESSION_INVALID: 401,
+  // One code for "no such token", "already used" and "expired" on purpose. A
+  // caller holding a verification link has no legitimate use for the
+  // difference, and distinguishing them turns the endpoint into an oracle for
+  // which links exist.
+  ONBOARDING_TOKEN_INVALID: 401,
   QR_INVALID: 401,
   WEBHOOK_SIGNATURE_MISSING: 401,
   WEBHOOK_SIGNATURE_INVALID: 401,
@@ -81,6 +86,11 @@ const CODES = {
   PRODUCT_NAME_TAKEN: 409,
   MENU_CURRENCY_MISMATCH: 409,
   WEBHOOK_ALREADY_PROCESSED: 409,
+  // Raised only when a *verified* signup loses a race to an identical one --
+  // never by the public registration endpoint, which must not reveal whether an
+  // address or a tax id is already on file. See src/services/onboarding.js.
+  EMAIL_ALREADY_REGISTERED: 409,
+  RIF_ALREADY_REGISTERED: 409,
 
   // 429 / 503 -- try again, and the caller can tell whether it is their fault.
   RATE_LIMITED: 429,

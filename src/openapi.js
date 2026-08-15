@@ -762,6 +762,94 @@ const schemas = {
   }
 };
 
+const SignupProfile = {
+  type: 'object',
+  description:
+    'What the restaurant says about itself. Every field is optional — a required qualifying question is one people type "n/a" into, which looks like an answer and is not. Nothing operational reads this.',
+  properties: {
+    tableCount: { type: 'integer', minimum: 1, maximum: 1000, description: 'How many tables the dining room has.' },
+    staffCount: { type: 'integer', minimum: 1, maximum: 2000 },
+    posSystem: {
+      type: 'string', maxLength: 120,
+      description: 'Whatever they run today — a POS name, "Excel", "cuaderno". Free text on purpose: an enum would only list the systems we already thought of.'
+    },
+    monthlyCovers: { type: 'integer', minimum: 0, maximum: 1000000 },
+    notes: { type: 'string', maxLength: 2000, description: 'The free box.' }
+  }
+};
+
+const onboardingSchemas = {
+  SignupProfile,
+
+  SignupRequest: {
+    type: 'object',
+    required: ['restaurantName', 'rif', 'email'],
+    properties: {
+      restaurantName: { type: 'string', minLength: 2, maxLength: 120 },
+      rif: {
+        type: 'string',
+        description:
+          'Venezuelan tax id. Accepted in any spelling — `J-12345678-9`, `j123456789` — and normalised to letter + 9 digits before it is stored or compared. The mod-11 check digit is computed and recorded but **not** enforced: turning away a real restaurant at the registration form is a worse failure than storing one malformed tax id.',
+        examples: ['J-12345678-4']
+      },
+      email: { type: 'string', format: 'email', maxLength: 254, description: "The owner's address. No password is collected here." },
+      menuCurrency: { type: 'string', enum: ['VES', 'USD', 'EUR'], default: 'VES' },
+      profile: ref('SignupProfile')
+    }
+  },
+
+  SignupAccepted: {
+    type: 'object',
+    description:
+      'Identical whether or not the address was already registered. Anything else would make this endpoint an account-enumeration oracle, which is the exact thing /auth/login goes to the trouble of a decoy password hash to avoid.',
+    properties: {
+      status: { type: 'string', enum: ['PENDING_VERIFICATION'] },
+      email: { type: 'string', format: 'email' }
+    }
+  },
+
+  VerifyRequest: {
+    type: 'object',
+    required: ['token', 'password'],
+    properties: {
+      token: { type: 'string', description: 'From the emailed link. Single use, and expires.' },
+      password: {
+        type: 'string', minLength: 12, maxLength: 128,
+        description: 'Set here rather than at signup, so no credential is stored against an unverified address and the public endpoint never runs Argon2id.'
+      }
+    }
+  },
+
+  Plan: {
+    type: 'object',
+    description: 'What the restaurant is paying for. Nothing is refused when a trial lapses — see GET /api/v1/account.',
+    properties: {
+      tier: { type: 'string', enum: ['TRIAL', 'STARTER', 'PRO', 'ENTERPRISE'] },
+      trialEndsAt: { type: ['string', 'null'], format: 'date-time' },
+      trialDaysRemaining: {
+        type: ['integer', 'null'],
+        description: 'Computed server-side, and negative once past. A browser doing this subtraction uses the visitor\'s clock and timezone, which reads as expired a day early for anyone whose laptop is set wrong.'
+      }
+    }
+  },
+
+  Account: {
+    type: 'object',
+    properties: {
+      id: { type: 'string', format: 'uuid' },
+      name: { type: 'string' },
+      rif: { type: ['string', 'null'], description: 'Null for restaurants that predate self-service registration.' },
+      menuCurrency: { type: 'string', enum: ['VES', 'USD', 'EUR'] },
+      vatBps: { type: 'integer' },
+      serviceChargeBps: { type: 'integer' },
+      plan: ref('Plan'),
+      createdAt: { type: 'string', format: 'date-time' }
+    }
+  }
+};
+
+Object.assign(schemas, onboardingSchemas);
+
 const responses = {
   BadRequest: {
     description: 'Validation failed, or the body contradicts the path.',
@@ -842,6 +930,88 @@ const parameters = {
 };
 
 const staff = [{ staffAuth: [] }];
+
+const onboardingPaths = {
+  '/api/v1/onboarding/restaurants': {
+    post: {
+      tags: ['Onboarding'],
+      summary: 'Register a restaurant',
+      operationId: 'requestSignup',
+      description: [
+        'Public. Creates **nothing** — it records the intent and emails a verification link.',
+        '',
+        'The tenant is created only by `POST /api/v1/onboarding/verify`, and that ordering is a',
+        'security property rather than a UX preference: staff email is globally unique, so an',
+        'unverified insert into `users` would let anyone permanently claim an address they cannot',
+        'read, locking the real owner out of ever registering.',
+        '',
+        'Returns the same 202 whether or not the address or RIF is already registered. Anything',
+        'else would make this an account-enumeration oracle. Someone whose address is already',
+        'on file is told so by email, where only they can read it.',
+        '',
+        'Rate limited to 5/hour per source address **and** 3/hour per recipient, both fail-closed.',
+        'The per-recipient limit is the one that matters: this endpoint sends mail to an address the',
+        'caller chooses, so a distributed caller stays under any per-IP budget while filling one',
+        "person's inbox."
+      ].join('\n'),
+      security: [],
+      requestBody: { required: true, content: { 'application/json': { schema: ref('SignupRequest') } } },
+      responses: {
+        202: {
+          description: 'Accepted. A verification email is on its way; no account exists yet.',
+          content: { 'application/json': { schema: ref('SignupAccepted') } }
+        },
+        400: response('BadRequest'),
+        429: response('TooManyRequests'),
+        500: response('ServerError'),
+        503: response('ServiceUnavailable')
+      }
+    }
+  },
+
+  '/api/v1/onboarding/verify': {
+    post: {
+      tags: ['Onboarding'],
+      summary: 'Consume the link, create the restaurant, sign the owner in',
+      operationId: 'verifySignup',
+      description: [
+        'Public, but requires a token that was delivered by email.',
+        '',
+        'Creates the restaurant, its OWNER user and the menu defaults (IVA 1600 bps, servicio',
+        '1000 bps) in **one transaction**, then issues a session — the address is proven and the',
+        'password was chosen in this same request, so a login screen here would only ask for what',
+        'was just typed.',
+        '',
+        'The link is single-use and expiring. `ONBOARDING_TOKEN_INVALID` covers absent, spent and',
+        'expired alike: a caller has no legitimate use for the difference, and separating them would',
+        'reveal which links exist.'
+      ].join('\n'),
+      security: [],
+      requestBody: { required: true, content: { 'application/json': { schema: ref('VerifyRequest') } } },
+      responses: {
+        201: {
+          description: 'Restaurant created and signed in.',
+          content: {
+            'application/json': {
+              schema: {
+                allOf: [
+                  ref('Session'),
+                  { type: 'object', properties: { restaurant: ref('Account') } }
+                ]
+              }
+            }
+          }
+        },
+        400: response('BadRequest'),
+        401: response('Unauthorized'),
+        409: response('Conflict'),
+        429: response('TooManyRequests'),
+        500: response('ServerError'),
+        503: response('ServiceUnavailable')
+      }
+    }
+  }
+};
 
 const paths = {
   '/health/live': {
@@ -1633,7 +1803,41 @@ const paths = {
         404: response('NotFound')
       }
     }
-  }
+  },
+
+  '/api/v1/account': {
+    get: {
+      tags: ['Account'],
+      summary: "The signed-in restaurant's own record and plan",
+      operationId: 'getAccount',
+      description: [
+        'Any authenticated staff role.',
+        '',
+        'The source of the trial banner. Note what it does **not** do: nothing in the API refuses',
+        'service when a trial lapses. Which action a lapsed restaurant loses is a pricing decision,',
+        'and the obvious candidate is the wrong one — cutting off bills mid-service strands a dining',
+        'room full of seated diners over an unpaid invoice. Until that is decided deliberately, the',
+        'dates are reported and the client warns.'
+      ].join('\n'),
+      security: staff,
+      responses: {
+        200: { description: 'The restaurant and its plan.', content: { 'application/json': { schema: ref('Account') } } },
+        ...commonErrors,
+        404: response('NotFound')
+      }
+    }
+  },
+
+  /**
+   * Registration is described only when it is served.
+   *
+   * The routes are mounted behind config.onboarding.enabled, and the drift test
+   * asserts the contract and the app agree *in both directions*. Documenting
+   * these unconditionally would therefore promise endpoints that a deployment
+   * with the flag off does not answer — which is precisely the failure that test
+   * exists to catch, and it would be this file telling the lie.
+   */
+  ...(config.onboarding.enabled ? onboardingPaths : {})
 };
 
 const document = {
@@ -1686,7 +1890,13 @@ const document = {
     { name: 'Bills' },
     { name: 'Payments' },
     { name: 'Menu' },
-    { name: 'Exchange rate' }
+    { name: 'Exchange rate' },
+    { name: 'Account' },
+    // Listed unconditionally even though its operations are only described when
+    // ONBOARDING_ENABLED is on: a tag with no operations reads as a feature that
+    // exists and is switched off, which is true, whereas a tag that appears and
+    // disappears reads as two different APIs.
+    { name: 'Onboarding' }
   ],
   security: staff,
   components: {

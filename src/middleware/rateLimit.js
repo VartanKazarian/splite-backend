@@ -8,10 +8,24 @@ const { ApiError } = require('../errors');
  * failClosed: when Redis is unavailable, reject instead of allowing through.
  * Use it on authentication endpoints, where failing open would silently
  * remove brute-force protection during a cache outage.
+ *
+ * identify: what to count per. The default -- the authenticated user, else the
+ * source address -- is the right bucket for almost everything, but not for an
+ * endpoint that mails a third party: an attacker spreading requests over many
+ * addresses stays under a per-IP limit while every one of those requests lands
+ * in the same victim's inbox. Such an endpoint counts per recipient as well,
+ * which needs a key taken from the body rather than from the connection.
+ *
+ * Returning null from identify skips the check, so a limiter keyed on a field
+ * that validation has not accepted yet cannot reject the request before the
+ * schema gets to explain what was wrong with it.
  */
-function rateLimit({ windowSeconds = 60, max = 60, keyPrefix = 'rl', failClosed = false } = {}) {
+function rateLimit({
+  windowSeconds = 60, max = 60, keyPrefix = 'rl', failClosed = false, identify
+} = {}) {
   return async (req, res, next) => {
-    const identity = req.user?.sub || req.ip || 'unknown';
+    const identity = identify ? identify(req) : (req.user?.sub || req.ip || 'unknown');
+    if (identity == null) return next();
     const key = `${keyPrefix}:${identity}`;
     try {
       // INCR and TTL in one round trip. Reading the TTL back (rather than
