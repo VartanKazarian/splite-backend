@@ -3,6 +3,7 @@ const assert = require('node:assert/strict');
 
 const app = require('../src/app');
 const { document } = require('../src/openapi');
+const config = require('../src/config');
 
 /**
  * The spec is treated as a contract, so these tests fail when it and the app
@@ -48,6 +49,31 @@ function documentedRoutes() {
 /** Documentation-only routes, which exist to describe the contract itself. */
 const NOT_API_SURFACE = ['GET /openapi.json', 'GET /docs', 'GET /docs/{0}'];
 
+/**
+ * Operations the document always describes but a deployment may not serve.
+ *
+ * `openapi.json` is committed and CI compares it byte for byte, so the document
+ * cannot depend on which flags happen to be set when it is serialised -- that
+ * makes the artifact a function of somebody's `.env` and produces a CI failure
+ * nobody can fix without knowing which flag was on. The contract is therefore
+ * the whole surface, and this is where the test learns that some of it is
+ * conditional.
+ *
+ * Read from the document rather than listed by hand, so marking a new operation
+ * with `x-feature-flag` is all it takes.
+ */
+function flagGated() {
+  const enabled = { ONBOARDING_ENABLED: config.onboarding.enabled };
+  const gated = [];
+  for (const [path, item] of Object.entries(document.paths)) {
+    for (const [method, op] of Object.entries(item)) {
+      if (!HTTP_METHODS.includes(method) || !op['x-feature-flag']) continue;
+      if (enabled[op['x-feature-flag']] !== true) gated.push(`${method.toUpperCase()} ${path}`);
+    }
+  }
+  return gated;
+}
+
 const operations = () =>
   Object.entries(document.paths).flatMap(([path, item]) =>
     Object.entries(item)
@@ -65,7 +91,10 @@ test('every mounted route is described', () => {
 
 test('every described route is mounted', () => {
   const mounted = mountedRoutes();
-  const phantom = documentedRoutes().filter(r => !mounted.includes(r));
+  const gated = flagGated();
+  const phantom = documentedRoutes()
+    .filter(r => !gated.includes(r))
+    .filter(r => !mounted.includes(r));
 
   // This is the direction that caught the unmounted tables router.
   assert.deepEqual(phantom, [], 'the contract promises routes the app does not serve');
@@ -353,5 +382,16 @@ test('the document has the structure an OpenAPI 3.1 consumer expects', () => {
       const isRef = Boolean(res.$ref);
       assert.ok(isRef || res.description, `${name} ${status} has neither $ref nor description`);
     }
+  }
+});
+
+test('a flag-gated operation is served exactly when its flag is on', () => {
+  // The other direction: with the flag ON these must actually be mounted, so
+  // exempting them above can never quietly hide a route that was documented and
+  // never wired up.
+  if (!config.onboarding.enabled) return;
+  const mounted = mountedRoutes();
+  for (const route of ['POST /api/v1/onboarding/restaurants', 'POST /api/v1/onboarding/verify']) {
+    assert.ok(mounted.includes(route), `${route} is documented and ONBOARDING_ENABLED is on, but it is not mounted`);
   }
 });

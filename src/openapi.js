@@ -1006,6 +1006,7 @@ const onboardingPaths = {
       tags: ['Onboarding'],
       summary: 'Submit a restaurant for review',
       operationId: 'submitLead',
+      'x-feature-flag': 'ONBOARDING_ENABLED',
       description: [
         'Public. Creates **no tenant and no account.** It records the submission and emails the',
         'Splite onboarding team, who read it and telephone the restaurant. The applicant gets an',
@@ -1047,6 +1048,7 @@ const onboardingPaths = {
       tags: ['Onboarding'],
       summary: 'Consume the link, create the restaurant, sign the owner in',
       operationId: 'verifySignup',
+      'x-feature-flag': 'ONBOARDING_ENABLED',
       description: [
         'Public, but requires a token that the Splite team sent by email after approving the',
         'submission. Nothing mints that token except `npm run onboarding -- invite <id>`.',
@@ -2077,15 +2079,23 @@ const paths = {
   },
 
   /**
-   * Registration is described only when it is served.
+   * Registration is described always, and served behind ONBOARDING_ENABLED.
    *
-   * The routes are mounted behind config.onboarding.enabled, and the drift test
-   * asserts the contract and the app agree *in both directions*. Documenting
-   * these unconditionally would therefore promise endpoints that a deployment
-   * with the flag off does not answer — which is precisely the failure that test
-   * exists to catch, and it would be this file telling the lie.
+   * These were once spread in conditionally, so that the contract described
+   * exactly what a given deployment answers. That was wrong for one decisive
+   * reason: `openapi.json` is a *committed artifact*, and CI checks it byte for
+   * byte with no `.env` present. A developer with the flag on in their `.env`
+   * regenerates the file with these paths included, commits it, and every
+   * subsequent CI run fails `openapi:check` on a file nobody can fix without
+   * knowing about the flag.
+   *
+   * A published contract has to be a function of the code, not of the
+   * environment that happened to serialise it. So the document is the whole
+   * surface, `x-feature-flag` says which endpoints a deployment may not be
+   * serving, and `test/openapi.test.js` knows to exempt them when the flag is
+   * off.
    */
-  ...(config.onboarding.enabled ? onboardingPaths : {})
+  ...onboardingPaths
 };
 
 const document = {
