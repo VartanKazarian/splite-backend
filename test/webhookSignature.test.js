@@ -47,9 +47,13 @@ test('the signature covers the raw bytes, not the parsed object', () => {
   // and have different signatures, so a re-serialising implementation accepts
   // a body it never authenticated.
   const timestamp = now();
-  const received = '{"status":"SUCCEEDED","id":"abc"}';
+  // Spaced the way a provider that pretty-prints its payloads sends it. Key
+  // *order* survives a JSON round trip, so reordering keys would not have
+  // demonstrated anything -- whitespace is the difference that actually occurs
+  // and that a re-serialising verifier destroys.
+  const received = '{"status": "SUCCEEDED", "id": "abc"}';
   const reserialised = JSON.stringify(JSON.parse(received));
-  assert.notEqual(received, reserialised, 'key order must actually differ for this test to mean anything');
+  assert.notEqual(received, reserialised, 'the two forms must differ for this test to mean anything');
 
   const req = fakeRequest({
     body: JSON.parse(received),

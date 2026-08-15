@@ -18,12 +18,19 @@ function stubBill(bill) {
       statements.push(text.trim().split('\n')[0].trim());
 
       if (/^INSERT INTO payments/i.test(text.trim())) {
-        const row = {
-          id: `payment-${statements.payments.length + 1}`,
-          restaurant_id: params[0], bill_id: params[1],
-          amount_ves: params[2], status: params[3], payment_method: params[4],
-          idempotency_key: params[7], payer_type: params[8], payer_id: params[9]
-        };
+        // The column list is read out of the statement rather than mirrored by
+        // hand. The hand-written version mapped params by position, so adding a
+        // column to the INSERT silently shifted every field after it: the day
+        // `declared_reference` landed between provider_payment_id and
+        // idempotency_key, this stub started reporting the wrong value for
+        // idempotency_key and the failure pointed at the payment path rather
+        // than at the stub. A test fixture that models a statement by index
+        // fails for reasons that have nothing to do with what it is testing.
+        const columns = /\(([^)]*)\)\s*VALUES/i.exec(text)[1]
+          .split(',').map(c => c.trim()).filter(Boolean);
+        const row = { id: `payment-${statements.payments.length + 1}` };
+        columns.forEach((column, i) => { row[column] = params[i]; });
+
         statements.payments.push(row);
         return { rows: [row] };
       }
