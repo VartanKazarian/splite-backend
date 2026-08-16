@@ -1,4 +1,5 @@
 const { usdReference } = require('./services/split');
+const banks = require('./payments/banks');
 
 /**
  * The boundary between the database and the wire.
@@ -324,6 +325,44 @@ function menuCharges(row) {
  * different message from "expires today", and flattening both to 0 would make
  * them indistinguishable.
  */
+/**
+ * Where the restaurant is paid, as staff configure it.
+ *
+ * The account number is here and deliberately not in `guestPayee` below.
+ */
+function payout(row) {
+  if (!row.payout_bank_code) return null;
+  const bank = banks.lookup(row.payout_bank_code);
+  return {
+    bankCode: row.payout_bank_code,
+    bankName: bank?.name ?? null,
+    // Whether a payment can actually be raised through this bank, as opposed to
+    // the diner being told where to send one by hand. Nothing has a module yet.
+    chargeable: banks.hasIntegration(row.payout_bank_code),
+    accountNumber: row.payout_account_number,
+    phone: row.payout_phone,
+    holderId: row.payout_holder_id
+  };
+}
+
+/**
+ * The same details, as a diner needs them.
+ *
+ * A Pago Móvil is addressed by bank, phone and identity document. It does not
+ * need the account number, so the account number is not sent -- publishing a
+ * restaurant's account to anyone who scans a sticker on a table should be a
+ * decision somebody makes, not a side effect of reusing a mapper.
+ */
+function guestPayee(row) {
+  if (!row.payout_bank_code) return null;
+  return {
+    bankCode: row.payout_bank_code,
+    bankName: banks.lookup(row.payout_bank_code)?.name ?? null,
+    phone: row.payout_phone,
+    holderId: row.payout_holder_id
+  };
+}
+
 function account(row) {
   const trialEndsAt = row.trial_ends_at ? new Date(row.trial_ends_at) : null;
   const msPerDay = 24 * 60 * 60 * 1000;
@@ -335,6 +374,7 @@ function account(row) {
     menuCurrency: row.menu_currency,
     vatBps: row.vat_bps,
     serviceChargeBps: row.service_charge_bps,
+    payout: payout(row),
     plan: {
       tier: row.plan_tier,
       trialEndsAt: isoTimestamp(row.trial_ends_at),
@@ -357,5 +397,5 @@ function menuSettings(row) {
 module.exports = {
   isoDate, isoTimestamp,
   bill, billItem, billWithItems, guestBill,
-  table, floorTable, product, publicProduct, menuSettings, menuCharges, account, paymentClaim, staffPaymentClaim
+  table, floorTable, product, publicProduct, menuSettings, menuCharges, account, payout, guestPayee, paymentClaim, staffPaymentClaim
 };

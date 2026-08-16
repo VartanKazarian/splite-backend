@@ -422,6 +422,63 @@ an existing total.
 A voluntary tip is deliberately not modelled here. It is untaxed and chosen by
 the payer rather than the restaurant, so it belongs with the payment.
 
+## Where the money goes
+
+Splite never holds it. A Pago Móvil goes from the diner's account to the
+restaurant's, so the payee is not administrative trivia — without it the bill
+screen shows what is owed and offers no way to pay it.
+
+```
+PUT /api/v1/account/payout      bankCode, accountNumber, phone, holderId
+GET /api/v1/account/banks       the picker, with integration status
+```
+
+OWNER and MANAGER only. This is the address money is sent to: getting it wrong
+does not degrade the product, it pays a stranger.
+
+Four fields together or none, enforced in the schema *and* by a CHECK. A
+half-filled payee looks configured on screen and cannot receive money, and that
+failure lands on a diner holding a phone rather than on whoever filled in the
+form. `{}` clears it.
+
+A Venezuelan account number begins with its own four-digit bank code, so
+`accountNumber` and `bankCode` are one fact typed twice and are checked against
+each other — which catches the right account entered under the wrong bank in the
+picker, an error that would otherwise surface as a payment that never arrives.
+
+`holderId` is recorded rather than taken from `restaurants.rif`: plenty of small
+restaurants bank on the owner's cédula.
+
+**The diner is not shown the account number.** A Pago Móvil is addressed by
+bank, phone and identity document; the account number adds nothing to it, and
+anyone who scans a sticker on a table reaches the guest surface. `dto.payout`
+and `dto.guestPayee` are separate mappers for that one reason.
+
+### Banks are not one integration
+
+`src/payments/banks.js` is the registry, and `integration` on each entry is the
+honest part: `null` means we have no module for that bank. **Every entry is null
+today.** A restaurant may name any bank — that is where diners send money
+whether or not we have an API — but only a bank with a module can take part in
+an in-app payment, and `chargeable` on the API says which is which.
+
+There is no such thing as "the bank API" here. Each bank exposes its own, with
+its own credentials, its own field encryption, and its own idea of what a
+payment reference is. Mercantil's C2P, for instance, takes a merchant id, client
+id, secret key, integrator id and terminal id — **one set per restaurant** — and
+encrypts the identity document, both phone numbers and the payment key with
+AES-128-ECB before sending. That is one integration. Banesco is another.
+
+> The bank list is written from memory and **unverified against Sudeban's
+> register**. The codes are load-bearing — a wrong one sends a diner's money to
+> another institution — so confirm every entry before production.
+
+Deliberately not in migration 017: the bank API credentials. Those belong in
+their own table, encrypted at rest, never returned by any endpoint. Every field
+in `payout` is readable by design and some of it by anyone with a table QR;
+putting a secret key in a column beside them is how a careless `SELECT`
+publishes it.
+
 ## Getting paid
 
 Three ways money reaches a bill, and they all settle through **one** function —

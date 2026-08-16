@@ -189,13 +189,32 @@ async function openBillForGuest(guest) {
   return rows[0];
 }
 
+/**
+ * Who the diner is actually paying.
+ *
+ * Splite never holds the money -- a Pago Móvil goes from the diner's account to
+ * the restaurant's -- so without this the bill screen can show what is owed and
+ * offer no way to pay it. Bank, phone and identity document, which is what
+ * addressing a Pago Móvil takes; the account number stays behind the staff
+ * surface.
+ */
+async function payeeForGuest(guest) {
+  const { rows } = await db.query(
+    `SELECT payout_bank_code, payout_phone, payout_holder_id
+       FROM restaurants WHERE id = $1`,
+    [guest.restaurantId]
+  );
+  return rows[0] ? dto.guestPayee(rows[0]) : null;
+}
+
 router.get('/bill', authenticateGuest, perSession, async (req, res, next) => {
   try {
     const bill = await openBillForGuest(req.guest);
-    const items = await billItems.listForBill({
-      restaurantId: req.guest.restaurantId, billId: bill.id
-    });
-    res.json(dto.guestBill(bill, items));
+    const [items, payee] = await Promise.all([
+      billItems.listForBill({ restaurantId: req.guest.restaurantId, billId: bill.id }),
+      payeeForGuest(req.guest)
+    ]);
+    res.json({ ...dto.guestBill(bill, items), payee });
   } catch (err) { next(err); }
 });
 

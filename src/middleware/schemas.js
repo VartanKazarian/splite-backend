@@ -1,4 +1,5 @@
 const Joi = require('joi');
+const banks = require('../payments/banks');
 const { ApiError } = require('../errors');
 const { normaliseRif, hasRifShape } = require('../utils/rif');
 
@@ -172,6 +173,40 @@ const webhookProviderParamSchema = Joi.object({
   provider: Joi.string().trim().min(2).max(40).pattern(/^[A-Za-z0-9_-]+$/).required()
 });
 
+/**
+ * Where a restaurant is paid.
+ *
+ * All four together or none, matching the database constraint: a half-filled
+ * payee looks configured on screen and cannot receive money, and that failure
+ * lands on a diner holding a phone rather than on whoever filled the form in.
+ */
+const payoutSchema = Joi.object({
+  bankCode: Joi.string().trim().pattern(/^[0-9]{4}$/)
+    .valid(...banks.CODES)
+    .messages({ 'any.only': 'bankCode must be a known Venezuelan bank code' }),
+  accountNumber: Joi.string().trim().pattern(/^[0-9]{20}$/),
+  // The phone the Pago Móvil is registered to. Same loose validation as the
+  // onboarding form, and for the same reason -- one line gets written three
+  // ways -- but normalised to digits before storage so it can be compared.
+  phone: Joi.string().trim().min(7).max(20).pattern(/^[+()\-.\s\d]+$/),
+  // Cédula or RIF of the account holder. V/E/J/P/G then 6 to 9 digits, which
+  // covers both: a cédula is not a RIF and this field takes either.
+  holderId: Joi.string().trim().uppercase().pattern(/^[VEJPG][0-9]{6,9}$/)
+    .messages({ 'string.pattern.base': 'holderId must be a cédula or RIF, e.g. V12345678 or J123456789' })
+})
+  .and('bankCode', 'accountNumber', 'phone', 'holderId')
+  // Read once here so a wrong bank in the picker is caught at the door rather
+  // than by a CHECK, which would surface as a 500 with no useful field name.
+  .custom((value, helpers) => {
+    if (value.accountNumber && value.bankCode
+        && banks.bankOfAccount(value.accountNumber) !== value.bankCode) {
+      return helpers.message(
+        'accountNumber does not belong to that bank: a Venezuelan account number starts with its own four-digit bank code'
+      );
+    }
+    return value;
+  });
+
 const paginationKeys = {
   limit: Joi.number().integer().min(1).max(100).default(50),
   offset: Joi.number().integer().min(0).default(0)
@@ -335,6 +370,7 @@ module.exports = {
   onboardingVerifySchema,
   signupProfileSchema,
   splitPaymentSchema,
+  payoutSchema,
   declareClaimSchema,
   listClaimsQuerySchema,
   rejectClaimSchema,

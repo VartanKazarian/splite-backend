@@ -427,6 +427,10 @@ const schemas = {
       usdReference: ref('UsdReference'),
       itemCount: { type: 'integer' },
       items: { type: 'array', items: ref('BillItem') },
+      payee: {
+        oneOf: [ref('GuestPayee'), { type: 'null' }],
+        description: 'Who to pay. Null when the restaurant has not configured a payee, in which case the diner cannot pay from their phone at all — the bill can be read and not settled.'
+      },
       updatedAt: { type: 'string', format: 'date-time' }
     }
   },
@@ -848,6 +852,7 @@ const onboardingSchemas = {
       menuCurrency: { type: 'string', enum: ['VES', 'USD', 'EUR'] },
       vatBps: { type: 'integer' },
       serviceChargeBps: { type: 'integer' },
+      payout: { oneOf: [ref('Payout'), { type: 'null' }] },
       plan: ref('Plan'),
       createdAt: { type: 'string', format: 'date-time' }
     }
@@ -902,6 +907,50 @@ Object.assign(schemas, {
       },
       phoneOrigin: { type: 'string', description: 'Optional. Not proof, but it is how a movement is found quickly.' },
       bankOrigin: { type: 'string', description: 'Optional.' }
+    }
+  },
+
+  Payout: {
+    type: 'object',
+    description:
+      'Where the restaurant is paid. Splite never holds the money — a Pago Móvil goes from the diner\'s account to the restaurant\'s — so this is what a diner needs on screen in order to pay at all.',
+    properties: {
+      bankCode: { type: 'string', pattern: '^[0-9]{4}$', examples: ['0105'] },
+      bankName: { type: ['string', 'null'] },
+      chargeable: {
+        type: 'boolean',
+        description: 'Whether a payment can be raised through this bank in-app, as opposed to the diner being told where to send one. False for every bank today: naming a bank is not a claim that we integrate with it.'
+      },
+      accountNumber: { type: 'string', pattern: '^[0-9]{20}$' },
+      phone: { type: 'string', description: 'Digits only. The number the Pago Móvil is registered to.' },
+      holderId: { type: 'string', examples: ['J123456789'], description: 'Cédula or RIF the account is held under. Not assumed from the restaurant RIF — plenty of small places bank on the owner\'s cédula.' }
+    }
+  },
+
+  GuestPayee: {
+    type: 'object',
+    description:
+      'The same details as a diner needs them. **No account number**: a Pago Móvil is addressed by bank, phone and identity document, and publishing a restaurant\'s account to anyone who scans a sticker should be a decision rather than a side effect of reusing a mapper.',
+    properties: {
+      bankCode: { type: 'string' },
+      bankName: { type: ['string', 'null'] },
+      phone: { type: 'string' },
+      holderId: { type: 'string' }
+    }
+  },
+
+  PayoutRequest: {
+    type: 'object',
+    description:
+      'All four fields together, or an empty object to clear. A half-filled payee looks configured on screen and cannot receive money, and that failure lands on a diner holding a phone rather than on whoever filled the form in.',
+    properties: {
+      bankCode: { type: 'string', pattern: '^[0-9]{4}$' },
+      accountNumber: {
+        type: 'string', pattern: '^[0-9]{20}$',
+        description: 'Must begin with its own bank code — a Venezuelan account number carries it — so the two fields are checked against each other. Catches the right account entered under the wrong bank.'
+      },
+      phone: { type: 'string', description: 'Written any way; stored as digits.' },
+      holderId: { type: 'string', pattern: '^[VEJPG][0-9]{6,9}$' }
     }
   },
 
@@ -2068,6 +2117,77 @@ const paths = {
         429: response('TooManyRequests'),
         500: response('ServerError'),
         503: response('ServiceUnavailable')
+      }
+    }
+  },
+
+  '/api/v1/account/banks': {
+    get: {
+      tags: ['Account'],
+      summary: 'Venezuelan banks a payee can be configured against',
+      operationId: 'listBanks',
+      description: [
+        'Any authenticated staff role.',
+        '',
+        'Read `chargeable` rather than assuming: a restaurant may name any bank, because that is',
+        'where diners send money whether or not we integrate with it, but only a bank with a module',
+        'can take part in an in-app payment. Nothing is chargeable today.',
+        '',
+        '**The list is unverified against Sudeban\'s register.** The codes are load-bearing — a wrong',
+        'one sends money to another institution — and it must be confirmed before production.'
+      ].join('\n'),
+      security: staff,
+      responses: {
+        200: {
+          description: 'Banks, ordered by name.',
+          content: {
+            'application/json': {
+              schema: {
+                type: 'object',
+                properties: {
+                  data: {
+                    type: 'array',
+                    items: {
+                      type: 'object',
+                      properties: {
+                        code: { type: 'string' },
+                        name: { type: 'string' },
+                        chargeable: { type: 'boolean' }
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          }
+        },
+        ...commonErrors
+      }
+    }
+  },
+
+  '/api/v1/account/payout': {
+    put: {
+      tags: ['Account'],
+      summary: 'Set or clear where the restaurant is paid',
+      operationId: 'setPayout',
+      'x-required-roles': ['OWNER', 'MANAGER'],
+      description: [
+        'Roles: OWNER, MANAGER. This is the address money is sent to — getting it wrong does not',
+        'degrade the product, it pays a stranger — so it is not a change a waiter makes from the',
+        'floor.',
+        '',
+        'Send all four fields, or `{}` to clear. The account number must begin with its own bank',
+        'code, which is checked here rather than left to a database CHECK so the error names the',
+        'field.'
+      ].join('\n'),
+      security: staff,
+      requestBody: { required: true, content: { 'application/json': { schema: ref('PayoutRequest') } } },
+      responses: {
+        200: { description: 'The account, with its payee.', content: { 'application/json': { schema: ref('Account') } } },
+        ...commonErrors,
+        403: response('Forbidden'),
+        404: response('NotFound')
       }
     }
   },
