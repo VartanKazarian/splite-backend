@@ -383,6 +383,45 @@ omitted status check settles a bill that was voided an hour ago.
 | `POST /api/v1/guest/bill/payment-claims` → `confirm` | the diner | a person with the bank app open |
 | `POST /api/v1/webhooks/:provider` | the provider | an HMAC signature |
 
+### How a payment reaches a table
+
+`payments` carries `restaurant_id` and `bill_id`, and **no `table_id`**. The
+table is reached through the bill, because a payment belongs to a bill and the
+bill is what sits on a table; a copy of `table_id` on the payment would be a
+second record of the same fact, and two records of one fact drift.
+
+```
+payments.restaurant_id ─────────────────→ restaurants.id
+payments.bill_id ───────────────────────→ bills.id
+                          bills.table_id ─┐
+                     bills.restaurant_id ─┴─→ tables (restaurant_id, id)
+```
+
+Both links are composite foreign keys, so a row cannot name one restaurant while
+pointing at another's record — `bills_table_same_restaurant_fk` (migration 004)
+and `payments_bill_same_restaurant_fk` with
+`payment_transitions_payment_same_restaurant_fk` (migration 016). Every write
+path already re-reads the bill under `WHERE id = $1 AND restaurant_id = $2`, but
+that is discipline in application code; these are the guarantee, and this is the
+table that holds money.
+
+Which restaurant and table a payment belongs to is never taken from the request
+body:
+
+| Path | Restaurant from | Table from |
+| --- | --- | --- |
+| Staff | `req.user.restaurantId`, in the JWT | the bill named in the URL |
+| Diner | the guest session | the guest session |
+| Webhook | the signed body, then re-checked against the payment row | the payment's bill |
+
+The diner's case is the strictest and worth stating plainly: **a guest never
+names a bill.** Their session comes from a signed QR carrying `tableId` and
+`restaurantId`, and the open bill is resolved with
+`WHERE restaurant_id = $1 AND table_id = $2 AND status = 'OPEN'`. There is no
+identifier to tamper with, and the partial unique index on
+`(restaurant_id, table_id) WHERE status = 'OPEN'` is what makes table → bill a
+function rather than a guess.
+
 ### Declared Pago Móvil
 
 Splite never touches this money — it goes from the diner's bank to the
