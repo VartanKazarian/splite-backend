@@ -124,7 +124,13 @@ app.use('/api/v1/auth', rateLimit({
   keyPrefix: 'auth',
   failClosed: config.rateLimit.failClosedOnAuth
 }), authRoutes);
-app.use('/api/v1/guest', rateLimit({ windowSeconds: 60, max: 30, keyPrefix: 'guest' }), guestRoutes);
+// A coarse backstop only, and deliberately generous. It runs before any guest
+// authentication, so it can key on nothing but the address -- and a whole
+// restaurant of diners arrives from one carrier NAT address. The tight,
+// meaningful limit is per session, applied inside the router once the session
+// has been verified; 30 a minute here was one shared bucket for every table in
+// the room, which throttled a busy Friday rather than an abuser.
+app.use('/api/v1/guest', rateLimit({ windowSeconds: 60, max: 240, keyPrefix: 'guest' }), guestRoutes);
 // bills and tables carry their own limiter, mounted after authentication so it
 // keys on the staff member rather than on a shared NAT address.
 app.use('/api/v1/bills', billRoutes);

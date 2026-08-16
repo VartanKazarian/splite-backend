@@ -553,8 +553,20 @@ Every delivery is recorded in `webhook_deliveries`, rejected ones included:
 repeated signature failures are how a leaked or rotated secret announces itself,
 and a body we threw away cannot be investigated.
 
+A delivery may only settle a payment recorded against **that same provider**.
+Without the check, `PENDING` was all that was being tested — and a Pago Móvil
+claim is `PENDING` with no provider at all, so a webhook naming its id settled
+it, silently performing the verification a member of staff exists to perform.
+
 Only the `SPLITE` provider exists today. A real acquirer is an entry in
-`PROVIDERS`, not an edit to anything around it. **Card payments are not built
+`PROVIDERS`, not an edit to anything around it.
+
+`WEBHOOK_SECRET` is one secret shared by every restaurant, which is a real limit
+rather than an oversight: whoever holds it can name any tenant's pending
+payment. The blast radius is bounded — the amount comes from our record, the
+payment must exist, be `PENDING`, and belong to the provider that signed — but
+rotation is all-or-nothing. Per-restaurant credentials are the fix and they wait
+on the acquirer, since there is nothing yet to hold credentials *for*. **Card payments are not built
 yet** — that needs an acquirer, and with one there is no matching problem at
 all: the acquirer answers authoritatively, so none of the reconciliation
 machinery above applies.
@@ -962,6 +974,37 @@ Deletes run in bounded batches. One statement removing a year of webhook
 deliveries holds locks and bloats WAL for as long as it takes; a loop of small
 deletes lets the table stay usable while it runs.
 
+## Rate limiting
+
+Three layers, and which one does the real work depends on whether the caller has
+been identified yet.
+
+| Where | Keys on | Why |
+| --- | --- | --- |
+| `/api/v1` | address | coarse backstop, mounted before any authentication |
+| `POST /guest/sessions` | address | nothing else exists yet — this is where a credential is created |
+| authenticated guest routes | guest session | mounted after `authenticateGuest` |
+| `/api/v1/bills` | staff subject | mounted after `authenticateToken` |
+| `/api/v1/auth` | address, **fail-closed** | the limiter is what stands between an attacker and a password |
+
+The distinction that matters: **a credential identifies a caller, an address
+identifies a network.** Diners are on phones behind carrier NAT, and diners on
+the venue WiFi share one address outright, so a per-IP limit on the guest
+surface throttles every table in the room at once — a busy Friday rather than an
+abuser. The guest limit was 30 a minute for the whole restaurant; it is now 60 a
+minute per session, with a generous address-level backstop behind it.
+
+Only `/auth` fails closed. There the limiter is the brute-force protection
+itself. Everywhere else it bounds volume, and refusing every diner in the
+building because Redis blinked would be choosing an outage over a rate limit.
+
+One trap worth knowing if you add another limiter here: the guest counter uses
+the prefix `guest:rl`, **not** `guest:session`, because the latter is where the
+sessions themselves are stored. Pointing a limiter at it makes the counter and
+the credential the same Redis key — `INCR` on a key holding JSON errors, the
+limiter reads that as its backend being unavailable and fails open, and the
+limit silently never applies.
+
 ## Open points
 
 Everything known to be incomplete, in rough priority order. Nothing here is a
@@ -1055,19 +1098,16 @@ From the working copy, onto the current model:
 
 ### Security and correctness
 
-- **The Redis refresh mirror is write-only.** `services/auth.js` writes
-  `refresh:<jti>` on login and deletes it on revocation, but nothing ever reads
-  it. The comment claims it makes revocation immediate without a database read;
-  it delivers none of that. Either wire it into verification or delete it.
-- **Reuse detection does not clear the mirrors it revokes.** The bulk revoke in
-  `refresh()` skips the Redis keys, unlike `revokeAllSessionsForUser`. Harmless
-  only while the mirror is unread.
+- **Access tokens cannot be revoked** within their 15-minute life — see below.
+  The Redis refresh mirror that claimed to solve this has been removed: nothing
+  read it, and nothing usefully could, since the access token carries no `jti`
+  and the refresh path has to read Postgres anyway in order to rotate.
 - **Access tokens cannot be revoked** within their 15-minute life. Acceptable at
   that TTL, but it means "revoke" only ever affects refresh tokens.
-- **The app-level rate limiter cannot key on a user.** It is mounted before any
-  authentication, so `req.user?.sub` is always undefined and the bucket is
-  per-IP. Behind carrier NAT that is one bucket for many people. The bills router
-  works around this with its own limiter mounted after auth.
+- **The app-level rate limiter still cannot key on a user**, being mounted ahead
+  of authentication. It is now only a coarse backstop: the bills router and the
+  guest router each apply their own limiter after authenticating, keyed on the
+  staff subject and the guest session respectively.
 - **`/health/ready` is an unauthenticated database round-trip**, deliberately
   ahead of the rate limiter so probes do not consume client budget. That also
   makes it free load for anyone who finds it.

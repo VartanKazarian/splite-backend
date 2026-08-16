@@ -279,6 +279,42 @@ describe('webhook delivery', { skip }, () => {
     assert.equal(rows[0]?.outcome, 'SIGNATURE_INVALID');
   });
 
+  it('will not settle a payment belonging to a different provider', async () => {
+    // A Pago Móvil claim is PENDING with no provider at all, and PENDING was
+    // the only thing being checked. So a webhook naming its id settled it --
+    // performing, silently, the verification that a member of staff exists to
+    // perform. The whole point of that flow is that a person looks at the bank
+    // app before the bill moves.
+    const bill = await fixtures.createBill({
+      restaurantId: restaurant.id, tableId: table.id, totalDue: 10000
+    });
+    const claim = await db.withTransaction(client => recordPayment(client, {
+      restaurantId: restaurant.id,
+      billId: bill.id,
+      amountVes: 10000n,
+      status: 'PENDING',
+      paymentMethod: 'PAGO_MOVIL',   // no provider: a diner's word, not a rail
+      payerType: 'GUEST'
+    }));
+
+    const res = await deliver({
+      eventId: `evt_confusion_${Date.now()}`,
+      status: 'SUCCEEDED',
+      metadata: { splitePaymentId: claim.id, restaurantId: restaurant.id }
+    });
+
+    assert.equal(res.status, 202);
+    assert.equal(res.body.settled, false);
+    assert.equal(res.body.reason, 'PROVIDER_MISMATCH');
+
+    const after = await billOf(bill.id);
+    assert.equal(after.amount_paid_ves, '0', 'the claim must still await a human');
+    assert.equal(after.status, 'OPEN');
+
+    const { rows } = await db.query('SELECT status FROM payments WHERE id = $1', [claim.id]);
+    assert.equal(rows[0].status, 'PENDING');
+  });
+
   it('has no adapter for an unknown provider', async () => {
     const res = await fetch(`${baseUrl}/api/v1/webhooks/NOTAPROVIDER`, {
       method: 'POST',

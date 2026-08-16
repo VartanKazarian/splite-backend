@@ -8,6 +8,7 @@ const {
   declareClaimSchema
 } = require('../middleware/schemas');
 const { createGuestSession, destroyGuestSession, authenticateGuest } = require('../services/guest');
+const rateLimit = require('../middleware/rateLimit');
 const billItems = require('../services/billItems');
 const paymentClaims = require('../services/paymentClaims');
 const splitEngine = require('../services/splitEngine');
@@ -16,6 +17,21 @@ const { logAudit, auditContext } = require('../services/audit');
 const { ApiError } = require('../errors');
 
 const router = express.Router();
+
+/**
+ * The real guest limit, mounted after authenticateGuest so the bucket keys on
+ * the session rather than the address.
+ *
+ * The app-level limiter on /api/v1/guest runs before any of this and can only
+ * see an IP, which on the diner-facing surface identifies a carrier NAT rather
+ * than a person: one bucket for every table in the room. One diner refreshing
+ * hard is now throttled and the table next to them is not.
+ */
+// NOT 'guest:session': that is the prefix the sessions themselves are stored
+// under, so the counter and the credential would be the same Redis key. INCR on
+// a key holding JSON errors, the limiter treats that as its backend being
+// unavailable and fails open, and per-session limiting silently does nothing.
+const perSession = rateLimit({ windowSeconds: 60, max: 60, keyPrefix: 'guest:rl' });
 
 /**
  * Staff-only QR issuance. The table lookup is tenant-scoped: without the
@@ -92,46 +108,63 @@ router.post(
   }
 );
 
-/** Public: exchanges a signed QR token for a short-lived guest session. */
-router.post('/sessions', validateBody(guestSessionSchema), async (req, res, next) => {
-  try {
-    let payload;
+/**
+ * Public: exchanges a signed QR token for a short-lived guest session.
+ *
+ * Minting is the one guest route with no credential to count per, so it stays
+ * keyed on the address. Sized for a restaurant on one connection rather than
+ * for one phone: diners on the venue WiFi all arrive from the same address, and
+ * a wave of tables scanning at the end of service is normal traffic.
+ *
+ * Not fail-closed, unlike /auth. There the limiter is what stands between an
+ * attacker and a password; here the gate is the HMAC on the QR, and this is
+ * only bounding volume. Refusing every diner in the building because Redis
+ * blinked would be choosing an outage over a rate limit.
+ */
+router.post(
+  '/sessions',
+  rateLimit({ windowSeconds: 60, max: 60, keyPrefix: 'guest:mint' }),
+  validateBody(guestSessionSchema),
+  async (req, res, next) => {
     try {
-      payload = verifyQrToken(req.body.qrToken);
-    } catch {
-      throw new ApiError('QR_INVALID', 'Invalid table QR');
-    }
+      let payload;
+      try {
+        payload = verifyQrToken(req.body.qrToken);
+      } catch {
+        throw new ApiError('QR_INVALID', 'Invalid table QR');
+      }
 
-    const { rows } = await db.query(
-      'SELECT id, restaurant_id, qr_nonce, active FROM tables WHERE id = $1 AND restaurant_id = $2',
-      [payload.tableId, payload.restaurantId]
-    );
-    const table = rows[0];
-    // Nonce check makes a reprinted/rotated QR immediately unusable.
-    if (!table || !table.active || String(table.qr_nonce) !== String(payload.nonce)) {
-      throw new ApiError('QR_INVALID', 'Invalid table QR');
-    }
+      const { rows } = await db.query(
+        'SELECT id, restaurant_id, qr_nonce, active FROM tables WHERE id = $1 AND restaurant_id = $2',
+        [payload.tableId, payload.restaurantId]
+      );
+      const table = rows[0];
+      // Nonce check makes a reprinted/rotated QR immediately unusable.
+      if (!table || !table.active || String(table.qr_nonce) !== String(payload.nonce)) {
+        throw new ApiError('QR_INVALID', 'Invalid table QR');
+      }
 
-    const session = await createGuestSession({
-      restaurantId: table.restaurant_id,
-      tableId: table.id,
-      ip: req.ip,
-      userAgent: req.get('user-agent')
-    });
+      const session = await createGuestSession({
+        restaurantId: table.restaurant_id,
+        tableId: table.id,
+        ip: req.ip,
+        userAgent: req.get('user-agent')
+      });
 
-    await logAudit({
-      action: 'GUEST_SESSION_CREATED',
-      restaurantId: table.restaurant_id,
-      resourceType: 'table',
-      resourceId: table.id,
-      ip: req.ip,
-      userAgent: req.get('user-agent'),
-      requestId: req.id
-    });
+      await logAudit({
+        action: 'GUEST_SESSION_CREATED',
+        restaurantId: table.restaurant_id,
+        resourceType: 'table',
+        resourceId: table.id,
+        ip: req.ip,
+        userAgent: req.get('user-agent'),
+        requestId: req.id
+      });
 
-    res.status(201).json(session);
-  } catch (err) { next(err); }
-});
+      res.status(201).json(session);
+    } catch (err) { next(err); }
+  }
+);
 
 /**
  * The open bill for the guest's own table.
@@ -156,7 +189,7 @@ async function openBillForGuest(guest) {
   return rows[0];
 }
 
-router.get('/bill', authenticateGuest, async (req, res, next) => {
+router.get('/bill', authenticateGuest, perSession, async (req, res, next) => {
   try {
     const bill = await openBillForGuest(req.guest);
     const items = await billItems.listForBill({
@@ -180,7 +213,7 @@ router.get('/bill', authenticateGuest, async (req, res, next) => {
  *
  * Takes no bill id, like every guest route: the table comes from the session.
  */
-router.post('/bill/payment-claims', authenticateGuest, validateBody(declareClaimSchema), async (req, res, next) => {
+router.post('/bill/payment-claims', authenticateGuest, perSession, validateBody(declareClaimSchema), async (req, res, next) => {
   try {
     const bill = await openBillForGuest(req.guest);
     const claim = await paymentClaims.declareClaim({
@@ -205,7 +238,7 @@ router.post('/bill/payment-claims', authenticateGuest, validateBody(declareClaim
  * the same bill are never shown two different allocations. Advisory: it
  * computes and returns, and moves no money.
  */
-router.post('/bill/split/preview', authenticateGuest, validateBody(splitPreviewSchema), async (req, res, next) => {
+router.post('/bill/split/preview', authenticateGuest, perSession, validateBody(splitPreviewSchema), async (req, res, next) => {
   try {
     const bill = await openBillForGuest(req.guest);
     const items = req.body.mode === 'ITEMS'
@@ -222,7 +255,7 @@ router.post('/bill/split/preview', authenticateGuest, validateBody(splitPreviewS
  * Always 204, whether or not the session existed, so it never reports back
  * whether a given session id was live.
  */
-router.delete('/sessions', authenticateGuest, async (req, res, next) => {
+router.delete('/sessions', authenticateGuest, perSession, async (req, res, next) => {
   try {
     await destroyGuestSession(req.guest.sessionId);
     res.status(204).end();

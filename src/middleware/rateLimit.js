@@ -24,7 +24,18 @@ function rateLimit({
   windowSeconds = 60, max = 60, keyPrefix = 'rl', failClosed = false, identify
 } = {}) {
   return async (req, res, next) => {
-    const identity = identify ? identify(req) : (req.user?.sub || req.ip || 'unknown');
+    // Guest session before IP for the same reason staff subject comes first: a
+    // credential identifies a caller, an address identifies a network. Diners
+    // are on phones behind carrier NAT, so an entire restaurant -- sometimes a
+    // whole neighbourhood -- shares one address, and a per-IP limit meant to
+    // stop one abusive client throttles every table in the room at once.
+    //
+    // This only applies once the credential has been verified, so it is the
+    // mounting order that makes it work: a limiter in front of authentication
+    // sees no req.guest and silently falls back to IP.
+    const identity = identify
+      ? identify(req)
+      : (req.user?.sub || req.guest?.sessionId || req.ip || 'unknown');
     if (identity == null) return next();
     const key = `${keyPrefix}:${identity}`;
     try {

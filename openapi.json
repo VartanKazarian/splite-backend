@@ -2181,7 +2181,7 @@
               "DUPLICATE",
               "FAILED",
               "IGNORED",
-              "PAYMENT_NOT_FOUND",
+              "PROVIDER_MISMATCH",
               "UNATTRIBUTED"
             ],
             "description": "Why the delivery did or did not settle anything. Accepted and un-settled is a normal outcome, not an error."

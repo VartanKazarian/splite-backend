@@ -2,11 +2,9 @@ const crypto = require('crypto');
 const { ApiError } = require('../errors');
 const argon2 = require('argon2');
 const db = require('../connectors/base');
-const { redis } = require('../connectors/redis');
 const config = require('../config');
 const { signAccessToken, signRefreshToken, verifyRefreshToken, hashToken } = require('../utils/tokens');
 const { logAudit } = require('./audit');
-const { logger } = require('../connectors/logger');
 
 const ARGON2_OPTIONS = { type: argon2.argon2id, memoryCost: 19456, timeCost: 2, parallelism: 1 };
 
@@ -42,13 +40,17 @@ async function issueSession(user, meta = {}, client = db) {
     [jti, user.id, user.restaurant_id, hashToken(refreshToken), ttl, meta.userAgent || null, meta.ip || null]
   );
 
-  // Mirror in Redis so revocation takes effect immediately without a DB read
-  // on every request. Postgres remains the source of truth.
-  try {
-    await redis.set(`refresh:${jti}`, '1', 'EX', ttl);
-  } catch (err) {
-    logger.warn({ event: 'SESSION_MIRROR_FAILED', err }, 'Redis session mirror failed');
-  }
+  // There was a Redis mirror here, `refresh:<jti>`, written on login and
+  // deleted on revocation, with a comment claiming it made revocation immediate
+  // without a database read. Nothing ever read it, and nothing could usefully
+  // have: the access token carries no jti, so it could never serve access-token
+  // revocation, and the refresh path has to read Postgres anyway in order to
+  // rotate the row. It bought nothing and cost a consistency problem -- the
+  // bulk revoke in refresh() did not clear the keys the others did.
+  //
+  // Removed rather than wired up. A comment that promises a security property
+  // the code does not deliver is worse than no comment, because it is the
+  // reason nobody looks again.
 
   return {
     accessToken: signAccessToken(info),
@@ -189,14 +191,12 @@ async function refresh(refreshToken, meta = {}) {
     const user = rows[0];
     if (!user || !user.active) throw unauthorized('User inactive');
 
-    try { await redis.del(`refresh:${claims.jti}`); } catch { /* mirror only */ }
     return issueSession(user, meta, client);
   });
 }
 
 async function revokeSession(jti) {
   await db.query('UPDATE refresh_sessions SET revoked_at = NOW() WHERE id = $1 AND revoked_at IS NULL', [jti]);
-  try { await redis.del(`refresh:${jti}`); } catch { /* mirror only */ }
 }
 
 async function revokeAllSessionsForUser(userId) {
@@ -204,7 +204,6 @@ async function revokeAllSessionsForUser(userId) {
     'UPDATE refresh_sessions SET revoked_at = NOW() WHERE user_id = $1 AND revoked_at IS NULL RETURNING id',
     [userId]
   );
-  await Promise.allSettled(rows.map(r => redis.del(`refresh:${r.id}`)));
   return rows.length;
 }
 

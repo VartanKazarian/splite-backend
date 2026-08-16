@@ -912,7 +912,7 @@ Object.assign(schemas, {
       settled: { type: 'boolean' },
       reason: {
         type: 'string',
-        enum: ['SETTLED', 'DUPLICATE', 'FAILED', 'IGNORED', 'PAYMENT_NOT_FOUND', 'UNATTRIBUTED'],
+        enum: ['SETTLED', 'DUPLICATE', 'FAILED', 'IGNORED', 'PROVIDER_MISMATCH', 'UNATTRIBUTED'],
         description: 'Why the delivery did or did not settle anything. Accepted and un-settled is a normal outcome, not an error.'
       }
     }

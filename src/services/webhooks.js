@@ -196,7 +196,7 @@ async function settleFromWebhook({ providerCode, parsed, rawBody, signature }) {
 
   const outcome = await db.withTransaction(async client => {
     const { rows } = await client.query(
-      `SELECT id, bill_id, amount_ves, status
+      `SELECT id, bill_id, amount_ves, status, provider, payment_method
          FROM payments
         WHERE id = $1 AND restaurant_id = $2
         FOR UPDATE`,
@@ -205,6 +205,31 @@ async function settleFromWebhook({ providerCode, parsed, rawBody, signature }) {
     const payment = rows[0];
     // Rolls back the claim above, so the retry this triggers can re-claim.
     if (!payment) throw new ApiError('WEBHOOK_PAYMENT_UNRESOLVED', 'No such payment yet');
+
+    /**
+     * The delivery may only settle a payment that belongs to the provider that
+     * sent it.
+     *
+     * Without this, "PENDING" was the only thing being checked, and a Pago
+     * Móvil claim is PENDING with no provider at all -- so a webhook naming its
+     * id settled it, silently performing the verification that a member of
+     * staff exists to perform. The whole point of that flow is that a person
+     * looks at the bank app before the bill moves.
+     *
+     * It also stops one provider settling another's payments, which matters as
+     * soon as there is more than one.
+     */
+    if (payment.provider !== providerCode) {
+      logger.warn(
+        {
+          event: 'WEBHOOK_PROVIDER_MISMATCH',
+          paymentId, restaurantId, provider: providerCode,
+          paymentProvider: payment.provider, paymentMethod: payment.payment_method
+        },
+        'Webhook named a payment belonging to a different provider'
+      );
+      return { kind: 'PROVIDER_MISMATCH' };
+    }
 
     const result = await (async () => {
       // A redelivery of something already settled is success, not an error: the
