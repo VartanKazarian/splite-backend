@@ -100,6 +100,11 @@ const CODES = {
   // confirmation flow is to repeat the number the next table read aloud.
   PAYMENT_REFERENCE_ALREADY_USED: 409,
   PAYMENT_CLAIM_NOT_PENDING: 409,
+  // Sealed credentials that will not authenticate, or were sealed with a key no
+  // longer in the ring. Never a missing credential -- a failed tag means a
+  // modified one, and the only safe answer to that is to stop.
+  PAYMENT_CREDENTIALS_UNREADABLE: 500,
+  PAYMENT_PROVIDER_UNKNOWN: 404,
 
   // 429 / 503 -- try again, and the caller can tell whether it is their fault.
   RATE_LIMITED: 429,
@@ -113,6 +118,10 @@ const CODES = {
   WEBHOOK_PAYMENT_UNRESOLVED: 503,
   WEBHOOK_REPLAY_PROTECTION_UNAVAILABLE: 503,
   SHUTTING_DOWN: 503,
+
+  // 503 -- the deployment cannot handle credentials right now. Not 500: this is
+  // configuration, and saying so is what stops somebody hunting a bug.
+  PAYMENT_CREDENTIALS_KEY_MISSING: 503,
 
   // 500 -- the message is never echoed; correlate on requestId.
   INTERNAL_ERROR: 500

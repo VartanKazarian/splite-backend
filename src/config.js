@@ -272,6 +272,22 @@ module.exports = {
     // silently disable brute-force protection on the login surface.
     failClosedOnAuth: boolean('RATE_LIMIT_FAIL_CLOSED_ON_AUTH', isProduction)
   },
+  payments: {
+    /**
+     * A key ring, `version:material` comma separated, base64 or hex.
+     *
+     * A ring rather than a single key because the interesting moment is not the
+     * first encryption but the rotation years later: a new version can be added
+     * and old rows re-sealed in the background, instead of one migration that
+     * must not fail.
+     *
+     * Read lazily and never asserted at boot. Most deployments will never store
+     * bank credentials, and a missing key must break storing them rather than
+     * break starting the app.
+     */
+    credentialKeys: process.env.PAYMENT_CREDENTIALS_KEYS || '',
+    activeKeyVersion: integer('PAYMENT_CREDENTIALS_ACTIVE_KEY_VERSION', 1)
+  },
   purge: {
     // Retention is set by what still reads the row, not by what feels tidy.
     //

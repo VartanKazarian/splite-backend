@@ -310,12 +310,15 @@
                   "RIF_ALREADY_REGISTERED",
                   "PAYMENT_REFERENCE_ALREADY_USED",
                   "PAYMENT_CLAIM_NOT_PENDING",
+                  "PAYMENT_CREDENTIALS_UNREADABLE",
+                  "PAYMENT_PROVIDER_UNKNOWN",
                   "RATE_LIMITED",
                   "RATE_LIMITER_UNAVAILABLE",
                   "FX_UNAVAILABLE",
                   "WEBHOOK_PAYMENT_UNRESOLVED",
                   "WEBHOOK_REPLAY_PROTECTION_UNAVAILABLE",
                   "SHUTTING_DOWN",
+                  "PAYMENT_CREDENTIALS_KEY_MISSING",
                   "INTERNAL_ERROR"
                 ],
                 "description": "Stable identifier for what went wrong. Branch on this, never on `message`. A code always carries the same HTTP status."
@@ -2265,6 +2268,37 @@
           "holderId": {
             "type": "string",
             "pattern": "^[VEJPG][0-9]{6,9}$"
+          }
+        }
+      },
+      "PaymentProviderConfig": {
+        "type": "object",
+        "description": "A stored bank credential set, as anything outside the adapter may see it. **No field here can carry a secret** — `configured` is a boolean because the alternative, a masked tail like `sk_live_••••4821`, is a leak with a decoration on it, and the four characters shown are the four an attacker needed to confirm a guess. There is no read endpoint for the credentials themselves.",
+        "properties": {
+          "provider": {
+            "type": "string",
+            "examples": [
+              "MERCANTIL"
+            ]
+          },
+          "configured": {
+            "type": "boolean"
+          },
+          "enabled": {
+            "type": "boolean",
+            "description": "Whether the rail is live. Storing credentials does not switch it on, and it cannot be switched on until they have been proven against the bank."
+          },
+          "credentialsValidatedAt": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "date-time",
+            "description": "When the credentials were last exercised successfully against the bank. Null means unproven, and `enabled` cannot be true."
+          },
+          "updatedAt": {
+            "type": "string",
+            "format": "date-time"
           }
         }
       },
@@ -4732,6 +4766,181 @@
           },
           "401": {
             "$ref": "#/components/responses/Unauthorized"
+          },
+          "429": {
+            "$ref": "#/components/responses/TooManyRequests"
+          },
+          "500": {
+            "$ref": "#/components/responses/ServerError"
+          }
+        }
+      }
+    },
+    "/api/v1/account/payment-providers": {
+      "get": {
+        "tags": [
+          "Account"
+        ],
+        "summary": "Which bank rails this restaurant has credentials for",
+        "operationId": "listPaymentProviders",
+        "description": "Any authenticated staff role. Returns metadata only — there is no endpoint that returns a\nstored credential, and the schema has no field that could carry one.\n\n`supported` lists the providers this deployment has an adapter for.",
+        "security": [
+          {
+            "staffAuth": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Configured providers.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "data": {
+                      "type": "array",
+                      "items": {
+                        "$ref": "#/components/schemas/PaymentProviderConfig"
+                      }
+                    },
+                    "supported": {
+                      "type": "array",
+                      "items": {
+                        "type": "string"
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "429": {
+            "$ref": "#/components/responses/TooManyRequests"
+          },
+          "500": {
+            "$ref": "#/components/responses/ServerError"
+          }
+        }
+      }
+    },
+    "/api/v1/account/payment-providers/{provider}": {
+      "put": {
+        "tags": [
+          "Account"
+        ],
+        "summary": "Store bank API credentials",
+        "operationId": "putPaymentProviderCredentials",
+        "x-required-roles": [
+          "OWNER"
+        ],
+        "description": "**OWNER only** — not MANAGER, who may set the payee. The payee says where money should be\nsent; these let software move it, which is a different kind of authority.\n\nThe body shape is per provider, because no two banks agree on what a credential is.\nMERCANTIL takes `merchantId`, `clientId`, `secretKey`, `integratorId` and `terminalId`.\nUnknown fields are rejected rather than stored: a blob that carries whatever was sent is\nwhere a stray password ends up, sealed forever and invisible to review.\n\nCredentials are sealed with AES-256-GCM before they reach the database and are never\nreturned. Replacing them resets `enabled` to false and clears `credentialsValidatedAt` —\nnew credentials are unproven credentials, and a mistyped key must not leave a rail\nswitched on and quietly broken.\n\nAnswers 503 `PAYMENT_CREDENTIALS_KEY_MISSING` when the deployment has no encryption key\nconfigured. That is configuration, not a bug, and the code says so.",
+        "security": [
+          {
+            "staffAuth": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "provider",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            },
+            "example": "MERCANTIL"
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "additionalProperties": true
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Stored.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PaymentProviderConfig"
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "403": {
+            "$ref": "#/components/responses/Forbidden"
+          },
+          "404": {
+            "$ref": "#/components/responses/NotFound"
+          },
+          "429": {
+            "$ref": "#/components/responses/TooManyRequests"
+          },
+          "500": {
+            "$ref": "#/components/responses/ServerError"
+          },
+          "503": {
+            "$ref": "#/components/responses/ServiceUnavailable"
+          }
+        }
+      },
+      "delete": {
+        "tags": [
+          "Account"
+        ],
+        "summary": "Remove bank API credentials",
+        "operationId": "deletePaymentProviderCredentials",
+        "x-required-roles": [
+          "OWNER"
+        ],
+        "description": "OWNER only. Removes the row outright; there is nothing to keep once the credentials are gone.",
+        "security": [
+          {
+            "staffAuth": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "provider",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "Removed."
+          },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "403": {
+            "$ref": "#/components/responses/Forbidden"
+          },
+          "404": {
+            "$ref": "#/components/responses/NotFound"
           },
           "429": {
             "$ref": "#/components/responses/TooManyRequests"

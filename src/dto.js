@@ -363,6 +363,27 @@ function guestPayee(row) {
   };
 }
 
+/**
+ * A stored bank credential set, as anything outside the adapter may see it.
+ *
+ * There is no field here that could carry a secret, and that is the design
+ * rather than an omission: `configured` is a boolean because the alternative --
+ * a masked or truncated value, "sk_live_••••4821" -- is a leak with a
+ * decoration on it, and the four characters shown are the four an attacker
+ * needed to confirm a guess.
+ */
+function paymentProviderConfig(row) {
+  return {
+    provider: row.provider,
+    configured: true,
+    enabled: row.enabled,
+    // Whether the credentials have been proven against the bank. A rail cannot
+    // be switched on until they have -- see migration 018.
+    credentialsValidatedAt: isoTimestamp(row.credentials_validated_at),
+    updatedAt: isoTimestamp(row.updated_at)
+  };
+}
+
 function account(row) {
   const trialEndsAt = row.trial_ends_at ? new Date(row.trial_ends_at) : null;
   const msPerDay = 24 * 60 * 60 * 1000;
@@ -397,5 +418,5 @@ function menuSettings(row) {
 module.exports = {
   isoDate, isoTimestamp,
   bill, billItem, billWithItems, guestBill,
-  table, floorTable, product, publicProduct, menuSettings, menuCharges, account, payout, guestPayee, paymentClaim, staffPaymentClaim
+  table, floorTable, product, publicProduct, menuSettings, menuCharges, account, payout, guestPayee, paymentProviderConfig, paymentClaim, staffPaymentClaim
 };

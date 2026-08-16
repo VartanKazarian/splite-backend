@@ -1,7 +1,8 @@
 const express = require('express');
 const db = require('../connectors/base');
 const { authenticateToken, requireRole } = require('../middleware/auth');
-const { validateBody, payoutSchema } = require('../middleware/schemas');
+const { validateBody, validateParams, payoutSchema, paymentProviderParamSchema } = require('../middleware/schemas');
+const providerConfigs = require('../payments/providerConfigs');
 const { logAudit, auditContext } = require('../services/audit');
 const banks = require('../payments/banks');
 const { ApiError } = require('../errors');
@@ -97,6 +98,75 @@ router.put(
       });
 
       res.json(dto.account(rows[0]));
+    } catch (err) { next(err); }
+  }
+);
+
+/**
+ * Bank API credentials.
+ *
+ * OWNER only, unlike the payee details, which MANAGER can also set. The payee
+ * says where money should be sent; these let software move it. That is a
+ * different kind of authority and it belongs with whoever owns the business.
+ *
+ * Nothing here ever returns a credential. There is no read endpoint, and the
+ * DTO has no field that could carry one -- not even a masked tail, which is a
+ * leak with a decoration on it.
+ */
+router.get('/payment-providers', async (req, res, next) => {
+  try {
+    const rows = await providerConfigs.listConfigs(req.user.restaurantId);
+    res.json({
+      data: rows.map(dto.paymentProviderConfig),
+      supported: providerConfigs.PROVIDERS
+    });
+  } catch (err) { next(err); }
+});
+
+router.put(
+  '/payment-providers/:provider',
+  requireRole('OWNER'),
+  validateParams(paymentProviderParamSchema),
+  async (req, res, next) => {
+    try {
+      const provider = req.params.provider.toUpperCase();
+      const config = await providerConfigs.putCredentials({
+        restaurantId: req.user.restaurantId,
+        provider,
+        credentials: req.body
+      });
+
+      await logAudit({
+        ...auditContext(req),
+        action: 'PAYMENT_CREDENTIALS_STORED',
+        resourceType: 'restaurant',
+        resourceId: req.user.restaurantId,
+        // The provider and nothing else. Audit rows outlive the credentials
+        // they describe and are read by more people.
+        details: { provider }
+      });
+
+      res.json(dto.paymentProviderConfig(config));
+    } catch (err) { next(err); }
+  }
+);
+
+router.delete(
+  '/payment-providers/:provider',
+  requireRole('OWNER'),
+  validateParams(paymentProviderParamSchema),
+  async (req, res, next) => {
+    try {
+      const provider = req.params.provider.toUpperCase();
+      await providerConfigs.deleteConfig({ restaurantId: req.user.restaurantId, provider });
+      await logAudit({
+        ...auditContext(req),
+        action: 'PAYMENT_CREDENTIALS_DELETED',
+        resourceType: 'restaurant',
+        resourceId: req.user.restaurantId,
+        details: { provider }
+      });
+      res.status(204).end();
     } catch (err) { next(err); }
   }
 );

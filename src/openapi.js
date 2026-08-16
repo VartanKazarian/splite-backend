@@ -954,6 +954,25 @@ Object.assign(schemas, {
     }
   },
 
+  PaymentProviderConfig: {
+    type: 'object',
+    description:
+      'A stored bank credential set, as anything outside the adapter may see it. **No field here can carry a secret** — `configured` is a boolean because the alternative, a masked tail like `sk_live_••••4821`, is a leak with a decoration on it, and the four characters shown are the four an attacker needed to confirm a guess. There is no read endpoint for the credentials themselves.',
+    properties: {
+      provider: { type: 'string', examples: ['MERCANTIL'] },
+      configured: { type: 'boolean' },
+      enabled: {
+        type: 'boolean',
+        description: 'Whether the rail is live. Storing credentials does not switch it on, and it cannot be switched on until they have been proven against the bank.'
+      },
+      credentialsValidatedAt: {
+        type: ['string', 'null'], format: 'date-time',
+        description: 'When the credentials were last exercised successfully against the bank. Null means unproven, and `enabled` cannot be true.'
+      },
+      updatedAt: { type: 'string', format: 'date-time' }
+    }
+  },
+
   WebhookAck: {
     type: 'object',
     properties: {
@@ -2162,6 +2181,93 @@ const paths = {
           }
         },
         ...commonErrors
+      }
+    }
+  },
+
+  '/api/v1/account/payment-providers': {
+    get: {
+      tags: ['Account'],
+      summary: 'Which bank rails this restaurant has credentials for',
+      operationId: 'listPaymentProviders',
+      description: [
+        'Any authenticated staff role. Returns metadata only — there is no endpoint that returns a',
+        'stored credential, and the schema has no field that could carry one.',
+        '',
+        '`supported` lists the providers this deployment has an adapter for.'
+      ].join('\n'),
+      security: staff,
+      responses: {
+        200: {
+          description: 'Configured providers.',
+          content: {
+            'application/json': {
+              schema: {
+                type: 'object',
+                properties: {
+                  data: { type: 'array', items: ref('PaymentProviderConfig') },
+                  supported: { type: 'array', items: { type: 'string' } }
+                }
+              }
+            }
+          }
+        },
+        ...commonErrors
+      }
+    }
+  },
+
+  '/api/v1/account/payment-providers/{provider}': {
+    put: {
+      tags: ['Account'],
+      summary: 'Store bank API credentials',
+      operationId: 'putPaymentProviderCredentials',
+      'x-required-roles': ['OWNER'],
+      description: [
+        '**OWNER only** — not MANAGER, who may set the payee. The payee says where money should be',
+        'sent; these let software move it, which is a different kind of authority.',
+        '',
+        'The body shape is per provider, because no two banks agree on what a credential is.',
+        'MERCANTIL takes `merchantId`, `clientId`, `secretKey`, `integratorId` and `terminalId`.',
+        'Unknown fields are rejected rather than stored: a blob that carries whatever was sent is',
+        'where a stray password ends up, sealed forever and invisible to review.',
+        '',
+        'Credentials are sealed with AES-256-GCM before they reach the database and are never',
+        'returned. Replacing them resets `enabled` to false and clears `credentialsValidatedAt` —',
+        'new credentials are unproven credentials, and a mistyped key must not leave a rail',
+        'switched on and quietly broken.',
+        '',
+        'Answers 503 `PAYMENT_CREDENTIALS_KEY_MISSING` when the deployment has no encryption key',
+        'configured. That is configuration, not a bug, and the code says so.'
+      ].join('\n'),
+      security: staff,
+      parameters: [{ name: 'provider', in: 'path', required: true, schema: { type: 'string' }, example: 'MERCANTIL' }],
+      requestBody: {
+        required: true,
+        content: { 'application/json': { schema: { type: 'object', additionalProperties: true } } }
+      },
+      responses: {
+        200: { description: 'Stored.', content: { 'application/json': { schema: ref('PaymentProviderConfig') } } },
+        ...commonErrors,
+        403: response('Forbidden'),
+        404: response('NotFound'),
+        503: response('ServiceUnavailable')
+      }
+    },
+
+    delete: {
+      tags: ['Account'],
+      summary: 'Remove bank API credentials',
+      operationId: 'deletePaymentProviderCredentials',
+      'x-required-roles': ['OWNER'],
+      description: 'OWNER only. Removes the row outright; there is nothing to keep once the credentials are gone.',
+      security: staff,
+      parameters: [{ name: 'provider', in: 'path', required: true, schema: { type: 'string' } }],
+      responses: {
+        204: { description: 'Removed.' },
+        ...commonErrors,
+        403: response('Forbidden'),
+        404: response('NotFound')
       }
     }
   },

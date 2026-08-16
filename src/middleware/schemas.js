@@ -231,6 +231,12 @@ const payoutSchema = Joi.object({
     return value;
   });
 
+// The credential *body* is validated per provider inside providerConfigs, since
+// no two banks agree on what a credential is. This only bounds the path segment.
+const paymentProviderParamSchema = Joi.object({
+  provider: Joi.string().trim().min(2).max(40).pattern(/^[A-Za-z0-9_-]+$/).required()
+});
+
 const paginationKeys = {
   limit: Joi.number().integer().min(1).max(100).default(50),
   offset: Joi.number().integer().min(0).default(0)
@@ -395,6 +401,7 @@ module.exports = {
   signupProfileSchema,
   splitPaymentSchema,
   payoutSchema,
+  paymentProviderParamSchema,
   declareClaimSchema,
   listClaimsQuerySchema,
   rejectClaimSchema,

@@ -491,11 +491,70 @@ AES-128-ECB before sending. That is one integration. Banesco is another.
 > these codes today, so **confirming the list is a prerequisite for the first
 > bank module, not for the first restaurant.**
 
-Deliberately not in migration 017: the bank API credentials. Those belong in
-their own table, encrypted at rest, never returned by any endpoint. Every field
-in `payout` is readable by design and some of it by anyone with a table QR;
-putting a secret key in a column beside them is how a careless `SELECT`
-publishes it.
+### Bank API credentials
+
+Separate from the payee for a reason that is not tidiness. Those fields are
+readable by design, some of them by anyone who scans a table QR; these are the
+only values in the system that let software move a restaurant's money, and they
+are issued by the bank to the merchant, so we cannot rotate them if they leak.
+
+```
+GET    /api/v1/account/payment-providers
+PUT    /api/v1/account/payment-providers/{provider}
+DELETE /api/v1/account/payment-providers/{provider}
+```
+
+**OWNER only** — not MANAGER, who may set the payee. Saying where money should
+be sent and letting software move it are different kinds of authority.
+
+Sealed with **AES-256-GCM** before reaching the database, in
+`src/payments/credentials.js`. Not the AES-128-ECB Mercantil specifies for
+fields inside its own request bodies: ECB is deterministic and unauthenticated,
+which is fine to implement when a counterparty requires it for a phone number in
+transit and wrong for something we choose ourselves for data at rest. GCM
+detects tampering, and a modified credential fails loudly rather than decrypting
+into one that talks somewhere else.
+
+**Nothing returns a credential.** There is no read endpoint, and
+`dto.paymentProviderConfig` has no field that could carry one — `configured` is
+a boolean because the alternative, a masked tail like `sk_live_••••4821`, is a
+leak with a decoration on it, and the four characters shown are the four an
+attacker needed to confirm a guess. `loadCredentials` is the single function
+returning plaintext; it is reachable only from `src/payments/`.
+
+The credential set is an **opaque sealed blob**, not columns. No two banks agree
+on what a credential is: Mercantil issues five fields, the next bank will issue
+a different number with different names, and a schema trying to be the union of
+all of them means a migration per bank plus a row of nulls for every bank that
+does not use them. The shape lives in a per-provider registry in
+`src/payments/providerConfigs.js`; adding a bank is an entry in that object.
+Unknown fields are rejected rather than stored — a blob that carries whatever
+was sent is where a stray password ends up, sealed forever and invisible to
+review.
+
+Two rules the database enforces rather than trusting the service to remember:
+
+- **Storing credentials does not switch a rail on.** `enabled` defaults to
+  false, and replacing credentials resets it. New credentials are unproven
+  credentials however good the old ones were, and a mistyped secret key must not
+  leave a rail on and quietly broken.
+- **A rail cannot be enabled on credentials nobody has proven.** `CHECK (NOT
+  enabled OR credentials_validated_at IS NOT NULL)`. Only a real call to the
+  bank sets that timestamp — there is no endpoint for it, because "these
+  credentials work" is a fact an adapter establishes by using them, not a
+  checkbox somebody ticks.
+
+Keys are a ring, `PAYMENT_CREDENTIALS_KEYS=1:<key>,2:<key>` with
+`PAYMENT_CREDENTIALS_ACTIVE_KEY_VERSION`. The interesting moment is not the
+first encryption but the rotation years later: add a version, point the active
+version at it, and `providerConfigs.rotate()` re-seals old rows in batches. Each
+row records the version that sealed it, so that query uses an index instead of
+decrypting everything to ask.
+
+The key is read lazily and never asserted at boot. Most deployments will never
+store bank credentials, and a missing key must break storing them rather than
+break starting the app — it answers 503 `PAYMENT_CREDENTIALS_KEY_MISSING`, which
+says configuration rather than bug.
 
 ## Getting paid
 
