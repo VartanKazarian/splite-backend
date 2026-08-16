@@ -54,6 +54,9 @@
       "WEBHOOK_PROVIDER_UNKNOWN": {
         "provider": "string -- the unrecognised provider segment"
       },
+      "WEBHOOK_PAYMENT_UNRESOLVED": {
+        "retryAfterSeconds": "integer -- matches the Retry-After header"
+      },
       "FX_UNAVAILABLE": {
         "currency": "string -- the currency with no usable rate, when specific to one"
       },
@@ -310,6 +313,7 @@
                   "RATE_LIMITED",
                   "RATE_LIMITER_UNAVAILABLE",
                   "FX_UNAVAILABLE",
+                  "WEBHOOK_PAYMENT_UNRESOLVED",
                   "WEBHOOK_REPLAY_PROTECTION_UNAVAILABLE",
                   "SHUTTING_DOWN",
                   "INTERNAL_ERROR"
@@ -4519,7 +4523,7 @@
         ],
         "summary": "Inbound payment notification from a provider",
         "operationId": "receiveWebhook",
-        "description": "No session: a provider has no login. The **HMAC signature is the credential**, and it is\nverified before the body is read, recorded or acted on.\n\nHeaders: `X-Webhook-Signature` (hex HMAC-SHA256) and `X-Webhook-Timestamp` (unix seconds).\nThe signed value is `{timestamp}.{rawBody}`, so a captured signature cannot be replayed\nagainst a different body, and the timestamp is inside the MAC rather than merely beside it.\nThe tolerance window is two-sided: a far-future timestamp is as invalid as a stale one.\n\nA signature may be used **once**. Single-use is enforced in Redis and fails closed — if the\nreplay store is unreachable this answers 503 `WEBHOOK_REPLAY_PROTECTION_UNAVAILABLE`\nrather than risk handling a money-moving callback twice.\n\nThe **amount is taken from our own record, never from the body.** A valid signature proves\nwho sent the delivery and nothing more; settling whatever figure it names would let a\ncompromised provider key rewrite a bill.\n\nAlways answers 202 once the signature is good, including for a redelivery of something\nalready settled — providers retry on any non-2xx, and on timeouts where we in fact\nsucceeded, so treating a duplicate as an error makes it retry forever. Read `settled` and\n`reason` to find out what actually happened.\n\nOnly the `SPLITE` provider exists today; a real acquirer is an entry in the adapter table.",
+        "description": "No session: a provider has no login. The **HMAC signature is the credential**, and it is\nverified before the body is read, recorded or acted on.\n\nHeaders: `X-Webhook-Signature` (hex HMAC-SHA256) and `X-Webhook-Timestamp` (unix seconds).\nThe signed value is `{timestamp}.{rawBody}`, so a captured signature cannot be replayed\nagainst a different body, and the timestamp is inside the MAC rather than merely beside it.\nThe tolerance window is two-sided: a far-future timestamp is as invalid as a stale one.\n\nA signature may be used **once**. Single-use is enforced in Redis and fails closed — if the\nreplay store is unreachable this answers 503 `WEBHOOK_REPLAY_PROTECTION_UNAVAILABLE`\nrather than risk handling a money-moving callback twice.\n\nThe **amount is taken from our own record, never from the body.** A valid signature proves\nwho sent the delivery and nothing more; settling whatever figure it names would let a\ncompromised provider key rewrite a bill.\n\n**202 means stop sending this.** Settled, a duplicate of something settled, or a body that\nnever named a payment and never will however many times it is resent. Providers retry on\nany non-2xx and on timeouts where we in fact succeeded, so answering a duplicate with an\nerror teaches one to retry forever. Read `settled` and `reason` for what happened.\n\n**It does not cover a delivery we merely failed to process.** A callback can overtake the\ncommit of our own PENDING row, and answering 202 to that loses a real settlement\npermanently — the money has moved and the bill never closes. Those answer 503\n`WEBHOOK_PAYMENT_UNRESOLVED` with `Retry-After`, as do database failures.\n\nSend an `eventId`. Duplicate detection is a primary key on `(provider, eventId)` written\ninside the settling transaction, which is durable and event-scoped; the signature-keyed\nRedis entry is a ten-minute optimisation that a re-signed retry does not match. Without an\n`eventId` the only protection left is the payment status check, which cannot tell two\nevents for one payment apart. A failed attempt claims nothing, so the retry can succeed.\n\nOnly the `SPLITE` provider exists today; a real acquirer is an entry in the adapter table.",
         "security": [],
         "parameters": [
           {

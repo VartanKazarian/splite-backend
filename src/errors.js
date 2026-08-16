@@ -105,6 +105,12 @@ const CODES = {
   RATE_LIMITED: 429,
   RATE_LIMITER_UNAVAILABLE: 503,
   FX_UNAVAILABLE: 503,
+  // A signed delivery we could not tie to a payment. 503 rather than 404
+  // because it is usually a race, not a mistake: a provider can call back
+  // before the transaction that created our PENDING row has committed, and
+  // every provider retries a 5xx. Answering 2xx there loses a real settlement
+  // permanently -- the money has moved and the bill never closes.
+  WEBHOOK_PAYMENT_UNRESOLVED: 503,
   WEBHOOK_REPLAY_PROTECTION_UNAVAILABLE: 503,
   SHUTTING_DOWN: 503,
 
@@ -145,6 +151,7 @@ const DETAILS = {
   FORBIDDEN_ROLE: { requiredRoles: 'string[] -- roles that would have been accepted' },
   PAYMENT_CLAIM_NOT_PENDING: { status: 'string -- the status the claim is actually in' },
   WEBHOOK_PROVIDER_UNKNOWN: { provider: 'string -- the unrecognised provider segment' },
+  WEBHOOK_PAYMENT_UNRESOLVED: { retryAfterSeconds: 'integer -- matches the Retry-After header' },
   FX_UNAVAILABLE: { currency: 'string -- the currency with no usable rate, when specific to one' },
   RATE_LIMITED: { retryAfterSeconds: 'integer -- matches the Retry-After header' },
   CORS_ORIGIN_NOT_ALLOWED: { origin: 'string -- the rejected Origin, so it can be copied into CORS_ORIGINS' },

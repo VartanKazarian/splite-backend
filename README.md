@@ -426,10 +426,34 @@ seconds. Three details are load-bearing:
   who sent the delivery and nothing more; settling whatever figure it names lets
   a compromised provider key rewrite a bill.
 
-It answers 202 once the signature checks out, including for a redelivery of
-something already settled — providers retry on any non-2xx and on timeouts where
-we did succeed, so treating a duplicate as an error makes it retry forever. Read
-`settled` and `reason`.
+**202 means "stop sending this"**: settled, a duplicate of something settled, or
+a body that never named a payment and never will however often it is resent.
+Providers retry on any non-2xx and on timeouts where we did succeed, so
+answering a duplicate with an error teaches one to retry forever.
+
+It deliberately does *not* cover a delivery we merely failed to process. A
+callback can overtake the commit of our own PENDING payment row — that gap is
+milliseconds and providers are fast — and answering 202 there loses a real
+settlement permanently: the money has moved and the bill never closes. Those
+answer **503 `WEBHOOK_PAYMENT_UNRESOLVED`** with `Retry-After`, as do database
+failures.
+
+Duplicate detection is a primary key on `webhook_events_processed (provider,
+provider_event_id)`, written **inside the settling transaction** so the two
+cannot come apart: no ordering leaves money moved and the event unrecorded, or
+the reverse. A concurrent duplicate blocks on that key, then rolls back having
+settled nothing. A *failed* attempt claims nothing at all — a claim that
+outlived its failure would block the retry meant to fix it, which is the trap in
+claim-first idempotency.
+
+The Redis entry the signature middleware sets is not that guarantee. It is keyed
+on the signature and lives twice the timestamp tolerance, and providers re-sign
+every retry, so it only ever catches byte-identical replays inside ten minutes
+while retry budgets run for days. It stays because it is cheap and it stops a
+captured request being replayed verbatim.
+
+Send an `eventId`. Without one the only protection left is the payment status
+check, which cannot tell two events for the same payment apart.
 
 Every delivery is recorded in `webhook_deliveries`, rejected ones included:
 repeated signature failures are how a leaked or rotated secret announces itself,
