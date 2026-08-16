@@ -39,7 +39,7 @@ opens so a diner's total cannot move while they eat.
 
 - Multi-stage Docker image running as a non-root user; hardened Compose stack
 - Railway deployment config, with migrations as a pre-deploy step
-- CI: syntax check, OpenAPI drift check, unit tests, dependency audit,
+- Node 22; CI: syntax check, OpenAPI drift check, unit tests, dependency audit,
   invisible-character guard, image build
 
 Restaurants arrive through a reviewed registration form rather than a seed
@@ -930,6 +930,38 @@ schema. The live document is also served at `/openapi.json`, with Swagger UI at
    new version takes traffic; elsewhere it is a release command or a manual step.
 6. Commit `package-lock.json`; the image build and CI both depend on it for reproducibility.
 
+## Retention
+
+Four tables grow forever and none is consulted after a point. `npm run purge`
+clears them; `npm run purge -- --dry-run` counts without deleting. Schedule it
+from Railway's cron, daily and off-peak — nothing here is urgent, and a purge
+that misses a week deletes a week more the next time.
+
+A command rather than a timer inside the API process: the web process is
+replicated, and N replicas each waking to delete the same rows is work
+multiplied by N to no effect. An advisory lock makes concurrent runs safe rather
+than useful.
+
+| Table | Kept | Because |
+| --- | --- | --- |
+| `idempotency_keys` | until `expires_at` | the endpoint treats a missing key as a first attempt |
+| `refresh_sessions` | 14 days past expiry | an expired session authenticates nothing; the extra fortnight is so reuse detection has something to point at |
+| `fx_rates` | 180 days | the rate fallback reads this when BCV is unreachable, so it must outlast an outage |
+| `webhook_deliveries` | 90 days | read when a payment is disputed, which happens within a billing cycle or not at all |
+| `webhook_events_processed` | 180 days | it is what stops a redelivered event settling a bill twice, so it must outlast provider retry budgets |
+
+Retention is set by what still *reads* a row, not by what feels tidy. And the
+purge can never empty a table something depends on being non-empty: **the newest
+`fx_rates` row per currency is never deleted, whatever its age.** If FX has been
+disabled or failing for longer than the retention window, every row is older
+than it, and a plain age-based delete would empty the table and leave the
+fallback with nothing — turning the purge into the outage the fallback exists to
+prevent.
+
+Deletes run in bounded batches. One statement removing a year of webhook
+deliveries holds locks and bloats WAL for as long as it takes; a loop of small
+deletes lets the table stay usable while it runs.
+
 ## Open points
 
 Everything known to be incomplete, in rough priority order. Nothing here is a
@@ -1013,15 +1045,13 @@ From the working copy, onto the current model:
   provider defined is `SPLITE` — our own HMAC scheme. A Venezuelan rail is an
   entry in `PROVIDERS` supplying its own verifier and parser, and nothing else
   changes.
-- **`webhook_deliveries` has no retention.** Every delivery is kept, rejected
-  ones included, and nothing prunes it. Fine at beta volume; it belongs with the
-  scheduled purges below.
+- **A real provider adapter**, still: `SPLITE` is our own HMAC scheme.
 - **Staff account lockout.** The rate limiter is per-IP, not per-account, so
   distributed attempts against one account are not slowed. MFA for staff logins
   is also unstarted.
-- **Scheduled purges.** `idempotency_keys` has a `purgeExpired()` that nothing
-  calls; `refresh_sessions` and `fx_rates` accumulate revoked and superseded rows
-  indefinitely. All three need a scheduled job.
+- **Nothing schedules the purge yet.** `npm run purge` exists and is tested;
+  what is missing is a Railway cron entry calling it daily. Until then the
+  tables it clears keep growing.
 
 ### Security and correctness
 

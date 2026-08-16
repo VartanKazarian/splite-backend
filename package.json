@@ -12,6 +12,7 @@
     "migrate": "node scripts/migrate.js",
     "seed": "node scripts/seed.js",
     "onboarding": "node scripts/onboarding.js",
+    "purge": "node scripts/purge.js",
     "secrets": "node scripts/generate-secrets.js",
     "smoke": "node scripts/smoke.js",
     "seed:sql": "node scripts/seed-sql.js",
@@ -26,7 +27,7 @@
     "test:integration:local": "DATABASE_URL=postgres://splite@127.0.0.1:55432/splite_test REDIS_URL=redis://127.0.0.1:56379 DB_SSL=false RUN_INTEGRATION=1 LOG_LEVEL=silent node --test test/integration/*.test.js"
   },
   "dependencies": {
-    "argon2": "^0.41.1",
+    "argon2": "^0.45.1",
     "cors": "^2.8.5",
     "dotenv": "^16.4.5",
     "express": "^4.21.2",
@@ -44,6 +45,6 @@
     "qrcode": "^1.5.4"
   },
   "engines": {
-    "node": ">=20.0.0"
+    "node": ">=22.0.0"
   }
 }

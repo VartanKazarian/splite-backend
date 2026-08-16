@@ -258,5 +258,24 @@ module.exports = {
     // silently disable brute-force protection on the login surface.
     failClosedOnAuth: boolean('RATE_LIMIT_FAIL_CLOSED_ON_AUTH', isProduction)
   },
+  purge: {
+    // Retention is set by what still reads the row, not by what feels tidy.
+    //
+    // A dead refresh session cannot authenticate anything; the extra fortnight
+    // is so reuse detection has something to point at when somebody asks why a
+    // token was refused.
+    refreshSessionDays: integer('PURGE_REFRESH_SESSION_DAYS', 14),
+    // Must outlast an FX outage, because the rate fallback reads this table to
+    // keep bills openable when BCV is unreachable.
+    fxRateDays: integer('PURGE_FX_RATE_DAYS', 180),
+    // Read when a payment is disputed, which happens within a billing cycle.
+    webhookDeliveryDays: integer('PURGE_WEBHOOK_DELIVERY_DAYS', 90),
+    // Must outlast provider retry budgets, which run for days. Deleting one of
+    // these early lets a late redelivery be treated as a new event.
+    webhookEventDays: integer('PURGE_WEBHOOK_EVENT_DAYS', 180),
+    // Distinct from the migration runner's lock: a purge running while a
+    // migration waits would be a deadlock made out of good intentions.
+    lockId: integer('PURGE_ADVISORY_LOCK_ID', 776644)
+  },
   trustProxy: integer('TRUST_PROXY', isProduction ? 1 : 0)
 };
