@@ -447,7 +447,15 @@ each other — which catches the right account entered under the wrong bank in t
 picker, an error that would otherwise surface as a payment that never arrives.
 
 `holderId` is recorded rather than taken from `restaurants.rif`: plenty of small
-restaurants bank on the owner's cédula.
+restaurants bank on the owner's cédula. It accepts `V E J G P C` — the union of
+our original list and the one in Mercantil's own C2P form, which offers `C` and
+omits `E`. Turning away a legitimate account holder at a configuration screen is
+the expensive error.
+
+`phone` must be a **mobile** line — `0412`, `0414`, `0416`, `0424`, `0426`,
+confirmed against that same form. A landline cannot receive a Pago Móvil at all,
+so accepting one configures a payee that can never be paid, and the diner finds
+that out rather than the restaurant.
 
 **The diner is not shown the account number.** A Pago Móvil is addressed by
 bank, phone and identity document; the account number adds nothing to it, and
@@ -469,9 +477,19 @@ id, secret key, integrator id and terminal id — **one set per restaurant** —
 encrypts the identity document, both phone numbers and the payment key with
 AES-128-ECB before sending. That is one integration. Banesco is another.
 
-> The bank list is written from memory and **unverified against Sudeban's
-> register**. The codes are load-bearing — a wrong one sends a diner's money to
-> another institution — so confirm every entry before production.
+> **The bank list is still unverified.** An attempt to check it failed:
+> `sudeban.gob.ve`, `www.sudeban.gob.ve` and `cbn.org.ve` do not respond, and
+> `bcv.org.ve` — which is reachable — publishes no institution-code table. The
+> dead ends are recorded in `src/payments/banks.js` so nobody repeats them; what
+> is left is a Sudeban PDF via a mirror, or asking a bank directly, since
+> Mercantil gives its integrators the `destination_bank_id` list.
+>
+> The cross-check limits the damage meanwhile: an account number carries its own
+> bank's code, so a wrong name-to-code pairing shows up as a rejected form at
+> configuration time rather than as misdirected money. The hole it does not
+> cover is two banks transposed — both would validate. No payment path uses
+> these codes today, so **confirming the list is a prerequisite for the first
+> bank module, not for the first restaurant.**
 
 Deliberately not in migration 017: the bank API credentials. Those belong in
 their own table, encrypted at rest, never returned by any endpoint. Every field

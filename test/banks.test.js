@@ -76,3 +76,29 @@ test('takes a cédula or a RIF as the holder', () => {
   });
   assert.ok(bad.error, 'a bare number is neither');
 });
+
+test('a landline is refused, because it can never receive a Pago Móvil', () => {
+  // Not strictness for its own sake: accepting one configures a payee that
+  // cannot be paid, and the diner discovers that, not the restaurant.
+  const base = { bankCode: '0105', accountNumber: '01050000000000000001', holderId: 'J123456789' };
+  const { error } = payoutSchema.validate({ ...base, phone: '0212-5551234' });
+  assert.match(error.message, /mobile line/);
+});
+
+test('accepts every Venezuelan mobile prefix, however written', () => {
+  // The five in Mercantil's own C2P form: Digitel, Movistar and Movilnet.
+  const base = { bankCode: '0105', accountNumber: '01050000000000000001', holderId: 'J123456789' };
+  for (const phone of ['04121234567', '0414-123.45.67', '+58 416 1234567', '04241234567', '0426 1234567']) {
+    assert.equal(payoutSchema.validate({ ...base, phone }).error, undefined, phone);
+  }
+});
+
+test('takes the union of our identity prefixes and Mercantil\'s', () => {
+  // Their form offers V J G P C and omits E; ours had E and omitted C. Turning
+  // away a legitimate account holder at a configuration screen is the
+  // expensive error, so both are accepted.
+  const base = { bankCode: '0105', accountNumber: '01050000000000000001', phone: '04121234567' };
+  for (const holderId of ['V12345678', 'E12345678', 'J123456789', 'G200012345', 'C12345678']) {
+    assert.equal(payoutSchema.validate({ ...base, holderId }).error, undefined, holderId);
+  }
+});

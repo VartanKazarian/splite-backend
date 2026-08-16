@@ -173,6 +173,10 @@ const webhookProviderParamSchema = Joi.object({
   provider: Joi.string().trim().min(2).max(40).pattern(/^[A-Za-z0-9_-]+$/).required()
 });
 
+// Digitel, Movistar and Movilnet. The complete set, and the reason a Pago Móvil
+// phone can be validated properly rather than merely bounded.
+const MOBILE_PREFIXES = ['412', '414', '416', '424', '426'];
+
 /**
  * Where a restaurant is paid.
  *
@@ -185,13 +189,33 @@ const payoutSchema = Joi.object({
     .valid(...banks.CODES)
     .messages({ 'any.only': 'bankCode must be a known Venezuelan bank code' }),
   accountNumber: Joi.string().trim().pattern(/^[0-9]{20}$/),
-  // The phone the Pago Móvil is registered to. Same loose validation as the
-  // onboarding form, and for the same reason -- one line gets written three
-  // ways -- but normalised to digits before storage so it can be compared.
-  phone: Joi.string().trim().min(7).max(20).pattern(/^[+()\-.\s\d]+$/),
-  // Cédula or RIF of the account holder. V/E/J/P/G then 6 to 9 digits, which
-  // covers both: a cédula is not a RIF and this field takes either.
-  holderId: Joi.string().trim().uppercase().pattern(/^[VEJPG][0-9]{6,9}$/)
+  // The phone the Pago Móvil is registered to.
+  //
+  // Written any way -- one line gets three spellings -- but it must be a mobile
+  // line, and Venezuela has exactly five prefixes. A landline cannot receive a
+  // Pago Móvil at all, so entering one here is not a strict-validation
+  // question: it configures a payee that can never be paid, and the diner finds
+  // out, not the restaurant.
+  //
+  // Confirmed rather than remembered: these are the five in Mercantil's own C2P
+  // form (api-playground/c2p/views/index.ejs).
+  phone: Joi.string().trim().min(7).max(20).pattern(/^[+()\-.\s\d]+$/)
+    .custom((value, helpers) => {
+      const digits = String(value).replace(/\D/g, '');
+      const local = digits.startsWith('58') ? digits.slice(2) : digits.replace(/^0/, '');
+      return MOBILE_PREFIXES.includes(local.slice(0, 3)) && local.length === 10
+        ? value
+        : helpers.message(
+          'phone must be a Venezuelan mobile line (0412, 0414, 0416, 0424 or 0426): a Pago Móvil cannot be received on a landline'
+        );
+    }),
+  // Cédula or RIF of the account holder.
+  //
+  // Mercantil's C2P form offers V, J, G, P and C, and omits E. Ours had E and
+  // omitted C. Accepting the union rather than either list: turning away a
+  // legitimate account holder at a configuration screen is the expensive error,
+  // and the same reasoning applies here as to the RIF check digit.
+  holderId: Joi.string().trim().uppercase().pattern(/^[VEJGPC][0-9]{6,9}$/)
     .messages({ 'string.pattern.base': 'holderId must be a cédula or RIF, e.g. V12345678 or J123456789' })
 })
   .and('bankCode', 'accountNumber', 'phone', 'holderId')

@@ -14,11 +14,32 @@
  * bank is not a claim that it works.
  *
  * ---------------------------------------------------------------------------
- * THIS LIST IS UNVERIFIED. Before anything relies on it in production it must
- * be checked against Sudeban's official register. It is written from memory,
- * the codes are load-bearing -- a wrong one sends a diner's money to another
- * institution -- and "it looked right" is not a standard that survives contact
- * with somebody's payroll. Treat every entry as a draft until confirmed.
+ * STILL UNVERIFIED. Written from memory, and an attempt to check it against an
+ * official source failed:
+ *
+ *   sudeban.gob.ve      no response (connection times out)
+ *   www.sudeban.gob.ve  no response
+ *   cbn.org.ve          no response
+ *   bcv.org.ve          reachable, but publishes no institution-code table --
+ *                       the payment-system pages describe the CCE without
+ *                       listing participants, and the banking-rates page
+ *                       answers 302 with an empty body
+ *
+ * Recorded so nobody repeats those four dead ends. The likely sources left are
+ * a Sudeban PDF via a mirror, or asking a bank directly -- Mercantil hands its
+ * integrators the destination_bank_id list.
+ *
+ * What limits the damage meanwhile is the cross-check in `payoutSchema`: an
+ * account number carries its own bank's code, so a wrong name-to-code pairing
+ * here surfaces as a rejected form at configuration time rather than as
+ * misdirected money. A restaurant picking "Banesco" whose account does not
+ * start with the code recorded against Banesco cannot save.
+ *
+ * That leaves one hole it does not cover: two banks transposed in this list.
+ * Both would validate and both would name the wrong institution to a bank API.
+ * No payment path uses these codes today -- every `integration` is null -- so
+ * the exposure is bounded until one does, and confirming the list is a
+ * prerequisite for the first module rather than for the first restaurant.
  * ---------------------------------------------------------------------------
  */
 
