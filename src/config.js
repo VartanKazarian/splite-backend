@@ -253,6 +253,20 @@ module.exports = {
     // the test suite uses to keep output readable.
     level: process.env.LOG_LEVEL || (isProduction ? 'info' : 'debug')
   },
+  auth: {
+    // Failed logins counted per account, closing the gap the address limiter
+    // leaves: attempts spread over many addresses against one account.
+    //
+    // Generous on purpose. This is cost control and a detection signal, not a
+    // cryptographic bound -- passwords are created with a twelve character
+    // minimum and each attempt costs an Argon2id verify, so guessing was never
+    // the exposure. A tight threshold would instead hand anyone who knows an
+    // owner's email a way to shut their restaurant out of its own till.
+    maxAccountFailures: integer('AUTH_MAX_ACCOUNT_FAILURES', 20),
+    // Short and self-healing, for the same reason. Nothing here ever becomes a
+    // lock that needs a human to lift.
+    accountFailureWindowSeconds: integer('AUTH_ACCOUNT_FAILURE_WINDOW_SECONDS', 900)
+  },
   rateLimit: {
     // Fail closed on authentication endpoints: a Redis outage must not
     // silently disable brute-force protection on the login surface.

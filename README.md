@@ -974,6 +974,52 @@ Deletes run in bounded batches. One statement removing a year of webhook
 deliveries holds locks and bloats WAL for as long as it takes; a loop of small
 deletes lets the table stay usable while it runs.
 
+## Login throttling
+
+Failed logins are counted **per account** as well as per address, since attempts
+spread over many addresses at one account are not slowed by an address limiter
+at all.
+
+Worth being precise about what that buys, because it is easy to file under
+"brute force handled" and stop looking. Passwords are created with a twelve
+character minimum and every attempt costs an Argon2id verify at 19 MiB — a
+thousand addresses at ten a minute never reaches a twelve-character space.
+Guessing was never the exposure. What the counter buys is:
+
+- **Cost.** `login()` hashes a decoy when the account does not exist, so that
+  response timing cannot enumerate accounts. That means *every* attempt pays the
+  full 19 MiB, including attempts against addresses never registered, and a
+  distributed caller bypassed the per-address bound on that work. The counter is
+  checked before the lookup and before the verify, which is where the saving is.
+- **Visibility.** Failures were already audited; a counter is what turns rows in
+  a table nobody reads into something that can raise an alarm.
+
+Two properties matter more than the threshold.
+
+**It must not become the attack.** If hammering an address locked the account
+behind it, anyone who knows an owner's email — it is on the registration form
+and on their receipts — could shut a restaurant out of its own till on a Friday
+night. That is worse than what it prevents. So: no persistent lock, a fifteen
+minute self-healing window, a threshold of 20, and the count cleared the moment
+a real password succeeds. Nothing here ever needs a human to lift it.
+
+**It must not enumerate.** The count is kept against the address that was
+*submitted*, whether or not an account exists for it, and the response is the
+same `RATE_LIMITED` the address limiter returns. If only real accounts could be
+throttled, "this address can be throttled and that one cannot" would be exactly
+the oracle the decoy hash exists to deny. The key is a SHA-256 of the address,
+because Redis keys surface in logs and dashboards and this one is somebody's
+email.
+
+The correct password is refused too while the count stands. That is deliberate:
+a throttle that let the right password through would not be a throttle, since
+the right password is what the attacker is looking for.
+
+**What none of this stops is credential stuffing** — one password per account,
+known from someone else's breach, tried once. No threshold fires on a single
+attempt. MFA and rejecting known-breached passwords at creation are the answers
+to that, and both are unbuilt.
+
 ## Rate limiting
 
 Three layers, and which one does the real work depends on whether the caller has
@@ -1089,9 +1135,9 @@ From the working copy, onto the current model:
   entry in `PROVIDERS` supplying its own verifier and parser, and nothing else
   changes.
 - **A real provider adapter**, still: `SPLITE` is our own HMAC scheme.
-- **Staff account lockout.** The rate limiter is per-IP, not per-account, so
-  distributed attempts against one account are not slowed. MFA for staff logins
-  is also unstarted.
+- **MFA is unstarted**, and it is the auth work that would actually matter. See
+  [Login throttling](#login-throttling) for why the per-account counter added
+  alongside it is not a substitute.
 - **Nothing schedules the purge yet.** `npm run purge` exists and is tested;
   what is missing is a Railway cron entry calling it daily. Until then the
   tables it clears keep growing.

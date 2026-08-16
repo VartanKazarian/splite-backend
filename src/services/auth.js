@@ -5,6 +5,7 @@ const db = require('../connectors/base');
 const config = require('../config');
 const { signAccessToken, signRefreshToken, verifyRefreshToken, hashToken } = require('../utils/tokens');
 const { logAudit } = require('./audit');
+const loginThrottle = require('./loginThrottle');
 
 const ARGON2_OPTIONS = { type: argon2.argon2id, memoryCost: 19456, timeCost: 2, parallelism: 1 };
 
@@ -61,6 +62,12 @@ async function issueSession(user, meta = {}, client = db) {
 }
 
 async function login(email, password, meta = {}) {
+  // Before the lookup and before the verify, because the work this skips is the
+  // reason it exists: every attempt otherwise pays a full Argon2id at 19 MiB,
+  // including attempts against addresses that were never registered, since
+  // `login` hashes a decoy to keep response timing from enumerating accounts.
+  await loginThrottle.assertNotThrottled(email);
+
   // Staff emails are globally unique (migration 002). LIMIT 1 without that
   // constraint would non-deterministically pick a tenant.
   const { rows } = await db.query(
@@ -77,6 +84,9 @@ async function login(email, password, meta = {}) {
     : await argon2.verify(await decoyHash(), password).catch(() => false);
 
   if (!user || !user.active || !passwordOk) {
+    // Counted against the submitted address whether or not it exists, or the
+    // difference becomes the enumeration oracle the decoy hash above denies.
+    await loginThrottle.recordFailure(email);
     await logAudit({
       action: 'AUTH_LOGIN_FAILED',
       restaurantId: user?.restaurant_id ?? null,
@@ -88,6 +98,10 @@ async function login(email, password, meta = {}) {
     });
     throw unauthorized();
   }
+
+  // A password that works is proof the attempts before it were somebody
+  // getting it wrong, not somebody guessing.
+  await loginThrottle.clearFailures(email);
 
   const session = await issueSession(user, meta);
   await logAudit({
