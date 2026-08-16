@@ -91,6 +91,59 @@ function isInForce(valueDate, now = new Date()) {
   return String(valueDate).slice(0, 10) <= caracasToday(now);
 }
 
+/**
+ * The last rate we trusted, when BCV cannot be reached.
+ *
+ * The original code refused outright here, reasoning that serving an old rate
+ * as if it were current is the failure this service exists to prevent. That is
+ * right for a rate that moves continuously, and wrong for this one: BCV
+ * publishes at most once per business day, so between publications the figure
+ * in `fx_rates` is not a stale copy of the current rate, it *is* the current
+ * rate. Refusing it meant bcv.org.ve being unreachable stopped a restaurant
+ * opening any foreign-currency bill -- a third-party website taking the product
+ * down while the correct number sat in our own database.
+ *
+ * Bounded, because the reasoning stops holding once an outage outlives a
+ * publication cycle. Past that the figure really is out of date, and in an
+ * economy that devalues, quietly pricing bills at a rate from weeks ago is
+ * worse than declining to open one. A restaurant told "no rate available" calls
+ * somebody; a restaurant undercharging by a third for a fortnight does not
+ * notice until it counts the money.
+ *
+ * The source is marked so the bill records how the rate was obtained. It is
+ * snapshotted onto the bill for exactly this kind of question.
+ */
+async function lastInForce(currency, reason) {
+  let historical;
+  try {
+    historical = await inForceFromHistory(currency);
+  } catch (err) {
+    logger.error({ event: 'FX_HISTORY_UNAVAILABLE', currency, err }, 'Could not read rate history');
+    return null;
+  }
+  if (!historical) return null;
+
+  const ageDays = Math.floor(
+    (Date.parse(`${caracasToday()}T00:00:00Z`) - Date.parse(`${historical.valueDate}T00:00:00Z`))
+    / 86400000
+  );
+
+  if (ageDays > config.fx.maxFallbackAgeDays) {
+    logger.error(
+      { event: 'FX_FALLBACK_TOO_OLD', currency, reason, valueDate: historical.valueDate, ageDays },
+      'Last known rate is too old to serve; refusing rather than pricing on it'
+    );
+    return null;
+  }
+
+  logger.warn(
+    { event: 'FX_SERVED_FROM_HISTORY', currency, reason, valueDate: historical.valueDate, ageDays },
+    'Serving the last in-force rate because a fresh one could not be obtained'
+  );
+
+  return { ...historical, source: `${historical.source}_LAST_IN_FORCE`.slice(0, 40) };
+}
+
 /** The newest rate for a currency whose value date has already arrived. */
 async function inForceFromHistory(currency) {
   const { rows } = await db.query(
@@ -172,14 +225,15 @@ async function getRateFor(currency) {
   try {
     await inFlight;
   } catch (err) {
-    // Deliberately not falling back to a stale cache: serving an old rate as if
-    // it were current is the failure mode this service exists to prevent.
     logger.error({ event: 'FX_UNAVAILABLE', currency, err }, 'Rate unavailable');
-    return null;
+    return lastInForce(currency, 'FETCH_FAILED');
   }
 
   const fresh = caches.get(currency);
-  if (!fresh) return null;
+  // Reached BCV and still have no usable figure for this currency -- the
+  // deviation guard rejects a rate that moved more than it plausibly could,
+  // which is exactly the case where the last rate we trusted beats none.
+  if (!fresh) return lastInForce(currency, 'REJECTED_BY_GUARD');
 
   // BCV publishes around 16:30 Caracas for the next business day, so between
   // then and midnight the page shows a rate that does not apply yet.

@@ -213,3 +213,84 @@ test('VES needs no rate and never reaches the provider', async () => {
   assert.equal(ves.source, 'IDENTITY');
   assert.equal(called, false);
 });
+
+/**
+ * Falling back to the last in-force rate when BCV cannot be reached.
+ *
+ * The behaviour this replaces refused outright, which meant bcv.org.ve being
+ * unreachable stopped a restaurant opening any foreign-currency bill. The rate
+ * changes at most once per business day, so between publications the stored
+ * figure is not a stale copy of the current rate -- it is the current rate.
+ */
+
+/** Answers the history query with a rate dated `daysAgo`, Caracas time. */
+function historyDated(daysAgo) {
+  const d = new Date(Date.now() - daysAgo * 86400000);
+  const valueDate = new Intl.DateTimeFormat('en-CA', {
+    timeZone: 'America/Caracas', year: 'numeric', month: '2-digit', day: '2-digit'
+  }).format(d);
+
+  db.query = async sql => {
+    if (/FROM fx_rates/.test(sql) && /value_date <=/.test(sql)) {
+      return { rows: [{ rate: '757.54060000', source: 'BCV', value_date: valueDate }] };
+    }
+    return { rows: [] };
+  };
+  return valueDate;
+}
+
+test('serves the last in-force rate when the provider is unreachable', async () => {
+  const valueDate = historyDated(0);
+  provide(async () => { throw new Error('bcv.org.ve unreachable'); });
+
+  const rate = await fx.getRateFor('USD');
+  assert.ok(rate, 'a reachable database holding today\'s rate must not produce an outage');
+  assert.equal(rate.rate, 757.5406);
+  assert.equal(rate.valueDate, valueDate);
+  // Marked, because the bill snapshots the source and "how did we get this
+  // number" is exactly the question that gets asked afterwards.
+  assert.equal(rate.source, 'BCV_LAST_IN_FORCE');
+});
+
+test('refuses once the last rate is older than the fallback window', async () => {
+  historyDated(config.fx.maxFallbackAgeDays + 1);
+  provide(async () => { throw new Error('bcv.org.ve unreachable'); });
+
+  // Past a publication cycle the figure really has stopped being true, and in
+  // an economy that devalues, quietly pricing on it is worse than declining.
+  assert.equal(await fx.getRateFor('USD'), null);
+});
+
+test('serves a rate exactly at the edge of the window', async () => {
+  historyDated(config.fx.maxFallbackAgeDays);
+  provide(async () => { throw new Error('bcv.org.ve unreachable'); });
+
+  const rate = await fx.getRateFor('USD');
+  assert.ok(rate, 'a long weekend must not be treated as an outage');
+});
+
+test('falls back when the deviation guard rejects the fetched rate', async () => {
+  // The guard exists because a page that changes shape yields a plausible but
+  // wrong number. Having rejected it, the last rate we trusted beats none.
+  historyDated(0);
+  provide(async () => ({ USD: { rate: 999999, source: 'BCV', valueDate: null } }));
+
+  const rate = await fx.getRateFor('USD');
+  assert.equal(rate?.source, 'BCV_LAST_IN_FORCE');
+});
+
+test('still returns nothing when there is no history to fall back on', async () => {
+  db.query = async () => ({ rows: [] });
+  provide(async () => { throw new Error('bcv.org.ve unreachable'); });
+
+  assert.equal(await fx.getRateFor('USD'), null);
+});
+
+test('an unreachable database during fallback is not an exception', async () => {
+  db.query = async () => { throw new Error('database down'); };
+  provide(async () => { throw new Error('bcv.org.ve unreachable'); });
+
+  // Both dependencies down is a real state, and it must produce "no rate"
+  // rather than a 500 from the bill-opening route.
+  assert.equal(await fx.getRateFor('USD'), null);
+});

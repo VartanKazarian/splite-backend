@@ -132,7 +132,13 @@ module.exports = {
   get webhookSecret() { return secretValue('webhookSecret'); },
   webhookToleranceSeconds: integer('WEBHOOK_TOLERANCE_SECONDS', 300),
   guest: {
-    sessionTtlSeconds: integer('GUEST_SESSION_TTL_SECONDS', 60 * 60 * 2)
+    // Idle timeout, not a total lifetime: every authenticated request pushes it
+    // back. Two hours of *silence* from a table means the diner has gone.
+    sessionTtlSeconds: integer('GUEST_SESSION_TTL_SECONDS', 60 * 60 * 2),
+    // The ceiling a sliding session cannot pass, however much it is used. Long
+    // enough that no real sitting reaches it, short enough that a phone left on
+    // a table overnight does not hold a valid credential in the morning.
+    maxSessionAgeSeconds: integer('GUEST_MAX_SESSION_AGE_SECONDS', 60 * 60 * 12)
   },
   mail: {
     transport: mailTransport,
@@ -218,6 +224,12 @@ module.exports = {
     // a page that changes shape can yield a plausible but wrong number, and
     // silently repricing every menu is worse than showing no USD line.
     maxDeviationPct: Number(process.env.FX_MAX_DEVIATION_PCT || 5),
+    // How far back the last known in-force rate may be used when BCV cannot be
+    // reached. BCV publishes on business days, so a long weekend with a public
+    // holiday either side is the widest normal gap -- five days covers it
+    // without letting a genuine multi-week outage price bills on a figure that
+    // has stopped being true.
+    maxFallbackAgeDays: integer('FX_MAX_FALLBACK_AGE_DAYS', 5),
     minRate: Number(process.env.FX_MIN_RATE || 1),
     maxRate: Number(process.env.FX_MAX_RATE || 1e9),
     // bcv.org.ve serves an incomplete certificate chain: it presents the wrong

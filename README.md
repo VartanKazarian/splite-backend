@@ -120,6 +120,61 @@ already lost precision past 2^53 by the time it arrives. Payments accept an
 `Idempotency-Key` header (or `idempotencyKey` in the body); replaying a
 completed key returns the stored response instead of charging twice.
 
+## When BCV cannot be reached
+
+A foreign-currency bill needs a rate to have a settleable total, so the rate is
+fetched and frozen when the bill opens. The question is what to do when
+bcv.org.ve does not answer, which in Venezuela is not rare.
+
+It used to refuse outright, on the reasoning that serving an old rate as if it
+were current is the failure this service exists to prevent. That is right for a
+rate that moves continuously and wrong for this one: **BCV publishes at most
+once per business day**, so between publications the figure in `fx_rates` is not
+a stale copy of the current rate, it *is* the current rate. Refusing it meant a
+third-party website being down stopped a restaurant opening any USD bill — the
+product unavailable while the correct number sat in our own database.
+
+So the fetch failing falls back to the newest stored rate whose value date has
+already arrived, and the same happens when the deviation guard rejects a fetched
+rate: having decided not to trust the new number, the last one we did trust
+beats none.
+
+Bounded at `FX_MAX_FALLBACK_AGE_DAYS` (5), because the reasoning stops holding
+once an outage outlives a publication cycle. Past that the figure really has
+stopped being true, and in an economy that devalues, quietly pricing bills on it
+is worse than declining to open one: a restaurant told "no rate available" calls
+somebody, a restaurant undercharging by a third for a fortnight does not notice
+until it counts the money.
+
+The bill records how the rate was obtained — `fxRateSource` reads
+`BCV_LAST_IN_FORCE` rather than `BCV` — because "where did this number come
+from" is exactly the question asked afterwards.
+
+## Guest sessions
+
+Scanning the QR exchanges it for a session held in Redis, and only the SHA-256
+of the token is stored.
+
+The TTL is an **idle timeout, not a total lifetime**: every authenticated
+request pushes it back. It was previously set once at creation and never
+touched, so a session died two hours after the scan regardless of what the diner
+was doing — which is sitting at the table, for longer than two hours, with the
+expiry landing at the one moment it had to work: opening the phone to pay. And
+it was unrecoverable in practice, because the client strips the QR token out of
+the URL after exchanging it and so has nothing left to mint a new session with.
+The diner had to get up and scan the sticker again.
+
+`GUEST_MAX_SESSION_AGE_SECONDS` (12h) is the ceiling sliding cannot pass.
+Without it, "renew on every use" means a session something keeps touching — a
+tab open on a phone in a drawer, a client polling on a timer — never expires at
+all. A session past the ceiling is deleted rather than left to lapse: a
+credential known to be dead should not sit in the store.
+
+Sessions live only in Redis, so a Redis restart drops every one of them
+mid-service. Diners recover by re-scanning, which works because the QR is
+permanent — but see [Open points](#open-points): binding sessions to the open
+bill is the durable fix.
+
 ## Bill lifecycle and the one-open-bill rule
 
 A restaurant table has **at most one `OPEN` bill**, enforced at two levels:
