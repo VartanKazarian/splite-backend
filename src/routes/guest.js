@@ -16,6 +16,7 @@ const claveGuide = require('../payments/c2pClaveGuide');
 const { requestHash, begin, complete, abort } = require('../services/idempotency');
 const { logger } = require('../connectors/logger');
 const splitEngine = require('../services/splitEngine');
+const splits = require('../services/splits');
 const dto = require('../dto');
 const { logAudit, auditContext } = require('../services/audit');
 const { ApiError } = require('../errors');
@@ -247,6 +248,7 @@ router.post('/bill/payment-claims', authenticateGuest, perSession, validateBody(
       phoneOrigin: req.body.phoneOrigin,
       bankOrigin: req.body.bankOrigin,
       payer: { type: 'GUEST', id: null },
+      splitParticipantId: req.body.splitParticipantId ?? null,
       meta: { ip: req.ip, userAgent: req.get('user-agent'), requestId: req.id }
     });
 
@@ -331,7 +333,8 @@ router.post(
           phone: req.body.phone,
           clave: req.body.clave
         },
-        idempotencyKey: key
+        idempotencyKey: key,
+        splitParticipantId: req.body.splitParticipantId ?? null
       });
 
       // Stored before replying, so a retry that races the response replays the
@@ -363,6 +366,39 @@ router.post(
     }
   }
 );
+
+/**
+ * Agrees a persistent split of the guest's own bill.
+ *
+ * The diners at a table settle on who pays what and store it, so each can then
+ * pay their own share -- by Pago Movil claim or C2P -- and no one can pay more
+ * than their share. Takes no bill id, like every guest route: the table comes
+ * from the session.
+ */
+router.post('/bill/splits', authenticateGuest, perSession, validateBody(splitPreviewSchema), async (req, res, next) => {
+  try {
+    const bill = await openBillForGuest(req.guest);
+    const items = req.body.mode === 'ITEMS'
+      ? await billItems.listForBill({ restaurantId: req.guest.restaurantId, billId: bill.id })
+      : [];
+    const split = await splits.createSplit({
+      restaurantId: req.guest.restaurantId,
+      bill, items, request: req.body,
+      createdBy: { type: 'GUEST', id: null }
+    });
+    res.status(201).json(dto.billSplit(split));
+  } catch (err) { next(err); }
+});
+
+/** The live split on the guest's bill, or 404. */
+router.get('/bill/splits/active', authenticateGuest, perSession, async (req, res, next) => {
+  try {
+    const bill = await openBillForGuest(req.guest);
+    const split = await splits.getActiveSplit({ restaurantId: req.guest.restaurantId, billId: bill.id, bill });
+    if (!split) throw new ApiError('SPLIT_NOT_FOUND', 'This bill has no active split');
+    res.json(dto.billSplit(split));
+  } catch (err) { next(err); }
+});
 
 /**
  * A split of the guest's own bill.

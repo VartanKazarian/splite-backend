@@ -297,6 +297,10 @@ const schemas = {
         maxLength: 128,
         pattern: '^[A-Za-z0-9._:-]+$',
         description: 'Used when the Idempotency-Key header is absent.'
+      },
+      splitParticipantId: {
+        type: 'string', format: 'uuid',
+        description: 'Optional. Settle one participant share of a persistent split; the payment may not exceed what is left on that share.'
       }
     }
   },
@@ -389,6 +393,50 @@ const schemas = {
           }
         }
       }
+    }
+  },
+
+  BillSplit: {
+    type: 'object',
+    description:
+      'A persistent split: an agreed plan for who pays which part of a bill. The participant shares sum to basisVes, the outstanding balance when the split was agreed, and each share is paid down independently under its own ceiling. Not a second source of truth for how much the bill has been paid.',
+    properties: {
+      id: { type: 'string', format: 'uuid' },
+      billId: { type: 'string', format: 'uuid' },
+      mode: { type: 'string', enum: ['FULL', 'EQUAL', 'ITEMS', 'CUSTOM'] },
+      status: { type: 'string', enum: ['ACTIVE', 'VOID'] },
+      currency: { type: 'string', const: 'VES' },
+      basisVes: { ...minorUnits, description: 'The outstanding balance the shares divide. Frozen at creation.' },
+      createdByType: { type: 'string', enum: ['STAFF', 'GUEST'] },
+      participants: {
+        type: 'array',
+        items: {
+          type: 'object',
+          properties: {
+            id: { type: 'string', format: 'uuid', description: 'The persisted share id. Cite it on a payment to settle this share.' },
+            ref: { type: 'string', description: 'The client-supplied participant label the split was created with.' },
+            name: { type: ['string', 'null'] },
+            amountVes: { ...minorUnits, description: 'The assigned share.' },
+            amountPaidVes: { ...minorUnits, description: 'How much of the share has settled.' },
+            remainingVes: minorUnits,
+            settled: { type: 'boolean' },
+            usdReference: { type: ['string', 'null'] }
+          }
+        }
+      },
+      claims: {
+        type: 'array',
+        description: 'ITEMS only. Which persisted participant claimed which line.',
+        items: {
+          type: 'object',
+          properties: {
+            billItemId: { type: 'string', format: 'uuid' },
+            participantId: { type: 'string', format: 'uuid' }
+          }
+        }
+      },
+      createdAt: { type: 'string', format: 'date-time' },
+      updatedAt: { type: 'string', format: 'date-time' }
     }
   },
 
@@ -906,7 +954,8 @@ Object.assign(schemas, {
         description: 'The reference the payer\'s bank assigned. Required — a claim without one asks staff to find an unidentified transfer among the evening\'s takings. Digits, spaces, dots and dashes; normalised to digits before storage, so one reference cannot claim two bills by being typed differently.'
       },
       phoneOrigin: { type: 'string', description: 'Optional. Not proof, but it is how a movement is found quickly.' },
-      bankOrigin: { type: 'string', description: 'Optional.' }
+      bankOrigin: { type: 'string', description: 'Optional.' },
+      splitParticipantId: { type: 'string', format: 'uuid', description: 'Optional. Attribute this declared payment to a split share, credited when staff confirm it.' }
     }
   },
 
@@ -1489,6 +1538,49 @@ const paths = {
     }
   },
 
+  '/api/v1/guest/bill/splits': {
+    post: {
+      tags: ['Guest'],
+      summary: 'Agree a persistent split of the guest\'s bill',
+      operationId: 'createGuestSplit',
+      description: [
+        'Authenticated with a guest session. **Takes no bill id** \u2014 the table comes from the session.',
+        '',
+        'Stores an agreed split so each diner can then pay their own share (by Pago M\u00f3vil claim or',
+        'C2P) and no one can pay more than their share. The shares sum to the outstanding balance by',
+        'construction. One live split per bill: void the current one before agreeing another.'
+      ].join('\n'),
+      security: [{ guestAuth: [] }],
+      requestBody: { required: true, content: { 'application/json': { schema: ref('SplitPreviewRequest') } } },
+      responses: {
+        201: { description: 'The split was agreed and stored.', content: { 'application/json': { schema: ref('BillSplit') } } },
+        400: response('BadRequest'),
+        401: response('Unauthorized'),
+        404: response('NotFound'),
+        409: response('Conflict'),
+        429: response('TooManyRequests'),
+        500: response('ServerError')
+      }
+    }
+  },
+
+  '/api/v1/guest/bill/splits/active': {
+    get: {
+      tags: ['Guest'],
+      summary: 'The live split on the guest\'s bill',
+      operationId: 'getGuestActiveSplit',
+      description: 'Authenticated with a guest session. 404 when the bill has no active split.',
+      security: [{ guestAuth: [] }],
+      responses: {
+        200: { description: 'The active split.', content: { 'application/json': { schema: ref('BillSplit') } } },
+        401: response('Unauthorized'),
+        404: response('NotFound'),
+        429: response('TooManyRequests'),
+        500: response('ServerError')
+      }
+    }
+  },
+
   '/api/v1/guest/bill/split/preview': {
     post: {
       tags: ['Guest'],
@@ -1823,6 +1915,79 @@ const paths = {
       ],
       responses: {
         200: { description: 'Removed.', content: { 'application/json': { schema: ref('BillItemRemoval') } } },
+        ...commonErrors,
+        403: response('Forbidden'),
+        404: response('NotFound'),
+        409: response('Conflict')
+      }
+    }
+  },
+
+  '/api/v1/bills/{id}/splits': {
+    post: {
+      tags: ['Bills'],
+      summary: 'Agree a persistent split of a bill',
+      operationId: 'createBillSplit',
+      'x-required-roles': ['OWNER', 'MANAGER', 'CASHIER', 'WAITER'],
+      description: [
+        'Roles: OWNER, MANAGER, CASHIER, WAITER.',
+        '',
+        'The advisory preview computes the same numbers; this stores them, so a group settles',
+        'against one agreed plan from several phones. Shares sum to the outstanding balance by',
+        'construction, and the database refuses a split that does not. One live split per bill \u2014',
+        '409 `SPLIT_ALREADY_EXISTS` until the current one is voided.'
+      ].join('\n'),
+      security: staff,
+      parameters: [{ $ref: '#/components/parameters/BillId' }],
+      requestBody: { required: true, content: { 'application/json': { schema: ref('SplitPreviewRequest') } } },
+      responses: {
+        201: { description: 'The split was agreed and stored.', content: { 'application/json': { schema: ref('BillSplit') } } },
+        ...commonErrors,
+        403: response('Forbidden'),
+        404: response('NotFound'),
+        409: response('Conflict')
+      }
+    }
+  },
+
+  '/api/v1/bills/{id}/splits/active': {
+    get: {
+      tags: ['Bills'],
+      summary: 'The bill\'s live split',
+      operationId: 'getBillActiveSplit',
+      'x-required-roles': ['OWNER', 'MANAGER', 'CASHIER', 'WAITER'],
+      description: 'Roles: OWNER, MANAGER, CASHIER, WAITER. 404 when the bill has no active split.',
+      security: staff,
+      parameters: [{ $ref: '#/components/parameters/BillId' }],
+      responses: {
+        200: { description: 'The active split.', content: { 'application/json': { schema: ref('BillSplit') } } },
+        ...commonErrors,
+        403: response('Forbidden'),
+        404: response('NotFound')
+      }
+    }
+  },
+
+  '/api/v1/bills/{id}/splits/{splitId}/void': {
+    post: {
+      tags: ['Bills'],
+      summary: 'Void a split',
+      operationId: 'voidBillSplit',
+      'x-required-roles': ['OWNER', 'MANAGER', 'CASHIER'],
+      description: [
+        'Roles: OWNER, MANAGER, CASHIER.',
+        '',
+        'Refused once any share has been paid into \u2014 409 `SPLIT_HAS_PAYMENTS`. A plan people have',
+        'started settling against is a record, not a draft; change it by agreeing a fresh split on the',
+        'remaining balance.'
+      ].join('\n'),
+      security: staff,
+      parameters: [
+        { $ref: '#/components/parameters/BillId' },
+        { name: 'splitId', in: 'path', required: true, schema: { type: 'string', format: 'uuid' } }
+      ],
+      responses: {
+        200: { description: 'The split, now VOID.', content: { 'application/json': { schema: ref('BillSplit') } } },
         ...commonErrors,
         403: response('Forbidden'),
         404: response('NotFound'),

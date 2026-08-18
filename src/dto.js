@@ -447,8 +447,49 @@ function c2pCharge(row) {
   };
 }
 
+/**
+ * A persistent split, as staff and diners read it.
+ *
+ * Presentation only: the numbers are computed and frozen by the engine and the
+ * database. `remainingVes` and `settled` per participant are derived here so a
+ * client renders "who still owes what" without arithmetic of its own -- the
+ * same principle the split engine follows.
+ *
+ * Takes the shape services/splits.js returns: { split, participants, claims, fxRate }.
+ */
+function billSplit({ split, participants, claims = [], fxRate = null }) {
+  return {
+    id: split.id,
+    billId: split.bill_id,
+    mode: split.mode,
+    status: split.status,
+    currency: 'VES',
+    basisVes: String(split.basis_ves),
+    createdByType: split.created_by_type,
+    participants: participants.map(row => {
+      const amount = BigInt(row.amount_ves);
+      const paid = BigInt(row.amount_paid_ves);
+      const remaining = amount - paid;
+      return {
+        id: row.id,
+        ref: row.ext_ref,
+        name: row.name ?? null,
+        amountVes: amount.toString(),
+        amountPaidVes: paid.toString(),
+        remainingVes: remaining.toString(),
+        settled: remaining === 0n,
+        usdReference: usdReference(amount.toString(), fxRate)
+      };
+    }),
+    // ITEMS only. Which persisted participant claimed which line.
+    claims: claims.map(c => ({ billItemId: c.bill_item_id, participantId: c.participant_id })),
+    createdAt: isoTimestamp(split.created_at),
+    updatedAt: isoTimestamp(split.updated_at)
+  };
+}
+
 module.exports = {
   isoDate, isoTimestamp,
   bill, billItem, billWithItems, guestBill,
-  table, floorTable, product, publicProduct, menuSettings, menuCharges, account, payout, guestPayee, paymentProviderConfig, paymentClaim, staffPaymentClaim, c2pCharge
+  table, floorTable, product, publicProduct, menuSettings, menuCharges, account, payout, guestPayee, paymentProviderConfig, paymentClaim, staffPaymentClaim, c2pCharge, billSplit
 };

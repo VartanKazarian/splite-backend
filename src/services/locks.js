@@ -155,6 +155,7 @@ async function processSplitPayment({
   idempotencyKey = null,
   paymentMethod = 'SPLITE',
   payer = { type: 'STAFF', id: null },
+  splitParticipantId = null,
   tendered = null
 }) {
   const amount = toPaymentAmount(amountPaidMinorUnits);
@@ -179,6 +180,7 @@ async function processSplitPayment({
       idempotencyKey,
       payerType: payer?.type ?? 'STAFF',
       payerId: payer?.id ?? null,
+      splitParticipantId,
       tendered
     });
 

@@ -1,5 +1,6 @@
 const { getContext } = require('../connectors/logger');
 const { ApiError } = require('../errors');
+const { advanceShare } = require('./splits');
 
 /**
  * The payment ledger.
@@ -12,7 +13,7 @@ const { ApiError } = require('../errors');
 
 const PAYMENT_COLUMNS = `id, restaurant_id, bill_id, amount_ves, status, payment_method,
                          provider, provider_payment_id, declared_reference, idempotency_key,
-                         payer_type, payer_id,
+                         payer_type, payer_id, split_participant_id,
                          tendered_amount, tendered_currency, tendered_fx_rate,
                          metadata, created_at, updated_at`;
 
@@ -29,6 +30,11 @@ const PAYMENT_COLUMNS = `id, restaurant_id, bill_id, amount_ves, status, payment
  * which made every C2P charge fail at the service layer with a 409 naming a
  * transition the database would happily have performed.
  */
+// A payment is "settled" -- money has moved and the bill was advanced -- only
+// as SUCCEEDED. Its refund descendants have not moved new money, so a share is
+// credited on the way into SUCCEEDED and never again.
+const SETTLED_STATUSES = new Set(['SUCCEEDED']);
+
 const ALLOWED_TRANSITIONS = {
   // IN_DOUBT and AMBIGUOUS belong to provider-initiated rails: we asked a bank
   // to move money and were not told whether it did (IN_DOUBT), or money exists
@@ -83,6 +89,10 @@ async function recordPayment(client, {
   idempotencyKey = null,
   payerType = 'STAFF',
   payerId = null,
+  // When set, this payment settles one participant's share of a persistent
+  // split. The share is advanced below, in this same transaction, once the
+  // payment is in a settled state -- see advanceShare.
+  splitParticipantId = null,
   tendered = null,
   metadata = null,
   reason = null
@@ -91,9 +101,9 @@ async function recordPayment(client, {
     `INSERT INTO payments
        (restaurant_id, bill_id, amount_ves, status, payment_method,
         provider, provider_payment_id, declared_reference, idempotency_key,
-        payer_type, payer_id,
+        payer_type, payer_id, split_participant_id,
         tendered_amount, tendered_currency, tendered_fx_rate, metadata)
-     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15)
+     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16)
      RETURNING ${PAYMENT_COLUMNS}`,
     [
       restaurantId,
@@ -107,6 +117,7 @@ async function recordPayment(client, {
       idempotencyKey,
       payerType,
       payerId,
+      splitParticipantId,
       tendered?.amount != null ? String(tendered.amount) : null,
       tendered?.currency ?? null,
       tendered?.fxRate ?? null,
@@ -125,6 +136,13 @@ async function recordPayment(client, {
     actorId: payerId
   });
 
+  // A payment written already settled -- a staff platform payment -- credits its
+  // share here. One written PENDING (a claim, a C2P charge) credits it later,
+  // when transitionPayment moves it to SUCCEEDED.
+  if (splitParticipantId && SETTLED_STATUSES.has(status)) {
+    await advanceShare(client, { splitParticipantId, restaurantId, amountVes, billId });
+  }
+
   return payment;
 }
 
@@ -138,7 +156,7 @@ async function transitionPayment(client, {
   paymentId, restaurantId, toStatus, reason = null, actorType = 'SYSTEM', actorId = null
 }) {
   const { rows } = await client.query(
-    `SELECT id, status FROM payments
+    `SELECT id, status, split_participant_id, amount_ves, bill_id FROM payments
       WHERE id = $1 AND restaurant_id = $2
       FOR UPDATE`,
     [paymentId, restaurantId]
@@ -174,6 +192,18 @@ async function transitionPayment(client, {
     actorType,
     actorId
   });
+
+  // Settling a payment that names a share credits that share, in the same
+  // transaction that moved the money. Only on the way *into* a settled state,
+  // so a later refund transition does not double-credit.
+  if (current.split_participant_id && SETTLED_STATUSES.has(toStatus)) {
+    await advanceShare(client, {
+      splitParticipantId: current.split_participant_id,
+      restaurantId,
+      amountVes: current.amount_ves,
+      billId: current.bill_id
+    });
+  }
 
   return updated.rows[0];
 }

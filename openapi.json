@@ -51,6 +51,12 @@
       "PAYMENT_CLAIM_NOT_PENDING": {
         "status": "string -- the status the claim is actually in"
       },
+      "SPLIT_NOT_ACTIVE": {
+        "status": "string -- the status the split is actually in"
+      },
+      "SPLIT_SHARE_OVERPAID": {
+        "shareRemainingVes": "string -- minor units still owed on that share"
+      },
       "PAYMENT_PROVIDER_MISCONFIGURED": {
         "provider": "string -- the rail that is configured but not usable"
       },
@@ -298,6 +304,8 @@
                   "RESTAURANT_NOT_FOUND",
                   "OPEN_BILL_NOT_FOUND",
                   "PAYMENT_CLAIM_NOT_FOUND",
+                  "SPLIT_NOT_FOUND",
+                  "SPLIT_SHARE_NOT_FOUND",
                   "WEBHOOK_PROVIDER_UNKNOWN",
                   "OPEN_BILL_EXISTS",
                   "BILL_NOT_OPEN",
@@ -319,6 +327,10 @@
                   "RIF_ALREADY_REGISTERED",
                   "PAYMENT_REFERENCE_ALREADY_USED",
                   "PAYMENT_CLAIM_NOT_PENDING",
+                  "SPLIT_ALREADY_EXISTS",
+                  "SPLIT_NOT_ACTIVE",
+                  "SPLIT_HAS_PAYMENTS",
+                  "SPLIT_SHARE_OVERPAID",
                   "PAYMENT_CREDENTIALS_UNREADABLE",
                   "PAYMENT_PROVIDER_UNKNOWN",
                   "RATE_LIMITED",
@@ -814,6 +826,11 @@
             "maxLength": 128,
             "pattern": "^[A-Za-z0-9._:-]+$",
             "description": "Used when the Idempotency-Key header is absent."
+          },
+          "splitParticipantId": {
+            "type": "string",
+            "format": "uuid",
+            "description": "Optional. Settle one participant share of a persistent split; the payment may not exceed what is left on that share."
           }
         }
       },
@@ -1036,6 +1053,136 @@
                 }
               }
             }
+          }
+        }
+      },
+      "BillSplit": {
+        "type": "object",
+        "description": "A persistent split: an agreed plan for who pays which part of a bill. The participant shares sum to basisVes, the outstanding balance when the split was agreed, and each share is paid down independently under its own ceiling. Not a second source of truth for how much the bill has been paid.",
+        "properties": {
+          "id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "billId": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "mode": {
+            "type": "string",
+            "enum": [
+              "FULL",
+              "EQUAL",
+              "ITEMS",
+              "CUSTOM"
+            ]
+          },
+          "status": {
+            "type": "string",
+            "enum": [
+              "ACTIVE",
+              "VOID"
+            ]
+          },
+          "currency": {
+            "type": "string",
+            "const": "VES"
+          },
+          "basisVes": {
+            "type": "string",
+            "pattern": "^[0-9]+$",
+            "description": "The outstanding balance the shares divide. Frozen at creation.",
+            "examples": [
+              "756710"
+            ]
+          },
+          "createdByType": {
+            "type": "string",
+            "enum": [
+              "STAFF",
+              "GUEST"
+            ]
+          },
+          "participants": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "id": {
+                  "type": "string",
+                  "format": "uuid",
+                  "description": "The persisted share id. Cite it on a payment to settle this share."
+                },
+                "ref": {
+                  "type": "string",
+                  "description": "The client-supplied participant label the split was created with."
+                },
+                "name": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "amountVes": {
+                  "type": "string",
+                  "pattern": "^[0-9]+$",
+                  "description": "The assigned share.",
+                  "examples": [
+                    "756710"
+                  ]
+                },
+                "amountPaidVes": {
+                  "type": "string",
+                  "pattern": "^[0-9]+$",
+                  "description": "How much of the share has settled.",
+                  "examples": [
+                    "756710"
+                  ]
+                },
+                "remainingVes": {
+                  "type": "string",
+                  "pattern": "^[0-9]+$",
+                  "description": "Integer minor units (céntimos) as a string, so values beyond 2^53 survive JSON.",
+                  "examples": [
+                    "756710"
+                  ]
+                },
+                "settled": {
+                  "type": "boolean"
+                },
+                "usdReference": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                }
+              }
+            }
+          },
+          "claims": {
+            "type": "array",
+            "description": "ITEMS only. Which persisted participant claimed which line.",
+            "items": {
+              "type": "object",
+              "properties": {
+                "billItemId": {
+                  "type": "string",
+                  "format": "uuid"
+                },
+                "participantId": {
+                  "type": "string",
+                  "format": "uuid"
+                }
+              }
+            }
+          },
+          "createdAt": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "updatedAt": {
+            "type": "string",
+            "format": "date-time"
           }
         }
       },
@@ -2197,6 +2344,11 @@
           "bankOrigin": {
             "type": "string",
             "description": "Optional."
+          },
+          "splitParticipantId": {
+            "type": "string",
+            "format": "uuid",
+            "description": "Optional. Attribute this declared payment to a split share, credited when staff confirm it."
           }
         }
       },
@@ -3075,6 +3227,100 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/GuestBill"
+                }
+              }
+            }
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "404": {
+            "$ref": "#/components/responses/NotFound"
+          },
+          "429": {
+            "$ref": "#/components/responses/TooManyRequests"
+          },
+          "500": {
+            "$ref": "#/components/responses/ServerError"
+          }
+        }
+      }
+    },
+    "/api/v1/guest/bill/splits": {
+      "post": {
+        "tags": [
+          "Guest"
+        ],
+        "summary": "Agree a persistent split of the guest's bill",
+        "operationId": "createGuestSplit",
+        "description": "Authenticated with a guest session. **Takes no bill id** — the table comes from the session.\n\nStores an agreed split so each diner can then pay their own share (by Pago Móvil claim or\nC2P) and no one can pay more than their share. The shares sum to the outstanding balance by\nconstruction. One live split per bill: void the current one before agreeing another.",
+        "security": [
+          {
+            "guestAuth": []
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SplitPreviewRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "The split was agreed and stored.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BillSplit"
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "404": {
+            "$ref": "#/components/responses/NotFound"
+          },
+          "409": {
+            "$ref": "#/components/responses/Conflict"
+          },
+          "429": {
+            "$ref": "#/components/responses/TooManyRequests"
+          },
+          "500": {
+            "$ref": "#/components/responses/ServerError"
+          }
+        }
+      }
+    },
+    "/api/v1/guest/bill/splits/active": {
+      "get": {
+        "tags": [
+          "Guest"
+        ],
+        "summary": "The live split on the guest's bill",
+        "operationId": "getGuestActiveSplit",
+        "description": "Authenticated with a guest session. 404 when the bill has no active split.",
+        "security": [
+          {
+            "guestAuth": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The active split.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BillSplit"
                 }
               }
             }
@@ -4023,6 +4269,198 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/BillItemRemoval"
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "403": {
+            "$ref": "#/components/responses/Forbidden"
+          },
+          "404": {
+            "$ref": "#/components/responses/NotFound"
+          },
+          "409": {
+            "$ref": "#/components/responses/Conflict"
+          },
+          "429": {
+            "$ref": "#/components/responses/TooManyRequests"
+          },
+          "500": {
+            "$ref": "#/components/responses/ServerError"
+          }
+        }
+      }
+    },
+    "/api/v1/bills/{id}/splits": {
+      "post": {
+        "tags": [
+          "Bills"
+        ],
+        "summary": "Agree a persistent split of a bill",
+        "operationId": "createBillSplit",
+        "x-required-roles": [
+          "OWNER",
+          "MANAGER",
+          "CASHIER",
+          "WAITER"
+        ],
+        "description": "Roles: OWNER, MANAGER, CASHIER, WAITER.\n\nThe advisory preview computes the same numbers; this stores them, so a group settles\nagainst one agreed plan from several phones. Shares sum to the outstanding balance by\nconstruction, and the database refuses a split that does not. One live split per bill —\n409 `SPLIT_ALREADY_EXISTS` until the current one is voided.",
+        "security": [
+          {
+            "staffAuth": []
+          }
+        ],
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/BillId"
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SplitPreviewRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "The split was agreed and stored.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BillSplit"
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "403": {
+            "$ref": "#/components/responses/Forbidden"
+          },
+          "404": {
+            "$ref": "#/components/responses/NotFound"
+          },
+          "409": {
+            "$ref": "#/components/responses/Conflict"
+          },
+          "429": {
+            "$ref": "#/components/responses/TooManyRequests"
+          },
+          "500": {
+            "$ref": "#/components/responses/ServerError"
+          }
+        }
+      }
+    },
+    "/api/v1/bills/{id}/splits/active": {
+      "get": {
+        "tags": [
+          "Bills"
+        ],
+        "summary": "The bill's live split",
+        "operationId": "getBillActiveSplit",
+        "x-required-roles": [
+          "OWNER",
+          "MANAGER",
+          "CASHIER",
+          "WAITER"
+        ],
+        "description": "Roles: OWNER, MANAGER, CASHIER, WAITER. 404 when the bill has no active split.",
+        "security": [
+          {
+            "staffAuth": []
+          }
+        ],
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/BillId"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The active split.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BillSplit"
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "403": {
+            "$ref": "#/components/responses/Forbidden"
+          },
+          "404": {
+            "$ref": "#/components/responses/NotFound"
+          },
+          "429": {
+            "$ref": "#/components/responses/TooManyRequests"
+          },
+          "500": {
+            "$ref": "#/components/responses/ServerError"
+          }
+        }
+      }
+    },
+    "/api/v1/bills/{id}/splits/{splitId}/void": {
+      "post": {
+        "tags": [
+          "Bills"
+        ],
+        "summary": "Void a split",
+        "operationId": "voidBillSplit",
+        "x-required-roles": [
+          "OWNER",
+          "MANAGER",
+          "CASHIER"
+        ],
+        "description": "Roles: OWNER, MANAGER, CASHIER.\n\nRefused once any share has been paid into — 409 `SPLIT_HAS_PAYMENTS`. A plan people have\nstarted settling against is a record, not a draft; change it by agreeing a fresh split on the\nremaining balance.",
+        "security": [
+          {
+            "staffAuth": []
+          }
+        ],
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/BillId"
+          },
+          {
+            "name": "splitId",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The split, now VOID.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BillSplit"
                 }
               }
             }

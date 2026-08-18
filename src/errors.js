@@ -69,6 +69,8 @@ const CODES = {
   RESTAURANT_NOT_FOUND: 404,
   OPEN_BILL_NOT_FOUND: 404,
   PAYMENT_CLAIM_NOT_FOUND: 404,
+  SPLIT_NOT_FOUND: 404,
+  SPLIT_SHARE_NOT_FOUND: 404,
   // A webhook for a provider this deployment has no adapter for. 404 rather
   // than 400: the path segment names a resource that does not exist here.
   WEBHOOK_PROVIDER_UNKNOWN: 404,
@@ -103,6 +105,15 @@ const CODES = {
   // enforced by payments_provider_reference_idx rather than by a person.
   PAYMENT_REFERENCE_ALREADY_USED: 409,
   PAYMENT_CLAIM_NOT_PENDING: 409,
+  // A bill already has a live split; agree a new one only after voiding it.
+  SPLIT_ALREADY_EXISTS: 409,
+  // Voiding or paying against a split that is no longer ACTIVE.
+  SPLIT_NOT_ACTIVE: 409,
+  // A split people have started settling against is a record, not a draft.
+  SPLIT_HAS_PAYMENTS: 409,
+  // The per-share ceiling: a payment that names a share may not exceed what is
+  // left on it. The bill-level PAYMENT_EXCEEDS_BALANCE's analogue one level down.
+  SPLIT_SHARE_OVERPAID: 409,
   // Sealed credentials that will not authenticate, or were sealed with a key no
   // longer in the ring. Never a missing credential -- a failed tag means a
   // modified one, and the only safe answer to that is to stop.
@@ -174,6 +185,8 @@ const DETAILS = {
   },
   FORBIDDEN_ROLE: { requiredRoles: 'string[] -- roles that would have been accepted' },
   PAYMENT_CLAIM_NOT_PENDING: { status: 'string -- the status the claim is actually in' },
+  SPLIT_NOT_ACTIVE: { status: 'string -- the status the split is actually in' },
+  SPLIT_SHARE_OVERPAID: { shareRemainingVes: 'string -- minor units still owed on that share' },
   PAYMENT_PROVIDER_MISCONFIGURED: { provider: 'string -- the rail that is configured but not usable' },
   PAYMENT_RESOLUTION_UNAVAILABLE: { retryAfterSeconds: 'integer -- matches the Retry-After header' },
   PAYMENT_REFERENCE_ALREADY_USED: { reference: 'string -- the bank reference already spent, when known' },

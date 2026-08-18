@@ -60,7 +60,10 @@ const splitPaymentSchema = Joi.object({
   // at face value against a bolívar balance. USD now appears in responses as a
   // display reference, never as a payment amount.
   currency: Joi.string().valid('VES').required(),
-  idempotencyKey: Joi.string().trim().min(16).max(128).pattern(/^[A-Za-z0-9._:-]+$/).required()
+  idempotencyKey: Joi.string().trim().min(16).max(128).pattern(/^[A-Za-z0-9._:-]+$/).required(),
+  // Optional. When present, this payment settles one participant's share of a
+  // persistent split, and may not exceed what is left on that share.
+  splitParticipantId: uuid
 });
 
 const createTableSchema = Joi.object({
@@ -148,7 +151,10 @@ const declareClaimSchema = Joi.object({
   // member of staff scanning a bank app finds a movement far faster with the
   // originating number than without it.
   phoneOrigin: Joi.string().trim().min(7).max(40).pattern(/^[+()\-.\s\d]+$/),
-  bankOrigin: Joi.string().trim().max(60)
+  bankOrigin: Joi.string().trim().max(60),
+  // Optional. Attributes the declared payment to a split share, credited when a
+  // staff member confirms the claim.
+  splitParticipantId: uuid
 });
 
 const listClaimsQuerySchema = Joi.object({
@@ -228,7 +234,9 @@ const c2pChargeSchema = Joi.object({
   // lengths, and rejecting a valid one costs a payment.
   clave: Joi.string().trim().min(4).max(16).pattern(/^[0-9]+$/).required()
     .messages({ 'string.pattern.base': 'clave must be the digits your bank sent you' }),
-  idempotencyKey: Joi.string().trim().min(16).max(128).pattern(/^[A-Za-z0-9._:-]+$/).required()
+  idempotencyKey: Joi.string().trim().min(16).max(128).pattern(/^[A-Za-z0-9._:-]+$/).required(),
+  // Optional. Attributes the charge to a split share, credited when it settles.
+  splitParticipantId: uuid
 });
 
 const listUnresolvedC2PQuerySchema = Joi.object({
@@ -428,6 +436,7 @@ const listProductsQuerySchema = Joi.object({
 });
 
 const billIdParamSchema = Joi.object({ id: uuid.required() });
+const splitIdParamSchema = Joi.object({ id: uuid.required(), splitId: uuid.required() });
 const tableIdParamSchema = Joi.object({ tableId: uuid.required() });
 const productIdParamSchema = Joi.object({ id: uuid.required() });
 const restaurantIdParamSchema = Joi.object({ restaurantId: uuid.required() });
@@ -496,6 +505,7 @@ module.exports = {
   productIdParamSchema,
   restaurantIdParamSchema,
   billIdParamSchema,
+  splitIdParamSchema,
   tableIdParamSchema,
   validate,
   validateBody,
