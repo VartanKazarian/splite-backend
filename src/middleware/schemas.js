@@ -236,6 +236,19 @@ const listUnresolvedC2PQuerySchema = Joi.object({
 });
 
 /**
+ * Optional personalisation for the clave guide.
+ *
+ * The guide is static bank reference data; these only fill the diner's own
+ * identity into the SMS bodies that take it, so the screen shows "text CLAVE
+ * V12345678" rather than a placeholder. Optional because the diner may be
+ * reading the guide precisely to work out how to pay, before entering anything.
+ */
+const c2pBankGuideQuerySchema = Joi.object({
+  idType: Joi.string().trim().uppercase().valid('V', 'E', 'J', 'G', 'P', 'C'),
+  idNumber: Joi.string().trim().pattern(/^[0-9]{6,9}$/)
+});
+
+/**
  * Where a restaurant is paid.
  *
  * All four together or none, matching the database constraint: a half-filled
@@ -454,6 +467,7 @@ module.exports = {
   declareClaimSchema,
   c2pChargeSchema,
   listUnresolvedC2PQuerySchema,
+  c2pBankGuideQuerySchema,
   venezuelanMobile,
   listClaimsQuerySchema,
   rejectClaimSchema,

@@ -1024,6 +1024,48 @@ Object.assign(schemas, {
     }
   },
 
+  C2PBankClave: {
+    type: 'object',
+    description:
+      'How a diner obtains a single-use C2P clave at one bank. Static reference data from the acquirer communication, not per-diner.',
+    properties: {
+      bankCode: { type: 'string', pattern: '^[0-9]{4}$' },
+      bankName: { type: ['string', 'null'] },
+      ttlMinutes: {
+        type: ['integer', 'null'],
+        description: 'How long the clave lives. `null` means until the close of the banking day.'
+      },
+      ttlLabel: { type: 'string', description: 'Human-readable form of the TTL.' },
+      amountBound: {
+        type: 'boolean',
+        description: 'The clave carries the amount, so it dies if the bill changes. Always fetch it at payment time.'
+      },
+      strategy: {
+        type: ['object', 'null'],
+        description: 'When to fetch the clave, derived from the TTL and amountBound.',
+        properties: {
+          when: { type: 'string', enum: ['anytime', 'at_payment'] },
+          reason: { type: 'string' }
+        }
+      },
+      channels: {
+        type: 'array',
+        description: 'Only the channels this bank actually offers.',
+        items: {
+          type: 'object',
+          properties: {
+            channel: { type: 'string', enum: ['APP', 'WEB', 'SMS'] },
+            text: { type: 'string', description: 'Ready-to-display instruction.' },
+            shortCode: { type: 'string', description: 'SMS only: the short code to text.' },
+            smsBody: { type: 'string', description: 'SMS only: the message body.' },
+            altShortCode: { type: ['string', 'null'], description: 'SMS only: an alternate short code for a different carrier.' },
+            note: { type: ['string', 'null'] }
+          }
+        }
+      }
+    }
+  },
+
   Payout: {
     type: 'object',
     description:
@@ -2192,6 +2234,47 @@ const paths = {
         403: response('Forbidden'),
         404: response('NotFound'),
         409: response('Conflict')
+      }
+    }
+  },
+
+  '/api/v1/guest/c2p/banks': {
+    get: {
+      tags: ['Guest'],
+      summary: 'How to obtain a C2P clave, per bank',
+      operationId: 'listC2PBankClaves',
+      description: [
+        'Authenticated with a guest session. Static reference data: the channels, SMS short codes and',
+        'bodies, and clave lifetime for every bank Splite can charge by C2P.',
+        '',
+        'The step of the C2P flow Splite does not control is the diner asking their own bank for a',
+        'single-use clave. `strategy.when` is the field to act on — a clave that lasts five minutes',
+        '(Banplus) or is bound to the amount (100% Banco) must be fetched at payment time, not when',
+        'the diner sits down.',
+        '',
+        'Optional `idType` and `idNumber` fill the diner\'s identity into the SMS bodies that take it.'
+      ].join('\n'),
+      security: [{ guestAuth: [] }],
+      parameters: [
+        { name: 'idType', in: 'query', schema: { type: 'string', enum: ['V', 'E', 'J', 'G', 'P', 'C'] } },
+        { name: 'idNumber', in: 'query', schema: { type: 'string', pattern: '^[0-9]{6,9}$' } }
+      ],
+      responses: {
+        200: {
+          description: 'The clave guide, one entry per chargeable bank, ordered by name.',
+          content: {
+            'application/json': {
+              schema: {
+                type: 'object',
+                properties: { data: { type: 'array', items: ref('C2PBankClave') } }
+              }
+            }
+          }
+        },
+        400: response('BadRequest'),
+        401: response('Unauthorized'),
+        429: response('TooManyRequests'),
+        500: response('ServerError')
       }
     }
   },

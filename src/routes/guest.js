@@ -4,14 +4,15 @@ const config = require('../config');
 const { signQrPayload, verifyQrToken } = require('../utils/tokens');
 const { authenticateToken, requireRole } = require('../middleware/auth');
 const {
-  validateBody, validateParams, guestSessionSchema, tableIdParamSchema, splitPreviewSchema,
-  declareClaimSchema, c2pChargeSchema
+  validateBody, validateParams, validateQuery, guestSessionSchema, tableIdParamSchema, splitPreviewSchema,
+  declareClaimSchema, c2pChargeSchema, c2pBankGuideQuerySchema
 } = require('../middleware/schemas');
 const { createGuestSession, destroyGuestSession, authenticateGuest } = require('../services/guest');
 const rateLimit = require('../middleware/rateLimit');
 const billItems = require('../services/billItems');
 const paymentClaims = require('../services/paymentClaims');
 const mercantilC2P = require('../services/mercantilC2P');
+const claveGuide = require('../payments/c2pClaveGuide');
 const { requestHash, begin, complete, abort } = require('../services/idempotency');
 const { logger } = require('../connectors/logger');
 const splitEngine = require('../services/splitEngine');
@@ -251,6 +252,31 @@ router.post('/bill/payment-claims', authenticateGuest, perSession, validateBody(
 
     res.status(201).json(dto.paymentClaim(claim));
   } catch (err) { next(err); }
+});
+
+/**
+ * How to obtain a C2P clave, for every bank Splite can charge.
+ *
+ * The step of the C2P flow Splite does not control: the diner asks their own
+ * bank for a single-use clave. This is static reference data -- channels, SMS
+ * short codes and bodies, and how long the clave lives -- so the app can show
+ * the exact instruction for the chosen bank instead of a generic prompt that
+ * strands a Banplus customer hunting an SMS code that does not exist.
+ *
+ * The `strategy` on each bank is the part that matters: a clave that lasts five
+ * minutes, or one bound to the amount, must be fetched at payment time, not
+ * when the diner sits down. Optional `idType`/`idNumber` fill the diner's own
+ * identity into the SMS bodies that take it.
+ *
+ * Guest-session gated for consistency with the rest of this surface; the data
+ * itself is public and per-bank, never per-diner.
+ */
+router.get('/c2p/banks', authenticateGuest, perSession, validateQuery(c2pBankGuideQuerySchema), (req, res) => {
+  const identity = { idType: req.query.idType, idNumber: req.query.idNumber };
+  const data = claveGuide.supportedC2PBanks()
+    .map(bank => claveGuide.claveInstructions(bank.code, identity))
+    .filter(Boolean);
+  res.json({ data });
 });
 
 /**
