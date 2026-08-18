@@ -178,6 +178,64 @@ const webhookProviderParamSchema = Joi.object({
 const MOBILE_PREFIXES = ['412', '414', '416', '424', '426'];
 
 /**
+ * A Venezuelan mobile line, written any way somebody writes one.
+ *
+ * Shared by the payout form and the C2P charge because they are the same rule
+ * about the same thing: a number that cannot receive or send a mobile payment.
+ * Two copies would drift, and the copy that drifted would be the one a diner
+ * hits at the till rather than the one an owner hits at a configuration screen.
+ */
+const venezuelanMobile = Joi.string().trim().min(7).max(20).pattern(/^[+()\-.\s\d]+$/)
+  .custom((value, helpers) => {
+    const digits = String(value).replace(/\D/g, '');
+    const local = digits.startsWith('58') ? digits.slice(2) : digits.replace(/^0/, '');
+    return MOBILE_PREFIXES.includes(local.slice(0, 3)) && local.length === 10
+      ? value
+      : helpers.message(
+        'phone must be a Venezuelan mobile line (0412, 0414, 0416, 0424 or 0426): a Pago Móvil cannot be received on a landline'
+      );
+  });
+
+/**
+ * A cédula or RIF, as the holder writes it.
+ *
+ * Mercantil's C2P form offers V, J, G, P and C and omits E; ours had E and
+ * omitted C. The union is accepted for the reason given at payoutSchema: turning
+ * away a legitimate account holder is the expensive error.
+ */
+const venezuelanId = Joi.string().trim().uppercase().pattern(/^[VEJGPC][0-9]{6,9}$/)
+  .messages({ 'string.pattern.base': 'must be a cédula or RIF, e.g. V12345678 or J123456789' });
+
+/**
+ * A C2P charge, raised by the diner from their own phone.
+ *
+ * Every field here except the amount belongs to the diner's bank relationship,
+ * not to ours. `clave` in particular is a single-use password they obtained
+ * from their own bank seconds ago: it is validated for shape, used once, and
+ * never stored -- there is no column for it and `redact()` keeps it out of the
+ * diagnostics.
+ */
+const c2pChargeSchema = Joi.object({
+  amountVes: positiveMinorUnits.required(),
+  // The diner's own bank, which is where the debit comes from. Restricted to
+  // known codes so a typo is a 400 here rather than a rejection from Mercantil
+  // three seconds later.
+  bankCode: Joi.string().trim().pattern(/^[0-9]{4}$/).valid(...banks.CODES).required()
+    .messages({ 'any.only': 'bankCode must be a known Venezuelan bank code' }),
+  idNumber: venezuelanId.required(),
+  phone: venezuelanMobile.required(),
+  // Length is bounded rather than fixed: banks issue claves of different
+  // lengths, and rejecting a valid one costs a payment.
+  clave: Joi.string().trim().min(4).max(16).pattern(/^[0-9]+$/).required()
+    .messages({ 'string.pattern.base': 'clave must be the digits your bank sent you' }),
+  idempotencyKey: Joi.string().trim().min(16).max(128).pattern(/^[A-Za-z0-9._:-]+$/).required()
+});
+
+const listUnresolvedC2PQuerySchema = Joi.object({
+  limit: Joi.number().integer().min(1).max(100).default(50)
+});
+
+/**
  * Where a restaurant is paid.
  *
  * All four together or none, matching the database constraint: a half-filled
@@ -199,16 +257,7 @@ const payoutSchema = Joi.object({
   //
   // Confirmed rather than remembered: these are the five in Mercantil's own C2P
   // form (api-playground/c2p/views/index.ejs).
-  phone: Joi.string().trim().min(7).max(20).pattern(/^[+()\-.\s\d]+$/)
-    .custom((value, helpers) => {
-      const digits = String(value).replace(/\D/g, '');
-      const local = digits.startsWith('58') ? digits.slice(2) : digits.replace(/^0/, '');
-      return MOBILE_PREFIXES.includes(local.slice(0, 3)) && local.length === 10
-        ? value
-        : helpers.message(
-          'phone must be a Venezuelan mobile line (0412, 0414, 0416, 0424 or 0426): a Pago Móvil cannot be received on a landline'
-        );
-    }),
+  phone: venezuelanMobile,
   // Cédula or RIF of the account holder.
   //
   // Mercantil's C2P form offers V, J, G, P and C, and omits E. Ours had E and
@@ -403,6 +452,9 @@ module.exports = {
   payoutSchema,
   paymentProviderParamSchema,
   declareClaimSchema,
+  c2pChargeSchema,
+  listUnresolvedC2PQuerySchema,
+  venezuelanMobile,
   listClaimsQuerySchema,
   rejectClaimSchema,
   paymentIdParamSchema,

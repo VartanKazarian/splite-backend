@@ -5,12 +5,15 @@ const { signQrPayload, verifyQrToken } = require('../utils/tokens');
 const { authenticateToken, requireRole } = require('../middleware/auth');
 const {
   validateBody, validateParams, guestSessionSchema, tableIdParamSchema, splitPreviewSchema,
-  declareClaimSchema
+  declareClaimSchema, c2pChargeSchema
 } = require('../middleware/schemas');
 const { createGuestSession, destroyGuestSession, authenticateGuest } = require('../services/guest');
 const rateLimit = require('../middleware/rateLimit');
 const billItems = require('../services/billItems');
 const paymentClaims = require('../services/paymentClaims');
+const mercantilC2P = require('../services/mercantilC2P');
+const { requestHash, begin, complete, abort } = require('../services/idempotency');
+const { logger } = require('../connectors/logger');
 const splitEngine = require('../services/splitEngine');
 const dto = require('../dto');
 const { logAudit, auditContext } = require('../services/audit');
@@ -249,6 +252,91 @@ router.post('/bill/payment-claims', authenticateGuest, perSession, validateBody(
     res.status(201).json(dto.paymentClaim(claim));
   } catch (err) { next(err); }
 });
+
+/**
+ * Charge the diner's own bank account (Mercantil C2P).
+ *
+ * Unlike `payment-claims`, this one moves money. The diner supplies a
+ * single-use clave they obtained from their own bank and Splite asks Mercantil
+ * to pull the amount, so the response is an outcome rather than a message to
+ * staff.
+ *
+ * Four outcomes, and the client must handle all four:
+ *
+ *   SUCCEEDED  settled; `settlement` carries the new bill figures.
+ *   FAILED     the bank said no. Safe to try again with a fresh clave.
+ *   IN_DOUBT   the bank did not say. **Do not offer a retry** -- the debit may
+ *              have landed. Staff resolve it from the dashboard.
+ *   AMBIGUOUS  the debit is confirmed and could not be credited to the bill.
+ *              Needs a person, and possibly a refund.
+ *
+ * `Idempotency-Key` is mandatory, and its stored response is what makes a lost
+ * connection safe: a client that never saw the answer replays the original
+ * outcome instead of raising a second charge.
+ */
+router.post(
+  '/bill/c2p',
+  authenticateGuest,
+  perSession,
+  // Far tighter than the general guest limit, and not about server load. Each
+  // attempt burns a single-use clave the diner had to fetch from their bank,
+  // and each one consumes the restaurant's C2P quota with Mercantil. Eight in
+  // five minutes is well past honest retrying and well short of useful abuse.
+  rateLimit({ windowSeconds: 300, max: 8, keyPrefix: 'guest:c2p' }),
+  validateBody(c2pChargeSchema),
+  async (req, res, next) => {
+    const restaurantId = req.guest.restaurantId;
+    const key = req.get('Idempotency-Key') || req.body.idempotencyKey;
+    let claimed = false;
+
+    try {
+      const idem = await begin({ restaurantId, userId: null, key, hash: requestHash(req) });
+      if (!idem.owner) return res.status(idem.response.status).json(idem.response.body);
+      claimed = true;
+
+      const bill = await openBillForGuest(req.guest);
+      const result = await mercantilC2P.createC2PPayment({
+        restaurantId,
+        billId: bill.id,
+        amountVes: req.body.amountVes,
+        payer: {
+          bankCode: req.body.bankCode,
+          idNumber: req.body.idNumber,
+          phone: req.body.phone,
+          clave: req.body.clave
+        },
+        idempotencyKey: key
+      });
+
+      // Stored before replying, so a retry that races the response replays the
+      // outcome rather than charging again. This is the line that makes an
+      // IN_DOUBT charge safe to sit on: the retry cannot reach the bank.
+      await complete({ restaurantId, key, status: 201, body: result });
+
+      await logAudit({
+        ...auditContext(req),
+        restaurantId,
+        action: 'C2P_CHARGE_RAISED',
+        resourceType: 'payment',
+        resourceId: result.paymentId,
+        details: { billId: bill.id, status: result.status }
+      });
+
+      res.status(201).json(result);
+    } catch (err) {
+      // Only reached before the bank was asked, or when the charge was
+      // rejected outright -- createC2PPayment converts every post-debit failure
+      // into a returned outcome precisely so this branch cannot release a key
+      // that a real debit is sitting behind.
+      if (claimed) {
+        try { await abort({ restaurantId, key }); } catch (abortErr) {
+          logger.error({ event: 'IDEMPOTENCY_ABORT_FAILED', err: abortErr }, 'Idempotency abort failed');
+        }
+      }
+      next(err);
+    }
+  }
+);
 
 /**
  * A split of the guest's own bill.

@@ -286,7 +286,34 @@ module.exports = {
      * break starting the app.
      */
     credentialKeys: process.env.PAYMENT_CREDENTIALS_KEYS || '',
-    activeKeyVersion: integer('PAYMENT_CREDENTIALS_ACTIVE_KEY_VERSION', 1)
+    activeKeyVersion: integer('PAYMENT_CREDENTIALS_ACTIVE_KEY_VERSION', 1),
+
+    /**
+     * Mercantil C2P endpoint wiring.
+     *
+     * Endpoints only. The credentials are per restaurant and sealed in the
+     * database (migration 018), so nothing secret appears here -- a global
+     * `MERCANTIL_API_KEY` would mean charging every restaurant through one
+     * merchant identity.
+     *
+     * Empty by default, and a deployment with no base URL simply cannot raise a
+     * C2P charge. That is the correct default: the rail is opt-in per
+     * deployment as well as per restaurant.
+     */
+    mercantil: {
+      baseUrl: process.env.MERCANTIL_C2P_URL || '',
+      chargePath: process.env.MERCANTIL_C2P_CHARGE_PATH || '/payment/c2p',
+      searchPath: process.env.MERCANTIL_C2P_SEARCH_PATH || '/payment/search',
+      // Generous, and deliberately so. A bank core under load is slow long
+      // before it is broken, and every second shaved off this converts a
+      // conclusive answer into an IN_DOUBT charge somebody has to resolve by
+      // hand.
+      timeoutMs: integer('MERCANTIL_C2P_TIMEOUT_MS', 30000),
+      // Logs redacted request bodies on a failed call. Off in production: the
+      // redaction is thorough, but the safest place for a single-use clave is
+      // still a log line that was never written.
+      debug: boolean('MERCANTIL_C2P_DEBUG', false)
+    }
   },
   purge: {
     // Retention is set by what still reads the row, not by what feels tidy.

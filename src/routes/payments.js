@@ -1,11 +1,13 @@
 const express = require('express');
 const claims = require('../services/paymentClaims');
+const mercantilC2P = require('../services/mercantilC2P');
 const { authenticateToken, requireRole } = require('../middleware/auth');
-const { auditContext } = require('../services/audit');
+const { logAudit, auditContext } = require('../services/audit');
 const dto = require('../dto');
 const {
   validateBody, validateParams, validateQuery,
-  listClaimsQuerySchema, rejectClaimSchema, paymentIdParamSchema
+  listClaimsQuerySchema, rejectClaimSchema, paymentIdParamSchema,
+  listUnresolvedC2PQuerySchema
 } = require('../middleware/schemas');
 
 /**
@@ -65,6 +67,66 @@ router.post(
         meta: auditContext(req)
       });
       res.json(dto.staffPaymentClaim(claim));
+    } catch (err) { next(err); }
+  }
+);
+
+/**
+ * C2P charges that reached no settled state.
+ *
+ * IN_DOUBT: the bank never told us what happened. AMBIGUOUS: it has money that
+ * matches and nothing ties it to this diner, or it confirmed a debit that could
+ * not be credited to the bill.
+ *
+ * This endpoint is what makes the honest answer usable. A resolver that refuses
+ * to guess produces charges nobody is looking at unless there is a queue, and a
+ * charge nobody is looking at is indistinguishable from one that was lost --
+ * which is how "never guess" quietly turns into "silently drop".
+ */
+router.get('/c2p/unresolved', validateQuery(listUnresolvedC2PQuerySchema), async (req, res, next) => {
+  try {
+    const rows = await mercantilC2P.listUnresolved({
+      restaurantId: req.user.restaurantId,
+      limit: req.query.limit
+    });
+    res.json({ data: rows.map(dto.c2pCharge) });
+  } catch (err) { next(err); }
+});
+
+/**
+ * Ask Mercantil what actually happened to an in-doubt charge.
+ *
+ * Restricted like claim confirmation and for the same reason: this can settle a
+ * bill, so it is a cashier's job upwards.
+ *
+ * It settles only when a bank movement matches on both amount and the payer's
+ * phone. Matching on amount alone is what would settle one table with another
+ * table's money, so a movement it cannot attribute moves the charge to
+ * AMBIGUOUS with the candidate references attached rather than guessing between
+ * them. Re-running an AMBIGUOUS charge returns it unchanged: the system has
+ * already said it cannot tell, and asking again will not change that.
+ */
+router.post(
+  '/c2p/:id/resolve',
+  requireRole('OWNER', 'MANAGER', 'CASHIER'),
+  validateParams(paymentIdParamSchema),
+  async (req, res, next) => {
+    try {
+      const result = await mercantilC2P.resolveC2PPayment({
+        restaurantId: req.user.restaurantId,
+        paymentId: req.params.id,
+        actorUserId: req.user.sub
+      });
+
+      await logAudit({
+        ...auditContext(req),
+        action: 'C2P_RESOLUTION_ATTEMPTED',
+        resourceType: 'payment',
+        resourceId: req.params.id,
+        details: { status: result.status }
+      });
+
+      res.json(result);
     } catch (err) { next(err); }
   }
 );

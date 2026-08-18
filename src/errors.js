@@ -97,7 +97,10 @@ const CODES = {
   RIF_ALREADY_REGISTERED: 409,
   // One bank reference settles one bill. Raised when a second diner declares a
   // reference another claim already holds -- the cheapest attack on a manual
-  // confirmation flow is to repeat the number the next table read aloud.
+  // confirmation flow is to repeat the number the next table read aloud -- and
+  // when resolving an in-doubt C2P charge lands on a bank movement that already
+  // settled a different payment. Both are the same rule; the second one is
+  // enforced by payments_provider_reference_idx rather than by a person.
   PAYMENT_REFERENCE_ALREADY_USED: 409,
   PAYMENT_CLAIM_NOT_PENDING: 409,
   // Sealed credentials that will not authenticate, or were sealed with a key no
@@ -122,6 +125,18 @@ const CODES = {
   // 503 -- the deployment cannot handle credentials right now. Not 500: this is
   // configuration, and saying so is what stops somebody hunting a bug.
   PAYMENT_CREDENTIALS_KEY_MISSING: 503,
+
+  // The rail exists but is not usable: no endpoint configured for the
+  // deployment, or credentials stored for the restaurant that nobody has proven
+  // work. Distinct from PAYMENT_PROVIDER_UNKNOWN (404, no adapter at all)
+  // because the remedy is different -- one is a deploy, the other is a form.
+  PAYMENT_PROVIDER_MISCONFIGURED: 503,
+
+  // The bank could not be asked. Raised only while resolving an in-doubt
+  // charge, and deliberately not fatal: the payment stays IN_DOUBT and the
+  // question can be asked again. Answering anything else here would be
+  // inventing a settlement outcome from a network error.
+  PAYMENT_RESOLUTION_UNAVAILABLE: 503,
 
   // 500 -- the message is never echoed; correlate on requestId.
   INTERNAL_ERROR: 500
@@ -159,6 +174,9 @@ const DETAILS = {
   },
   FORBIDDEN_ROLE: { requiredRoles: 'string[] -- roles that would have been accepted' },
   PAYMENT_CLAIM_NOT_PENDING: { status: 'string -- the status the claim is actually in' },
+  PAYMENT_PROVIDER_MISCONFIGURED: { provider: 'string -- the rail that is configured but not usable' },
+  PAYMENT_RESOLUTION_UNAVAILABLE: { retryAfterSeconds: 'integer -- matches the Retry-After header' },
+  PAYMENT_REFERENCE_ALREADY_USED: { reference: 'string -- the bank reference already spent, when known' },
   WEBHOOK_PROVIDER_UNKNOWN: { provider: 'string -- the unrecognised provider segment' },
   WEBHOOK_PAYMENT_UNRESOLVED: { retryAfterSeconds: 'integer -- matches the Retry-After header' },
   FX_UNAVAILABLE: { currency: 'string -- the currency with no usable rate, when specific to one' },

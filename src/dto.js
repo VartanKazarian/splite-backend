@@ -415,8 +415,40 @@ function menuSettings(row) {
   };
 }
 
+/**
+ * A C2P charge that has not reached a settled state.
+ *
+ * The queue that AMBIGUOUS implies. Without it a charge that correctly refused
+ * to guess is indistinguishable from one that was simply lost, and the honest
+ * answer stops looking like the safe one.
+ *
+ * `payerPhoneLast4` is four digits and stays four digits. It goes to staff, who
+ * need it to tell two simultaneous payers apart in the bank app, and it is not
+ * a phone number.
+ */
+function c2pCharge(row) {
+  return {
+    paymentId: row.id,
+    billId: row.bill_id,
+    amountVes: row.amount_ves,
+    status: row.status,
+    invoiceNumber: row.invoice_number,
+    payerBankCode: row.payer_bank_code,
+    payerBankName: banks.lookup(row.payer_bank_code)?.name ?? null,
+    payerPhoneLast4: row.payer_phone_last4,
+    // Every movement that matched on amount, including the ones rejected for
+    // not identifying the payer. This is the list to hand a restaurant that
+    // insists the money is there.
+    candidateReferences: row.candidate_refs ?? [],
+    lastReason: row.last_reason ?? null,
+    lastResolutionAt: isoTimestamp(row.last_resolution_at),
+    createdAt: isoTimestamp(row.created_at),
+    updatedAt: isoTimestamp(row.updated_at)
+  };
+}
+
 module.exports = {
   isoDate, isoTimestamp,
   bill, billItem, billWithItems, guestBill,
-  table, floorTable, product, publicProduct, menuSettings, menuCharges, account, payout, guestPayee, paymentProviderConfig, paymentClaim, staffPaymentClaim
+  table, floorTable, product, publicProduct, menuSettings, menuCharges, account, payout, guestPayee, paymentProviderConfig, paymentClaim, staffPaymentClaim, c2pCharge
 };
