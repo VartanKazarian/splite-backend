@@ -62,7 +62,10 @@ async function destroyRestaurant(restaurantId) {
   if (!restaurantId) return;
   for (const sql of [
     // The ledger uses ON DELETE RESTRICT so money cannot vanish with a bill;
-    // teardown therefore has to clear it before the bills it references.
+    // teardown therefore has to clear it before the bills it references. The
+    // C2P side tables RESTRICT payments in turn, so they come first.
+    'DELETE FROM c2p_resolution_attempts WHERE restaurant_id = $1',
+    'DELETE FROM c2p_charges WHERE restaurant_id = $1',
     'DELETE FROM payment_transitions WHERE restaurant_id = $1',
     'DELETE FROM payments WHERE restaurant_id = $1',
     'DELETE FROM menu_products WHERE restaurant_id = $1',

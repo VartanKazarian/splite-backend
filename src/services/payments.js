@@ -17,14 +17,29 @@ const PAYMENT_COLUMNS = `id, restaurant_id, bill_id, amount_ves, status, payment
                          metadata, created_at, updated_at`;
 
 /**
- * Legal transitions, mirroring the trigger in migration 007.
+ * Legal transitions, mirroring the trigger in migrations 007 and 019.
  *
  * Duplicated on purpose: the database is the guarantee, this is the error
  * message. Rejecting here gives a 409 naming both states instead of a
  * check_violation surfacing as a 500.
+ *
+ * The duplication is only safe while the two agree, so `test/c2p.test.js`
+ * parses the trigger out of the migration and compares it to this object. The
+ * first time they disagreed, the trigger had gained IN_DOUBT and this had not,
+ * which made every C2P charge fail at the service layer with a 409 naming a
+ * transition the database would happily have performed.
  */
 const ALLOWED_TRANSITIONS = {
-  PENDING: ['SUCCEEDED', 'FAILED', 'CANCELLED'],
+  // IN_DOUBT and AMBIGUOUS belong to provider-initiated rails: we asked a bank
+  // to move money and were not told whether it did (IN_DOUBT), or money exists
+  // that we cannot attribute to this bill (AMBIGUOUS). Neither settles
+  // anything, so `bills.amount_paid_ves` is untouched in both -- see
+  // migration 019.
+  PENDING: ['IN_DOUBT', 'AMBIGUOUS', 'SUCCEEDED', 'FAILED', 'CANCELLED'],
+  IN_DOUBT: ['AMBIGUOUS', 'SUCCEEDED', 'FAILED'],
+  // Only a person leaves AMBIGUOUS. The system has already reported that it
+  // cannot tell the candidates apart.
+  AMBIGUOUS: ['SUCCEEDED', 'FAILED'],
   SUCCEEDED: ['PARTIALLY_REFUNDED', 'REFUNDED'],
   PARTIALLY_REFUNDED: ['PARTIALLY_REFUNDED', 'REFUNDED'],
   FAILED: [],

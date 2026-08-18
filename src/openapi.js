@@ -910,6 +910,162 @@ Object.assign(schemas, {
     }
   },
 
+  C2PChargeRequest: {
+    type: 'object',
+    required: ['amountVes', 'bankCode', 'idNumber', 'phone', 'clave', 'idempotencyKey'],
+    description:
+      'A charge against the diner\'s own bank account. Every field except the amount belongs to the diner\'s relationship with their bank, not with Splite.',
+    properties: {
+      amountVes: { ...minorUnits, description: 'VES céntimos. May be part of the bill: splitting is the point.' },
+      bankCode: {
+        type: 'string', pattern: '^[0-9]{4}$',
+        description: 'The diner\'s own bank, which is where the debit comes from. Must be a known Venezuelan bank code.'
+      },
+      idNumber: {
+        type: 'string', pattern: '^[VEJGPC][0-9]{6,9}$',
+        description: 'Cédula or RIF of the account holder, e.g. V12345678.'
+      },
+      phone: {
+        type: 'string',
+        description: 'The mobile line the account is registered to. Must be a Venezuelan mobile prefix (0412, 0414, 0416, 0424, 0426).'
+      },
+      clave: {
+        type: 'string', pattern: '^[0-9]{4,16}$',
+        description:
+          'The single-use clave the diner obtained from their own bank. Used once and never stored — there is no column for it, and it is redacted out of every diagnostic. Claves expire, and how fast depends on the bank: some give six hours, at least one gives five minutes.'
+      },
+      idempotencyKey: {
+        type: 'string', minLength: 16, maxLength: 128, pattern: '^[A-Za-z0-9._:-]+$',
+        description: 'Used when the Idempotency-Key header is absent. Mandatory here: it is what makes a lost connection safe to retry.'
+      }
+    }
+  },
+
+  C2PChargeResult: {
+    type: 'object',
+    required: ['paymentId', 'status'],
+    description: [
+      'The outcome of a C2P charge. **All four statuses must be handled**, and the difference',
+      'between two of them is the difference between a diner paying once and paying twice.',
+      '',
+      '- `SUCCEEDED` — settled. `settlement` carries the new bill figures.',
+      '- `FAILED` — the bank rejected it. Safe to offer a retry with a fresh clave.',
+      '- `IN_DOUBT` — the bank did not answer conclusively. **Do not offer a retry.** The debit',
+      '  may have landed; Mercantil does not promise that invoice numbers deduplicate. Staff',
+      '  resolve it from `POST /api/v1/payments/c2p/{id}/resolve`.',
+      '- `AMBIGUOUS` — the debit is confirmed and could not be credited to the bill, usually',
+      '  because the bill closed while the charge was in flight. Needs a person, and a refund.'
+    ].join('\n'),
+    properties: {
+      paymentId: { type: 'string', format: 'uuid', description: 'The ledger row this charge created.' },
+      status: { type: 'string', enum: ['SUCCEEDED', 'FAILED', 'IN_DOUBT', 'AMBIGUOUS'] },
+      invoiceNumber: { type: 'string', description: 'Splite\'s correlation id in Mercantil\'s records. Not an idempotency key.' },
+      bankReference: { type: ['string', 'null'], description: 'The bank movement that settled it, when there is one.' },
+      reason: { type: ['string', 'null'], description: 'Why it failed or needs review. Human-readable; never parse it.' },
+      requiresResolution: { type: 'boolean', description: 'Present on IN_DOUBT. The charge is unresolved and must not be retried.' },
+      requiresStaffReview: { type: 'boolean', description: 'Present on AMBIGUOUS.' },
+      settlement: ref('PaymentResult')
+    }
+  },
+
+  C2PUnresolvedCharge: {
+    type: 'object',
+    description: 'A C2P charge waiting on a person or on the settlement window.',
+    properties: {
+      paymentId: { type: 'string', format: 'uuid' },
+      billId: { type: 'string', format: 'uuid' },
+      amountVes: minorUnits,
+      status: { type: 'string', enum: ['IN_DOUBT', 'AMBIGUOUS'] },
+      invoiceNumber: { type: 'string' },
+      payerBankCode: { type: 'string', pattern: '^[0-9]{4}$' },
+      payerBankName: { type: ['string', 'null'] },
+      payerPhoneLast4: {
+        type: 'string', pattern: '^[0-9]{4}$',
+        description: 'Four digits, which is all that is stored. Enough to tell two simultaneous payers apart in the bank app, and not a phone number.'
+      },
+      candidateReferences: {
+        type: 'array', items: { type: 'string' },
+        description: 'Bank movements that matched on amount, including the ones rejected for not identifying the payer. The list to hand a restaurant insisting the money is there.'
+      },
+      lastReason: { type: ['string', 'null'] },
+      lastResolutionAt: { type: ['string', 'null'], format: 'date-time' },
+      createdAt: { type: 'string', format: 'date-time' },
+      updatedAt: { type: ['string', 'null'], format: 'date-time' }
+    }
+  },
+
+  C2PResolution: {
+    type: 'object',
+    required: ['paymentId', 'status'],
+    description:
+      'What asking the bank produced. A charge that settles nothing is a normal outcome here, not an error: closing the wrong bill is worse than closing none.',
+    properties: {
+      paymentId: { type: 'string', format: 'uuid' },
+      status: { type: 'string', enum: ['SUCCEEDED', 'FAILED', 'IN_DOUBT', 'AMBIGUOUS'] },
+      bankReference: { type: ['string', 'null'], description: 'Set when a movement was matched and spent.' },
+      signals: {
+        type: 'array', items: { type: 'string' },
+        description: 'What identified the payer. Always includes `amount`; a settlement additionally requires `phone_last4`.'
+      },
+      candidateReferences: {
+        type: 'array', items: { type: 'string' },
+        description: 'On AMBIGUOUS: the movements that matched on amount and could not be told apart.'
+      },
+      reason: { type: ['string', 'null'] },
+      requiresStaffReview: { type: 'boolean' },
+      resolutionPending: {
+        type: 'boolean',
+        description: 'The settlement window has not passed, so a missing movement proves nothing yet.'
+      },
+      retryAfterMinutes: { type: 'integer', description: 'How long until asking again is worthwhile.' },
+      alreadyResolved: { type: 'boolean', description: 'Something else resolved it first. Not an error.' },
+      safeToRetry: { type: 'boolean', description: 'On FAILED: no debit landed, so a fresh charge is safe.' },
+      settlement: ref('PaymentResult')
+    }
+  },
+
+  C2PBankClave: {
+    type: 'object',
+    description:
+      'How a diner obtains a single-use C2P clave at one bank. Static reference data from the acquirer communication, not per-diner.',
+    properties: {
+      bankCode: { type: 'string', pattern: '^[0-9]{4}$' },
+      bankName: { type: ['string', 'null'] },
+      ttlMinutes: {
+        type: ['integer', 'null'],
+        description: 'How long the clave lives. `null` means until the close of the banking day.'
+      },
+      ttlLabel: { type: 'string', description: 'Human-readable form of the TTL.' },
+      amountBound: {
+        type: 'boolean',
+        description: 'The clave carries the amount, so it dies if the bill changes. Always fetch it at payment time.'
+      },
+      strategy: {
+        type: ['object', 'null'],
+        description: 'When to fetch the clave, derived from the TTL and amountBound.',
+        properties: {
+          when: { type: 'string', enum: ['anytime', 'at_payment'] },
+          reason: { type: 'string' }
+        }
+      },
+      channels: {
+        type: 'array',
+        description: 'Only the channels this bank actually offers.',
+        items: {
+          type: 'object',
+          properties: {
+            channel: { type: 'string', enum: ['APP', 'WEB', 'SMS'] },
+            text: { type: 'string', description: 'Ready-to-display instruction.' },
+            shortCode: { type: 'string', description: 'SMS only: the short code to text.' },
+            smsBody: { type: 'string', description: 'SMS only: the message body.' },
+            altShortCode: { type: ['string', 'null'], description: 'SMS only: an alternate short code for a different carrier.' },
+            note: { type: ['string', 'null'] }
+          }
+        }
+      }
+    }
+  },
+
   Payout: {
     type: 'object',
     description:
@@ -2078,6 +2234,158 @@ const paths = {
         403: response('Forbidden'),
         404: response('NotFound'),
         409: response('Conflict')
+      }
+    }
+  },
+
+  '/api/v1/guest/c2p/banks': {
+    get: {
+      tags: ['Guest'],
+      summary: 'How to obtain a C2P clave, per bank',
+      operationId: 'listC2PBankClaves',
+      description: [
+        'Authenticated with a guest session. Static reference data: the channels, SMS short codes and',
+        'bodies, and clave lifetime for every bank Splite can charge by C2P.',
+        '',
+        'The step of the C2P flow Splite does not control is the diner asking their own bank for a',
+        'single-use clave. `strategy.when` is the field to act on — a clave that lasts five minutes',
+        '(Banplus) or is bound to the amount (100% Banco) must be fetched at payment time, not when',
+        'the diner sits down.',
+        '',
+        'Optional `idType` and `idNumber` fill the diner\'s identity into the SMS bodies that take it.'
+      ].join('\n'),
+      security: [{ guestAuth: [] }],
+      parameters: [
+        { name: 'idType', in: 'query', schema: { type: 'string', enum: ['V', 'E', 'J', 'G', 'P', 'C'] } },
+        { name: 'idNumber', in: 'query', schema: { type: 'string', pattern: '^[0-9]{6,9}$' } }
+      ],
+      responses: {
+        200: {
+          description: 'The clave guide, one entry per chargeable bank, ordered by name.',
+          content: {
+            'application/json': {
+              schema: {
+                type: 'object',
+                properties: { data: { type: 'array', items: ref('C2PBankClave') } }
+              }
+            }
+          }
+        },
+        400: response('BadRequest'),
+        401: response('Unauthorized'),
+        429: response('TooManyRequests'),
+        500: response('ServerError')
+      }
+    }
+  },
+
+  '/api/v1/guest/bill/c2p': {
+    post: {
+      tags: ['Guest'],
+      summary: 'Charge the diner\'s bank account by C2P',
+      operationId: 'chargeC2P',
+      description: [
+        'Authenticated with a guest session. **Takes no bill id** — the table comes from the session.',
+        '',
+        'Unlike `payment-claims`, this moves money. The diner supplies a single-use clave from their',
+        'own bank and Splite asks Mercantil to pull the amount, so the response is an outcome rather',
+        'than a message to staff.',
+        '',
+        '**Handle all four statuses.** `IN_DOUBT` is the one that matters: the bank did not tell us',
+        'what happened, the debit may have landed, and Mercantil does not promise that invoice',
+        'numbers deduplicate. Offering a retry there is how a diner pays twice for one dinner.',
+        '',
+        'Rate limited far more tightly than the rest of the guest surface — 8 per 5 minutes per',
+        'session — because each attempt burns a clave the diner had to fetch from their bank and',
+        'consumes the restaurant\'s quota with Mercantil.',
+        '',
+        '`Idempotency-Key` is mandatory. A client that never saw the response replays the original',
+        'outcome instead of raising a second charge.'
+      ].join('\n'),
+      security: [{ guestAuth: [] }],
+      parameters: [{ $ref: '#/components/parameters/IdempotencyKey' }],
+      requestBody: { required: true, content: { 'application/json': { schema: ref('C2PChargeRequest') } } },
+      responses: {
+        201: { description: 'The charge was raised. Read `status` for what happened.', content: { 'application/json': { schema: ref('C2PChargeResult') } } },
+        400: response('BadRequest'),
+        401: response('Unauthorized'),
+        404: response('NotFound'),
+        409: response('Conflict'),
+        429: response('TooManyRequests'),
+        500: response('ServerError'),
+        503: response('ServiceUnavailable')
+      }
+    }
+  },
+
+  '/api/v1/payments/c2p/unresolved': {
+    get: {
+      tags: ['Payments'],
+      summary: 'C2P charges that reached no settled state',
+      operationId: 'listUnresolvedC2PCharges',
+      description: [
+        'Any authenticated staff role.',
+        '',
+        '`IN_DOUBT` means the bank never told us what happened. `AMBIGUOUS` means it has money',
+        'matching the amount that nothing ties to this diner, or it confirmed a debit that could not',
+        'be credited to the bill.',
+        '',
+        'This queue is what makes refusing to guess usable. A charge nobody is looking at is',
+        'indistinguishable from one that was lost.'
+      ].join('\n'),
+      security: staff,
+      parameters: [{ $ref: '#/components/parameters/Limit' }],
+      responses: {
+        200: {
+          description: 'Unresolved charges, oldest first.',
+          content: {
+            'application/json': {
+              schema: {
+                type: 'object',
+                properties: { data: { type: 'array', items: ref('C2PUnresolvedCharge') } }
+              }
+            }
+          }
+        },
+        ...commonErrors
+      }
+    }
+  },
+
+  '/api/v1/payments/c2p/{id}/resolve': {
+    post: {
+      tags: ['Payments'],
+      summary: 'Ask Mercantil what happened to an in-doubt charge',
+      operationId: 'resolveC2PCharge',
+      'x-required-roles': ['OWNER', 'MANAGER', 'CASHIER'],
+      description: [
+        'Roles: OWNER, MANAGER, CASHIER. This can settle a bill, so it is a cashier\'s job upwards.',
+        '',
+        'Settles only when a bank movement matches on **both** the amount and the last four digits',
+        'of the payer\'s phone. Amount alone is a filter, never a decision: two tables owing the same',
+        'total is the ordinary case in a restaurant, and matching on amount would settle one table',
+        'with the other\'s money.',
+        '',
+        'A movement it cannot attribute moves the charge to `AMBIGUOUS` with the candidate',
+        'references attached. Re-running an `AMBIGUOUS` charge returns it unchanged — the system has',
+        'already said it cannot tell them apart, and asking again will not change that.',
+        '',
+        'Inside the settlement window a missing movement returns `resolutionPending` rather than',
+        'failing the charge: interbank settlement is not instant, and failing a debit still in',
+        'flight is the same double-charge error in slower motion.',
+        '',
+        '409 `PAYMENT_REFERENCE_ALREADY_USED` means the movement it matched had already settled a',
+        'different payment. The charge stays unresolved.'
+      ].join('\n'),
+      security: staff,
+      parameters: [{ name: 'id', in: 'path', required: true, schema: { type: 'string', format: 'uuid' } }],
+      responses: {
+        200: { description: 'What asking the bank produced.', content: { 'application/json': { schema: ref('C2PResolution') } } },
+        ...commonErrors,
+        403: response('Forbidden'),
+        404: response('NotFound'),
+        409: response('Conflict'),
+        503: response('ServiceUnavailable')
       }
     }
   },
