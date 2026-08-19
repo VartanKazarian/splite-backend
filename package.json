@@ -13,6 +13,8 @@
     "seed": "node scripts/seed.js",
     "onboarding": "node scripts/onboarding.js",
     "purge": "node scripts/purge.js",
+    "reconcile": "node scripts/reconcile.js",
+    "maintenance": "node scripts/maintenance.js",
     "secrets": "node scripts/generate-secrets.js",
     "smoke": "node scripts/smoke.js",
     "seed:sql": "node scripts/seed-sql.js",
