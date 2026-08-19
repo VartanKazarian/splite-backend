@@ -109,6 +109,11 @@ const CODES = {
   SPLIT_ALREADY_EXISTS: 409,
   // Voiding or paying against a split that is no longer ACTIVE.
   SPLIT_NOT_ACTIVE: 409,
+  // The bill changed after the split was agreed, so the split no longer covers
+  // it and takes no further payments. Distinct from SPLIT_NOT_ACTIVE because the
+  // remedy is different and worth telling a diner plainly: agree a new split on
+  // the new total, rather than "that split was discarded".
+  SPLIT_STALE: 409,
   // A split people have started settling against is a record, not a draft.
   SPLIT_HAS_PAYMENTS: 409,
   // The per-share ceiling: a payment that names a share may not exceed what is
@@ -186,6 +191,7 @@ const DETAILS = {
   FORBIDDEN_ROLE: { requiredRoles: 'string[] -- roles that would have been accepted' },
   PAYMENT_CLAIM_NOT_PENDING: { status: 'string -- the status the claim is actually in' },
   SPLIT_NOT_ACTIVE: { status: 'string -- the status the split is actually in' },
+  SPLIT_STALE: { billTotalVes: 'string -- what the bill now totals, which the split no longer covers' },
   SPLIT_SHARE_OVERPAID: { shareRemainingVes: 'string -- minor units still owed on that share' },
   PAYMENT_PROVIDER_MISCONFIGURED: { provider: 'string -- the rail that is configured but not usable' },
   PAYMENT_RESOLUTION_UNAVAILABLE: { retryAfterSeconds: 'integer -- matches the Retry-After header' },
