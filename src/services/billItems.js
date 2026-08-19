@@ -2,6 +2,7 @@ const db = require('../connectors/base');
 const config = require('../config');
 const { ApiError } = require('../errors');
 const { toMinor, parseRate, applyRate, applyBps } = require('./money');
+const { logger } = require('../connectors/logger');
 
 /**
  * Bill line items, and the totals derived from them.
@@ -108,7 +109,42 @@ async function recalculateTotals(client, bill) {
       total.toString(), totalDueVes.toString(), bill.id
     ]
   );
+
+  // A split was agreed against the old total, so it no longer governs this
+  // bill. Marked here rather than in each of the four callers because this is
+  // the one place an item edit can change what is owed -- a caller that forgot
+  // would leave the table settling a plan that no longer adds up, which is the
+  // failure this exists to prevent. Only when the figure actually moved: an
+  // edit that leaves the total alone leaves the agreement standing.
+  if (totalDueVes !== toMinor(bill.total_due_ves)) {
+    await markSplitsStale(client, bill.id);
+  }
+
   return updated.rows[0];
+}
+
+/**
+ * Retires any live split on a bill whose total has changed.
+ *
+ * STALE rather than recomputed: silently rewriting what a group agreed to is
+ * worse than telling them it changed, and a share somebody has already paid
+ * cannot move. Money already attributed stays attributed -- it is on the bill's
+ * ledger, and `bills.amount_paid_ves` is untouched by this. The group agrees a
+ * fresh split on the new total; the partial unique index allows it precisely
+ * because the stale one is no longer ACTIVE.
+ */
+async function markSplitsStale(client, billId) {
+  const { rowCount } = await client.query(
+    `UPDATE bill_splits SET status = 'STALE'
+      WHERE bill_id = $1 AND status = 'ACTIVE'`,
+    [billId]
+  );
+  if (rowCount) {
+    logger.info(
+      { event: 'BILL_SPLIT_STALE', billId, splits: rowCount },
+      'Bill total changed; its split no longer governs and must be re-agreed'
+    );
+  }
 }
 
 /**
