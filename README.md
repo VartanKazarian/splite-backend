@@ -849,6 +849,27 @@ payment cannot credit a share on another bill, or one whose split was voided. Th
 participant row is locked `FOR UPDATE`, so two diners racing the same share
 serialise and the second is rejected on its ceiling rather than both crediting.
 
+**A split stops governing a bill that changed underneath it.** The basis is
+frozen so the plan does not move as it is paid — but the bill itself can move,
+and in a dining room it routinely does: the table agrees to split, then orders
+another round. Adding or removing a line marks any live split `STALE`, and a
+stale split takes no further payment (409 `SPLIT_STALE`). Without that, the split
+went on claiming the old total, both diners paid their share in full, and the
+bill sat OPEN with the difference owed by nobody — everyone believing they were
+square and the table unable to be cleared.
+
+Stale rather than recomputed, because silently rewriting what a group agreed to
+is worse than telling them it changed, and a share somebody has already paid
+cannot move anyway. Money already paid in stays exactly where it was — it is on
+the bill's ledger regardless — and the group agrees a fresh split on what is
+actually left, which the one-active-per-bill index now permits. An edit that
+leaves the total unchanged leaves the agreement standing: staleness is about the
+figure, not about the fact of an edit.
+
+`GET .../splits/active` returns the ACTIVE split, or the most recent STALE one —
+so a client can tell "the bill changed, agree a new split" from "this table never
+agreed one", which are otherwise the same empty result. Branch on `status`.
+
 The split is a plan for who pays which part; it is **not** a second record of how
 much the bill has been paid. That stays `bills.amountPaidVes`, so cash at the
 till still settles the bill outside any split and the bill-level ceiling still

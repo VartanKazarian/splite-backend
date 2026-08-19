@@ -300,7 +300,7 @@ const schemas = {
       },
       splitParticipantId: {
         type: 'string', format: 'uuid',
-        description: 'Optional. Settle one participant share of a persistent split; the payment may not exceed what is left on that share.'
+        description: 'Optional. Settle one participant share of a persistent split; the payment may not exceed what is left on that share, and is refused with 409 SPLIT_STALE if the bill changed after the split was agreed.'
       }
     }
   },
@@ -404,9 +404,13 @@ const schemas = {
       id: { type: 'string', format: 'uuid' },
       billId: { type: 'string', format: 'uuid' },
       mode: { type: 'string', enum: ['FULL', 'EQUAL', 'ITEMS', 'CUSTOM'] },
-      status: { type: 'string', enum: ['ACTIVE', 'VOID'] },
+      status: {
+        type: 'string', enum: ['ACTIVE', 'STALE', 'VOID'],
+        description:
+          'ACTIVE governs the bill. STALE means the bill total changed after the split was agreed — it takes no further payments and the group must agree another; money already paid into it stays on the bill. VOID was discarded deliberately, which is only possible while nothing had been paid in.'
+      },
       currency: { type: 'string', const: 'VES' },
-      basisVes: { ...minorUnits, description: 'The outstanding balance the shares divide. Frozen at creation.' },
+      basisVes: { ...minorUnits, description: 'The outstanding balance the shares divide. Frozen at creation, so it does not follow a bill that changes afterwards — that is what STALE records.' },
       createdByType: { type: 'string', enum: ['STAFF', 'GUEST'] },
       participants: {
         type: 'array',
@@ -1567,9 +1571,15 @@ const paths = {
   '/api/v1/guest/bill/splits/active': {
     get: {
       tags: ['Guest'],
-      summary: 'The live split on the guest\'s bill',
+      summary: 'The split currently governing the guest\'s bill',
       operationId: 'getGuestActiveSplit',
-      description: 'Authenticated with a guest session. 404 when the bill has no active split.',
+      description: [
+        'Authenticated with a guest session.',
+        '',
+        'Returns the ACTIVE split, or the most recent STALE one if the bill changed after it was',
+        'agreed — a diner who ordered another round needs to be told their split no longer covers the',
+        'bill, not shown an empty screen. **Branch on `status`.** 404 means no split was ever agreed.'
+      ].join('\n'),
       security: [{ guestAuth: [] }],
       responses: {
         200: { description: 'The active split.', content: { 'application/json': { schema: ref('BillSplit') } } },
@@ -1953,10 +1963,17 @@ const paths = {
   '/api/v1/bills/{id}/splits/active': {
     get: {
       tags: ['Bills'],
-      summary: 'The bill\'s live split',
+      summary: 'The split currently governing the bill',
       operationId: 'getBillActiveSplit',
       'x-required-roles': ['OWNER', 'MANAGER', 'CASHIER', 'WAITER'],
-      description: 'Roles: OWNER, MANAGER, CASHIER, WAITER. 404 when the bill has no active split.',
+      description: [
+        'Roles: OWNER, MANAGER, CASHIER, WAITER.',
+        '',
+        'Returns the ACTIVE split, or the most recent STALE one if the bill changed after a split',
+        'was agreed. **Branch on `status`** — a STALE split is returned precisely so a client can say',
+        '"the bill changed, agree a new split" rather than showing nothing. 404 means this bill never',
+        'had one.'
+      ].join('\n'),
       security: staff,
       parameters: [{ $ref: '#/components/parameters/BillId' }],
       responses: {

@@ -131,10 +131,22 @@ async function getSplit({ restaurantId, splitId, bill = null }) {
   return { split, participants, claims, fxRate: rate };
 }
 
-/** The active split for a bill, or null. */
+/**
+ * The split that currently governs a bill, or null.
+ *
+ * ACTIVE if there is one, otherwise the most recent STALE one. Returning the
+ * stale split rather than nothing is what lets a client tell "the bill changed,
+ * agree a new split" from "this table never agreed one" -- two states that would
+ * otherwise both be an empty result, and only one of which needs explaining to
+ * a diner. VOID splits are excluded: those were discarded deliberately and
+ * nothing was ever paid into them.
+ */
 async function getActiveSplit({ restaurantId, billId, bill = null }) {
   const row = (await db.query(
-    `SELECT id FROM bill_splits WHERE restaurant_id = $1 AND bill_id = $2 AND status = 'ACTIVE'`,
+    `SELECT id FROM bill_splits
+      WHERE restaurant_id = $1 AND bill_id = $2 AND status <> 'VOID'
+      ORDER BY (status = 'ACTIVE') DESC, created_at DESC
+      LIMIT 1`,
     [restaurantId, billId]
   )).rows[0];
   if (!row) return null;
@@ -216,6 +228,20 @@ async function advanceShare(client, { splitParticipantId, restaurantId, amountVe
   )).rows[0];
   if (!locked || (billId != null && locked.bill_id !== billId)) {
     throw new ApiError('SPLIT_SHARE_NOT_FOUND', 'That split participant does not belong to this bill');
+  }
+  if (locked.status === 'STALE') {
+    // The bill changed after this plan was agreed, so the plan no longer covers
+    // it. Told apart from a deliberate void because the remedy differs: agree a
+    // new split on the new total.
+    const { rows } = await client.query(
+      'SELECT total_due_ves FROM bills WHERE id = $1 AND restaurant_id = $2',
+      [locked.bill_id, restaurantId]
+    );
+    throw new ApiError(
+      'SPLIT_STALE',
+      'The bill changed after this split was agreed; agree a new one before paying',
+      { billTotalVes: rows[0]?.total_due_ves ?? null }
+    );
   }
   if (locked.status !== 'ACTIVE') {
     throw new ApiError('SPLIT_NOT_ACTIVE', 'That split has been voided', { status: locked.status });

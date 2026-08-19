@@ -6,6 +6,7 @@ const db = require('../../src/connectors/base');
 const fixtures = require('./helpers/fixtures');
 const splits = require('../../src/services/splits');
 const { processSplitPayment } = require('../../src/services/locks');
+const billItems = require('../../src/services/billItems');
 const claims = require('../../src/services/paymentClaims');
 
 /**
@@ -263,6 +264,122 @@ describe('persistent bill splits against a real Postgres', { skip }, () => {
       err => err.code === 'SPLIT_SHARE_OVERPAID' && err.statusCode === 409
     );
     assert.equal((await fixtures.readBill(bill.id)).amount_paid_ves, '0', 'nothing moved');
+  });
+
+  /** An itemised bill: opened at zero, then priced by its lines. */
+  const itemisedBill = async (unitPrice, quantity) => {
+    const table = await fixtures.createTable(restaurant.id, { name: `I${++seq}` });
+    const bill = await fixtures.createBill({
+      restaurantId: restaurant.id, tableId: table.id, totalDue: 0, totalDueVes: 0
+    });
+    const product = (await db.query(
+      `INSERT INTO menu_products (restaurant_id, name, price_minor_units, currency, active)
+       VALUES ($1, $2, $3, 'VES', true) RETURNING id`,
+      [restaurant.id, `P${seq}-${Math.random().toString(36).slice(2, 8)}`, String(unitPrice)]
+    )).rows[0].id;
+    await billItems.addItem({ restaurantId: restaurant.id, billId: bill.id, productId: product, quantity });
+    return { bill: await fixtures.readBill(bill.id), product };
+  };
+
+  it('a split goes STALE when the bill changes under it, and the table is told', async () => {
+    // The scenario this whole status exists for: the table agrees a split, then
+    // orders another round. Before STALE, the split went on claiming the old
+    // total, both diners paid in full, and the bill sat OPEN with the difference
+    // owed by nobody -- the diners believing they were square.
+    const { bill, product } = await itemisedBill(10000, 2);
+    assert.equal(bill.total_due_ves, '20000');
+
+    const split = await splits.createSplit({
+      restaurantId: restaurant.id, bill,
+      request: { mode: 'EQUAL', participants: [{ id: 'a' }, { id: 'b' }] }, createdBy: staff
+    });
+    assert.equal(split.split.status, 'ACTIVE');
+
+    // Another round.
+    await billItems.addItem({ restaurantId: restaurant.id, billId: bill.id, productId: product, quantity: 1 });
+
+    const after = await splits.getSplit({ restaurantId: restaurant.id, splitId: split.split.id });
+    assert.equal(after.split.status, 'STALE', 'the split no longer governs the bill');
+    assert.equal((await fixtures.readBill(bill.id)).total_due_ves, '30000');
+
+    // And the read surface says so, rather than showing nothing.
+    const current = await splits.getActiveSplit({ restaurantId: restaurant.id, billId: bill.id });
+    assert.equal(current.split.id, split.split.id);
+    assert.equal(current.split.status, 'STALE');
+  });
+
+  it('a stale share takes no further payment', async () => {
+    const { bill, product } = await itemisedBill(10000, 2);
+    const split = await splits.createSplit({
+      restaurantId: restaurant.id, bill,
+      request: { mode: 'EQUAL', participants: [{ id: 'a' }, { id: 'b' }] }, createdBy: staff
+    });
+    await billItems.addItem({ restaurantId: restaurant.id, billId: bill.id, productId: product, quantity: 1 });
+
+    await assert.rejects(
+      () => processSplitPayment({
+        restaurantId: restaurant.id, billId: bill.id,
+        amountPaidMinorUnits: 10000, splitParticipantId: split.participants[0].id
+      }),
+      err => err.code === 'SPLIT_STALE' && err.statusCode === 409
+    );
+    assert.equal((await fixtures.readBill(bill.id)).amount_paid_ves, '0', 'nothing moved');
+  });
+
+  it('money already paid into a split survives it going stale, and a fresh split covers the rest', async () => {
+    const { bill, product } = await itemisedBill(10000, 2);   // 20000
+    const split = await splits.createSplit({
+      restaurantId: restaurant.id, bill,
+      request: { mode: 'EQUAL', participants: [{ id: 'a' }, { id: 'b' }] }, createdBy: staff
+    });
+    // Ana pays her half while the split is still good.
+    await processSplitPayment({
+      restaurantId: restaurant.id, billId: bill.id,
+      amountPaidMinorUnits: 10000, splitParticipantId: split.participants[0].id
+    });
+
+    // Then the round arrives: bill 20000 -> 30000, split goes stale.
+    await billItems.addItem({ restaurantId: restaurant.id, billId: bill.id, productId: product, quantity: 1 });
+    const stale = await splits.getSplit({ restaurantId: restaurant.id, splitId: split.split.id });
+    assert.equal(stale.split.status, 'STALE');
+    assert.equal(stale.participants[0].amount_paid_ves, '10000', 'her payment is still hers');
+    assert.equal((await fixtures.readBill(bill.id)).amount_paid_ves, '10000', 'and still on the bill');
+
+    // The group agrees a new split on what is actually left -- the stale one no
+    // longer holds the one-active-per-bill index.
+    const rest = await fixtures.readBill(bill.id);
+    const second = await splits.createSplit({
+      restaurantId: restaurant.id, bill: rest,
+      request: { mode: 'EQUAL', participants: [{ id: 'b' }, { id: 'c' }] }, createdBy: staff
+    });
+    assert.equal(second.split.basis_ves, '20000', 'the new plan divides only the outstanding balance');
+
+    // Paying it out closes the bill -- the failure this whole feature fixes.
+    for (const p of second.participants) {
+      await processSplitPayment({
+        restaurantId: restaurant.id, billId: bill.id,
+        amountPaidMinorUnits: p.amount_ves, splitParticipantId: p.id
+      });
+    }
+    const closed = await fixtures.readBill(bill.id);
+    assert.equal(closed.amount_paid_ves, '30000');
+    assert.equal(closed.status, 'CLOSED', 'the table can be cleared');
+  });
+
+  it('an edit that does not move the total leaves the split standing', async () => {
+    // Staleness is about the figure, not about the fact of an edit: setting a
+    // quantity to what it already was must not tear up an agreement.
+    const { bill } = await itemisedBill(10000, 2);
+    const split = await splits.createSplit({
+      restaurantId: restaurant.id, bill,
+      request: { mode: 'EQUAL', participants: [{ id: 'a' }, { id: 'b' }] }, createdBy: staff
+    });
+    const item = (await billItems.listForBill({ restaurantId: restaurant.id, billId: bill.id }))[0];
+    await billItems.updateQuantity({
+      restaurantId: restaurant.id, billId: bill.id, itemId: item.id, quantity: 2
+    });
+    const after = await splits.getSplit({ restaurantId: restaurant.id, splitId: split.split.id });
+    assert.equal(after.split.status, 'ACTIVE', 'unchanged total, unchanged agreement');
   });
 
   it('an ITEMS split persists whole-line claims and credits across rails on confirm', async () => {
