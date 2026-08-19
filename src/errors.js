@@ -32,6 +32,13 @@ const CODES = {
   INVALID_AMOUNT: 400,
   INVALID_MONETARY_VALUE: 400,
   WEBHOOK_BODY_UNVERIFIABLE: 400,
+  // The upload is not something the menu reader can open.
+  MENU_OCR_UNSUPPORTED_MEDIA: 400,
+  MENU_OCR_FILE_REQUIRED: 400,
+  // A PDF that pdftoppm cannot rasterise. The remedy is the caller's -- export
+  // it again, or photograph the page -- so it is a 400, not a server fault.
+  MENU_OCR_PDF_UNREADABLE: 400,
+  MENU_OCR_FILE_TOO_LARGE: 400,
   SPLIT_PARTICIPANTS_INVALID: 400,
   SPLIT_CLAIMS_INCOMPLETE: 400,
   SPLIT_CLAIM_UNKNOWN: 400,
@@ -154,6 +161,14 @@ const CODES = {
   // inventing a settlement outcome from a network error.
   PAYMENT_RESOLUTION_UNAVAILABLE: 503,
 
+  // No vision provider configured for this deployment. Configuration, not a
+  // bug, and saying so stops somebody hunting one.
+  MENU_OCR_NOT_CONFIGURED: 503,
+  // The provider refused, timed out, or answered with something unreadable.
+  // Retryable: nothing was written, because this endpoint never writes.
+  MENU_OCR_UNAVAILABLE: 503,
+  MENU_OCR_UNREADABLE_RESPONSE: 503,
+
   // 500 -- the message is never echoed; correlate on requestId.
   INTERNAL_ERROR: 500
 };
@@ -192,6 +207,9 @@ const DETAILS = {
   PAYMENT_CLAIM_NOT_PENDING: { status: 'string -- the status the claim is actually in' },
   SPLIT_NOT_ACTIVE: { status: 'string -- the status the split is actually in' },
   SPLIT_STALE: { billTotalVes: 'string -- what the bill now totals, which the split no longer covers' },
+  MENU_OCR_UNSUPPORTED_MEDIA: { contentType: 'string -- what was uploaded' },
+  MENU_OCR_FILE_TOO_LARGE: { maxBytes: 'integer -- the upload ceiling' },
+  MENU_OCR_UNAVAILABLE: { retryAfterSeconds: 'integer -- how long to wait before retrying' },
   SPLIT_SHARE_OVERPAID: { shareRemainingVes: 'string -- minor units still owed on that share' },
   PAYMENT_PROVIDER_MISCONFIGURED: { provider: 'string -- the rail that is configured but not usable' },
   PAYMENT_RESOLUTION_UNAVAILABLE: { retryAfterSeconds: 'integer -- matches the Retry-After header' },

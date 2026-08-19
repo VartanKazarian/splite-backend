@@ -394,6 +394,68 @@ counting the bill twice — open it with a total of `0` to itemise it. A composi
 foreign key on `(bill_id, restaurant_id, currency)` ties every line to its bill,
 its tenant and its currency at once, so a EUR line cannot sit on a USD bill.
 
+## Building a menu from a photo
+
+`POST /api/v1/menu/ocr-extract` takes a photo or PDF of a menu (multipart, field
+`file`) and returns the items a vision model read off it. **It writes nothing.**
+`POST /api/v1/menu/ocr-import` is the write, and it takes what a staff member
+confirmed on screen — not what the model said.
+
+That division is the feature, not friction around it. It is the same one a
+declared Pago Móvil uses: the machine records what it thinks, a person turns it
+into a fact. OCR misreads prices, and a wrong price on a menu is charged to
+every diner who orders that dish until somebody notices.
+
+Three things follow from treating the extraction as a draft:
+
+- A row whose price could not be read arrives with `priceMinorUnits: null` and
+  `needsPrice: true` rather than being dropped. The item is real; hiding it
+  sends staff hunting for what the reader missed.
+- Rows sharing a name are flagged `duplicateName`, because `menu_products` is
+  unique on `(restaurant_id, name)` and one of them has to be renamed before
+  either can import.
+- `currencyGuess` is reported and never applied. Prices import in the
+  **restaurant's** `menu_currency`; a menu printed in dollars does not change
+  what that restaurant charges in, and the request cannot name a currency at all.
+
+Import is per row inside a savepoint, so one duplicate name rejects that row and
+keeps the other forty-nine — read `errors` as well as `importedCount`. Without
+the savepoint the first duplicate would abort the transaction and every later
+insert would fail with `25P02`, which is why a plain try/catch around the insert
+cannot do what it appears to.
+
+### Reading prices
+
+A menu writes the same number several ways, and getting this wrong is expensive
+in a direction nobody checks:
+
+| Printed | Read as |
+| --- | --- |
+| `12,50` / `12.50` | 12,50 |
+| `1.234,56` / `1,234.56` | 1.234,56 |
+| `1.500` / `1,500` | 1.500,00 — three trailing digits group thousands |
+| `25` | 25,00 — a menu never quotes céntimos |
+| `a la carta` | `null` — needs a human |
+
+Deliberately not the bank parser in `src/payments/providers/mercantil/c2p.js`,
+which solves a similar problem with one decisive difference: a bank sometimes
+quotes minor units, so a bare `25` there is twenty-five céntimos. Sharing them
+behind a flag would mean reading that flag wrongly exactly once, silently.
+
+### Operating it
+
+Off unless configured: without `MENU_OCR_API_KEY` the endpoint answers 503
+`MENU_OCR_NOT_CONFIGURED` rather than failing oddly at upload. `MENU_OCR_BASE_URL`
+selects the provider — the request is the OpenAI-compatible chat-completions
+shape several vendors serve, so switching is configuration rather than code.
+
+Rate limited to 10 uploads a minute per staff member: each call costs money at a
+third party. Uploads are bounded (8 MB, 6 PDF pages) and held in memory only —
+no menu image is ever written to disk or to the database. A PDF is rasterised
+with `pdftoppm` (poppler, in the image) because a menu PDF is usually a design
+export whose text layer is absent or ordered by drawing position rather than
+reading order: the picture carries what extracted text loses.
+
 ## Charges: IVA and servicio
 
 A bill total is not just the sum of its lines. Both charges are configured per

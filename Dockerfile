@@ -14,6 +14,13 @@ FROM node:22-alpine AS runtime
 WORKDIR /usr/src/app
 ENV NODE_ENV=production
 
+# poppler-utils supplies pdftoppm, which rasterises an uploaded menu PDF into
+# page images for the vision model. A menu PDF is usually a design export whose
+# text layer is absent or ordered by drawing position rather than reading order,
+# so the picture carries the information that extracted text loses.
+# ~15 MB, and only this one binary is used.
+RUN apk add --no-cache poppler-utils
+
 RUN addgroup -g 1001 -S nodejs && adduser -u 1001 -S nodejs -G nodejs
 
 COPY --from=deps --chown=nodejs:nodejs /usr/src/app/node_modules ./node_modules
