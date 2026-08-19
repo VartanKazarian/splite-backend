@@ -225,6 +225,34 @@ describe('Mercantil C2P against a real Postgres', { skip }, () => {
     assert.equal((await fixtures.readBill(bill.id)).amount_paid_ves, '0');
   });
 
+  it('the stored invoice number follows the server-owned policy', async () => {
+    const bill = await freshBill({ totalDue: 126000, totalDueVes: 126000 });
+    const { paymentId } = await inDoubtCharge(bill);
+
+    const { rows } = await db.query(
+      'SELECT invoice_number FROM c2p_charges WHERE payment_id = $1', [paymentId]);
+    const invoice = rows[0].invoice_number;
+
+    assert.match(invoice, /^SPL-[0-9A-F]{8}-[0-9A-F]{32}$/, 'canonical shape');
+    // Embeds this restaurant and the full payment id, so the row is auditable
+    // back to both from the invoice alone.
+    assert.ok(invoice.includes(restaurant.id.replace(/-/g, '').slice(0, 8).toUpperCase()));
+    assert.ok(invoice.endsWith(paymentId.replace(/-/g, '').toUpperCase()));
+  });
+
+  it('the database refuses a malformed invoice number', async () => {
+    // The CHECK from migration 021: a non-conforming invoice cannot be stored,
+    // even by a write that goes around the service.
+    const bill = await freshBill({ totalDue: 126000, totalDueVes: 126000 });
+    const { paymentId } = await inDoubtCharge(bill);
+    await assert.rejects(
+      () => db.query(
+        `UPDATE c2p_charges SET invoice_number = 'not-a-valid-invoice' WHERE payment_id = $1`,
+        [paymentId]),
+      err => err.code === '23514' && /invoice_format/.test(String(err.constraint || ''))
+    );
+  });
+
   it('inside the settlement window a missing movement pends rather than fails', async () => {
     const bill = await freshBill({ totalDue: 126000, totalDueVes: 126000 });
     const { paymentId } = await inDoubtCharge(bill); // created just now, well inside the window
