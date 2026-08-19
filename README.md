@@ -25,6 +25,9 @@ opens so a diner's total cannot move while they eat.
 - Menus priced in VES, USD or EUR, at the BCV rate in force, never guessed
 - Bill line items with immutable price snapshots; totals derived, never supplied
 - A split engine with four modes — FULL, EQUAL, ITEMS and CUSTOM
+- Persistent splits: participant shares stored and settled independently, each
+  under its own database-enforced ceiling
+- Mercantil C2P charging with safe in-doubt resolution (wire format unconfirmed)
 - Append-only payment ledger with a database-enforced state machine
 - Payment concurrency control via `SELECT ... FOR UPDATE`
 - Idempotency keys on money-moving endpoints
@@ -45,13 +48,13 @@ opens so a diner's total cannot move while they eat.
 Restaurants arrive through a reviewed registration form rather than a seed
 script — see [Registering a restaurant](#registering-a-restaurant).
 
-Bills settle from three directions — the till, a diner's declared Pago Móvil,
-and a signed provider webhook — all through one settlement function. See
-[Getting paid](#getting-paid). **Card payments are not built**: that needs an
-acquirer.
+Bills settle from four directions — the till, a diner's declared Pago Móvil, a
+Mercantil C2P charge, and a signed provider webhook — all through one settlement
+function. See [Getting paid](#getting-paid). **Card payments are not built**:
+that needs an acquirer.
 
-Not yet built: card payments, automatic bank reconciliation, and persisted split
-participants. See [Open points](#open-points).
+Not yet built: card payments, and automatic bank reconciliation. See
+[Open points](#open-points).
 
 ## Local development
 
@@ -558,7 +561,7 @@ says configuration rather than bug.
 
 ## Getting paid
 
-Three ways money reaches a bill, and they all settle through **one** function —
+Four ways money reaches a bill, and they all settle through **one** function —
 `applyToBill` in `src/services/locks.js`. That matters: the rules are that a
 bill must be OPEN, that the running total may never exceed what is due, and that
 CLOSED happens on exact equality and nowhere else. Each path had a reason to
@@ -570,7 +573,12 @@ omitted status check settles a bill that was voided an hour ago.
 | --- | --- | --- |
 | `POST /api/v1/bills/:id/payments` | staff at the till | the person taking it |
 | `POST /api/v1/guest/bill/payment-claims` → `confirm` | the diner | a person with the bank app open |
+| `POST /api/v1/guest/bill/c2p` | Splite, on the diner's instruction | Mercantil's charge response, or staff resolving an in-doubt one |
 | `POST /api/v1/webhooks/:provider` | the provider | an HMAC signature |
+
+The C2P path is the only one where Splite **initiates** the debit rather than
+being told about money after it moved, which is what makes it the delicate one —
+see [Mercantil C2P](#mercantil-c2p) below.
 
 ### How a payment reaches a table
 
@@ -632,6 +640,69 @@ still letting a diner who mistyped correct it after a rejection.
 
 A claim is **not** a reservation. Two diners may each claim the whole balance;
 only the first confirmation can succeed, and the second gets 409.
+
+### Mercantil C2P
+
+The first rail where Splite asks for money to move rather than being told it
+already did. The diner obtains a single-use *clave* from their own bank, hands it
+to us with their phone and cédula, and `POST /api/v1/guest/bill/c2p` asks
+Mercantil to pull the amount. That one difference — we initiate — is where all
+the care goes.
+
+The response is an outcome, and **all four must be handled**:
+
+| Status | Meaning | What the client must do |
+| --- | --- | --- |
+| `SUCCEEDED` | settled | show the bill figures in `settlement` |
+| `FAILED` | the bank said no | a retry with a fresh clave is safe |
+| `IN_DOUBT` | the bank did **not** say | **never offer a retry** — the debit may have landed |
+| `AMBIGUOUS` | a confirmed debit that could not be credited to the bill | staff resolve it, possibly a refund |
+
+`IN_DOUBT` is the one that matters. Mercantil does not promise that
+`invoice_number` deduplicates, so a charge whose outcome we never learned must
+not be reported as declined — the diner would retry and pay twice for one
+dinner. A timeout, a `408/425/429`, any `5xx`: all indeterminate, never a
+rejection. The payment sits in `IN_DOUBT` and `bills.amountPaidVes` is untouched,
+exactly as a PENDING claim is.
+
+Staff resolve it. `POST /api/v1/payments/c2p/:id/resolve` asks Mercantil for its
+movements and settles only when one matches on **both** the amount and the last
+four digits of the payer's phone. Amount alone is a filter, never a decision:
+two tables owing an identical total is the ordinary case in a restaurant, and
+matching on amount would settle one table with the other's money. A movement it
+cannot attribute moves the charge to `AMBIGUOUS` with the candidate references
+attached, rather than guessing. `GET /api/v1/payments/c2p/unresolved` is the
+queue that state implies — a charge that correctly refuses to guess is otherwise
+indistinguishable from one that was lost. One bank movement settles exactly one
+payment, enforced by the `(provider, provider_payment_id)` unique index.
+
+The charge is idempotency-keyed and rate limited to 8 per 5 minutes per session,
+because each attempt burns a clave the diner had to fetch and consumes the
+restaurant's quota with Mercantil. The clave is validated for shape, used once,
+and never stored — there is no column for it, and it is redacted out of every
+diagnostic.
+
+`GET /api/v1/guest/c2p/banks` returns, per bank, how to obtain a clave — the
+channels it offers, the SMS short code and body, and how long the clave lives.
+That last field is load-bearing: most banks give six hours, but Banplus gives
+five minutes and 100% Banco ties the clave to the amount, so those must be
+fetched at payment time, not when the diner sits down. The step Splite does not
+control is the diner asking their own bank, and a generic "ask for a clave" is
+what strands them.
+
+The `invoice_number` is a formal, server-owned id — `SPL-<REST8>-<PAY32>`, the
+restaurant's short id and the payment's full id — built from values we control,
+never read from the request, and registered before Mercantil is called. Its
+shape is enforced by a CHECK (migration 021), so every invoice reads back to its
+restaurant and its payment. A C2P charge may also carry a `splitParticipantId`
+to settle one share of a persistent split (see [Splitting a bill](#splitting-a-bill)).
+
+One caveat, stated plainly: the Mercantil **wire format** — field names, paths,
+and whether amounts cross as bolívares or céntimos — is taken from their
+playground and **not yet confirmed against a live integration**. It is isolated
+in `toMinorUnits`/`toBankAmount` with a round-trip test, so correcting the amount
+convention is a one-function change, but it must be confirmed before the first
+real charge.
 
 ### Provider webhooks
 
@@ -709,8 +780,11 @@ machinery above applies.
 
 `POST /api/v1/bills/{id}/split/preview` — and the guest equivalent at
 `/api/v1/guest/bill/split/preview` — computes who owes what. It is **advisory
-and mutates nothing**; payment still goes through the payments endpoint, which
-holds the row lock and enforces the ceiling.
+and mutates nothing**: it computes and returns, and payment goes through the
+payments endpoint, which holds the row lock and enforces the ceiling. To store a
+plan a group settles against, see [Persisting the split](#persisting-the-split)
+below — the preview and the persisted split compute the same allocation through
+the same engine, so they are never different numbers.
 
 | Mode | Behaviour |
 |------|-----------|
@@ -736,14 +810,50 @@ must be claimed, because an unclaimed line is money owed by nobody and the parts
 could not sum. `CUSTOM` refuses amounts that do not add up rather than rounding
 them into shape, which would hide a client bug behind a number that looks right.
 
-Participant ids are client-owned and opaque for now. Persisting them is what
-would make the engine authoritative rather than advisory; see
-[Open points](#open-points).
+There is one *preview* endpoint, not two. An earlier
+`GET /bills/{id}/split?diners=n` answered a strictly narrower version of the same
+question and was removed rather than left alongside this one, because two
+endpoints that nearly agree are a choice a client should not have to make.
 
-There is one split endpoint, not two. An earlier `GET /bills/{id}/split?diners=n`
-answered a strictly narrower version of the same question and was removed rather
-than left alongside this one, because two endpoints that nearly agree are a
-choice a client should not have to make.
+### Persisting the split
+
+Preview computes and forgets. `POST /api/v1/bills/{id}/splits` — and the guest
+equivalent `POST /api/v1/guest/bill/splits` — computes the same allocation
+through the same engine and **stores** it, so a table agrees a plan once and
+settles it from several phones. Two things become impossible that the preview
+alone allowed: a group could not persist a plan across their devices, and one
+diner could pay past their share and leave another unable to pay theirs, because
+at the bill level the money was fine.
+
+The stored split is a `bill_splits` row with a `bill_split_participants` share
+per diner and, for `ITEMS`, the whole-line claims in `bill_split_items`. Both of
+its invariants are the **database's**, not the service's (migration 020), so an
+API path that forgot the rule still cannot break it:
+
+- The shares sum to the split's basis — the outstanding balance the moment it was
+  agreed — checked by a deferred constraint trigger at commit, whole.
+- A share is never overpaid: `CHECK (amount_paid_ves <= amount_ves)`, the exact
+  analogue of the bill-level ceiling one level down.
+
+The share is frozen once agreed; only its paid figure moves. A partial unique
+index allows one `ACTIVE` split per bill — a group that changes its mind voids
+the current one (`POST /api/v1/bills/{id}/splits/{splitId}/void`, refused once a
+share has been paid into) and agrees another. `GET .../splits/active` reads the
+live one.
+
+A payment settles a share by naming `splitParticipantId` — on the staff payment,
+a Pago Móvil claim, or a C2P charge. Whichever rail it is, the share is credited
+in the same transaction that moves the money, at the one point every settlement
+passes through (`src/services/payments.js`), scoped to the bill it settled: a
+payment cannot credit a share on another bill, or one whose split was voided. The
+participant row is locked `FOR UPDATE`, so two diners racing the same share
+serialise and the second is rejected on its ceiling rather than both crediting.
+
+The split is a plan for who pays which part; it is **not** a second record of how
+much the bill has been paid. That stays `bills.amountPaidVes`, so cash at the
+till still settles the bill outside any split and the bill-level ceiling still
+governs it. Participant labels are client-owned and anonymous — a share is a part
+of a bill, not a Splite account.
 
 ## Table QR codes
 
@@ -1218,16 +1328,16 @@ Two smaller ones, same character:
 
 ### Blocking real use
 
-- **Split claims are not persisted.** The split engine is advisory: it computes
-  an allocation and returns it. Nothing records that Ana claimed the burger, so
-  two diners can still both pay for it and the second is simply refused by the
-  overpayment ceiling. Participants are client-owned ids today; making them
-  durable is what turns the engine from advisory into authoritative, and it
-  belongs with the guest session it hangs off.
-- **A guest still cannot pay in the app.** They can now *declare* a Pago Móvil
-  sent from their own bank, which reaches staff as a claim and settles once
-  confirmed. That is a message, not a payment: the diner still leaves the app to
-  move the money. Paying inside Splite needs the acquirer below.
+- **The Mercantil C2P wire format is unconfirmed.** The in-app charge rail is
+  built end to end — charge, in-doubt resolution, the clave guide, the invoice
+  policy — and a guest *can* now pay from their own bank without leaving the app.
+  What is not yet verified against a live integration is Mercantil's own request
+  shape: field names, paths, and whether amounts cross as bolívares or céntimos.
+  It is isolated in `toMinorUnits`/`toBankAmount` with a round-trip test, so the
+  correction is one function, but it must be confirmed before the first real
+  charge — sending céntimos where bolívares are expected is a debit a hundred
+  times too large. Until then, C2P is code-complete but not switched on for real
+  money. Declared Pago Móvil remains the money path that works today.
 - **Onboarding is built but not switched on.** A public form records a lead and
   emails the team, who telephone the restaurant and then run
   `npm run onboarding -- invite <id>`. It is mounted only under
@@ -1235,12 +1345,11 @@ Two smaller ones, same character:
   provider — see [Waiting on a decision](#waiting-on-a-decision). The frontend
   page that consumes the invitation link, `/registro/verificar`, does not exist
   yet either.
-- **No card payments, and no money actually moves.** A diner can declare a Pago
-  Móvil they sent from their own bank app and a member of staff confirms it
-  against the bank; a signed provider webhook can settle a bill. Neither is
-  Splite moving money. Card needs an acquirer, which is the open decision below,
-  and with one there is no matching problem at all — the acquirer answers
-  authoritatively.
+- **No card payments.** A diner can declare a Pago Móvil, a signed webhook can
+  settle a bill, and C2P (above) is Splite moving money on the diner's
+  instruction — but a card, entered and charged in the app, needs an acquirer,
+  which is the open decision below. With one there is no reconciliation problem
+  at all: the acquirer answers authoritatively.
 - **No automatic bank reconciliation.** Confirming a declared Pago Móvil is a
   person reading a bank app. Reading the feed and matching movements to tables
   is real work with a real trap: two tables with identical totals and a payment
@@ -1258,8 +1367,13 @@ From the working copy, onto the current model:
   and an external-reference idempotency key.
 - Guest sessions bound to the current bill. The incoming version moves them from
   Redis into a `guest_sessions` table keyed on `bill_id`; that is a model change,
-  not an addition, and has not been adopted. It is also the natural home for
-  persisted split claims.
+  not an addition, and has not been adopted. (Split shares are now persisted in
+  their own tables — see [Splitting a bill](#splitting-a-bill) — rather than
+  waiting on this.)
+- Per-quantity item claims. `ITEMS` splits a whole line evenly between its
+  claimants; assigning a subset of a line's quantity — two of three beers to Ana,
+  one to Luis — is deliberately deferred, and would add a quantity column to
+  `bill_split_items`.
 
 ### Phase 2, not started
 
