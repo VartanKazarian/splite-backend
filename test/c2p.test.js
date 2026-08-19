@@ -9,6 +9,8 @@ const {
 const {
   isIndeterminateStatus, toMinorUnits, toBankAmount, redact, mapCharge, MercantilC2PError
 } = require('../src/payments/providers/mercantil/c2p');
+const { buildInvoiceNumber } = require('../src/services/mercantilC2P');
+const { c2pChargeSchema, validate } = require('../src/middleware/schemas');
 const { ALLOWED_TRANSITIONS } = require('../src/services/payments');
 
 /**
@@ -200,4 +202,54 @@ test('the service transition table matches the database trigger', () => {
       );
     }
   }
+});
+
+
+// --- The invoice-number policy ---------------------------------------------
+
+test('the invoice number follows SPL-<REST8>-<PAY32>', () => {
+  const inv = buildInvoiceNumber({
+    restaurantId: 'a1b2c3d4-e5f6-4a1b-8c2d-001122334455',
+    paymentId: 'ffeeddcc-bbaa-4998-8776-655443322110'
+  });
+  assert.match(inv, /^SPL-[0-9A-F]{8}-[0-9A-F]{32}$/);
+  assert.equal(inv, 'SPL-A1B2C3D4-FFEEDDCCBBAA49988776655443322110');
+});
+
+test('the invoice embeds the restaurant and the full payment id, without truncating', () => {
+  const paymentId = 'ffeeddcc-bbaa-4998-8776-655443322110';
+  const inv = buildInvoiceNumber({ restaurantId: 'a1b2c3d4-e5f6-4a1b-8c2d-001122334455', paymentId });
+  // The whole 32 hex of the payment is present -- the old form kept only 24, so
+  // two payments sharing a 24-hex prefix would have collided.
+  assert.ok(inv.endsWith(paymentId.replace(/-/g, '').toUpperCase()));
+  assert.ok(inv.includes('A1B2C3D4'), 'the restaurant short is present for auditability');
+});
+
+test('the invoice is deterministic and unique per payment', () => {
+  const r = 'a1b2c3d4-e5f6-4a1b-8c2d-001122334455';
+  const p1 = '11111111-1111-4111-8111-111111111111';
+  const p2 = '22222222-2222-4222-8222-222222222222';
+  assert.equal(buildInvoiceNumber({ restaurantId: r, paymentId: p1 }),
+    buildInvoiceNumber({ restaurantId: r, paymentId: p1 }), 'same payment -> same invoice');
+  assert.notEqual(buildInvoiceNumber({ restaurantId: r, paymentId: p1 }),
+    buildInvoiceNumber({ restaurantId: r, paymentId: p2 }), 'different payments -> different invoices');
+});
+
+test('a client-supplied invoiceNumber never reaches the charge', () => {
+  // The policy: the invoice is server-owned. The schema does not define it, and
+  // validation strips unknown keys, so a value the frontend sends is discarded
+  // before any handler sees it -- it can never become the invoice on a charge.
+  const req = {
+    body: {
+      amountVes: '126000', bankCode: '0105', idNumber: 'V12345678',
+      phone: '04145551234', clave: '123456', idempotencyKey: 'abcdefghijklmnop',
+      invoiceNumber: 'SPL-DEADBEEF-00000000000000000000000000000000',
+      invoice_number: '12345'
+    }
+  };
+  let cleaned;
+  validate(c2pChargeSchema, 'body')(req, {}, () => { cleaned = req.body; });
+  assert.ok(cleaned, 'the request validated');
+  assert.equal(cleaned.invoiceNumber, undefined, 'a supplied invoiceNumber is stripped');
+  assert.equal(cleaned.invoice_number, undefined, 'a supplied invoice_number is stripped');
 });

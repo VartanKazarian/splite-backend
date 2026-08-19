@@ -53,8 +53,40 @@ const SEARCH_LEAD_MS = 5 * 60 * 1000;
 
 const PROVIDER = 'MERCANTIL';
 
-/** Mercantil's correlation id for the charge. Not an idempotency key -- see migration 019. */
-const invoiceFor = paymentId => `SPL-${paymentId.replace(/-/g, '').slice(0, 24)}`;
+/**
+ * The invoice number Splite puts on a Mercantil charge.
+ *
+ * A formal, auditable policy rather than an incidental string, because this is
+ * the id a dispute is argued over. It is:
+ *
+ *   unique          -- it embeds the payment's UUID in full, which is globally
+ *                      unique, so no two charges can share one.
+ *   deterministic   -- the same payment always yields the same invoice, so a
+ *                      retry or a reconciliation recomputes it rather than
+ *                      storing and trusting a second copy.
+ *   non-reusable    -- one payment, one invoice; a new charge is a new payment.
+ *   server-owned    -- built here from ids the server controls. It is NEVER read
+ *                      from the request: the guest charge schema does not define
+ *                      an invoiceNumber, and validation strips unknown keys, so a
+ *                      value the frontend sends cannot reach this field.
+ *   registered first -- written to c2p_charges inside the transaction that
+ *                      commits BEFORE Mercantil is called, so a charge can never
+ *                      exist at the bank with no invoice on our side.
+ *
+ * Shape: `SPL-<REST8>-<PAY32>` -- the first eight hex of the restaurant id, for
+ * a human reading a bank statement to see which tenant a charge belongs to
+ * without a lookup, then the payment's full 32 hex. Uppercase, ~45 chars, well
+ * inside the column. Migration 021 enforces exactly this shape with a CHECK, so
+ * a malformed invoice cannot be stored even by a direct write.
+ *
+ * The SQL backfill in migration 021 recomputes this same string; the two must
+ * stay identical, which is why both are plain hex slices with no separators
+ * inside a segment.
+ */
+const hex = uuid => String(uuid).replace(/-/g, '').toUpperCase();
+function buildInvoiceNumber({ restaurantId, paymentId }) {
+  return `SPL-${hex(restaurantId).slice(0, 8)}-${hex(paymentId)}`;
+}
 
 /** Four digits of the payer's phone: enough to tell two diners apart, not enough to be a number. */
 const lastFour = phone => digitsOnly(phone).slice(-4).padStart(4, '0');
@@ -157,7 +189,7 @@ async function createC2PPayment({
       reason: 'C2P charge submitted to Mercantil'
     });
 
-    const invoice = invoiceFor(created.id);
+    const invoice = buildInvoiceNumber({ restaurantId, paymentId: created.id });
     await tx.query(
       `INSERT INTO c2p_charges (payment_id, restaurant_id, invoice_number, payer_bank_code, payer_phone_last4)
        VALUES ($1, $2, $3, $4, $5)`,
@@ -508,7 +540,7 @@ module.exports = {
   listUnresolved,
   RESOLUTION_WINDOW_MAX_MS,
   SETTLEMENT_WINDOW_MINUTES,
-  invoiceFor,
+  buildInvoiceNumber,
   lastFour,
   referenceFor
 };
