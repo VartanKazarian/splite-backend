@@ -54,6 +54,9 @@
       "SPLIT_NOT_ACTIVE": {
         "status": "string -- the status the split is actually in"
       },
+      "SPLIT_STALE": {
+        "billTotalVes": "string -- what the bill now totals, which the split no longer covers"
+      },
       "SPLIT_SHARE_OVERPAID": {
         "shareRemainingVes": "string -- minor units still owed on that share"
       },
@@ -329,6 +332,7 @@
                   "PAYMENT_CLAIM_NOT_PENDING",
                   "SPLIT_ALREADY_EXISTS",
                   "SPLIT_NOT_ACTIVE",
+                  "SPLIT_STALE",
                   "SPLIT_HAS_PAYMENTS",
                   "SPLIT_SHARE_OVERPAID",
                   "PAYMENT_CREDENTIALS_UNREADABLE",
@@ -830,7 +834,7 @@
           "splitParticipantId": {
             "type": "string",
             "format": "uuid",
-            "description": "Optional. Settle one participant share of a persistent split; the payment may not exceed what is left on that share."
+            "description": "Optional. Settle one participant share of a persistent split; the payment may not exceed what is left on that share, and is refused with 409 SPLIT_STALE if the bill changed after the split was agreed."
           }
         }
       },
@@ -1081,8 +1085,10 @@
             "type": "string",
             "enum": [
               "ACTIVE",
+              "STALE",
               "VOID"
-            ]
+            ],
+            "description": "ACTIVE governs the bill. STALE means the bill total changed after the split was agreed — it takes no further payments and the group must agree another; money already paid into it stays on the bill. VOID was discarded deliberately, which is only possible while nothing had been paid in."
           },
           "currency": {
             "type": "string",
@@ -1091,7 +1097,7 @@
           "basisVes": {
             "type": "string",
             "pattern": "^[0-9]+$",
-            "description": "The outstanding balance the shares divide. Frozen at creation.",
+            "description": "The outstanding balance the shares divide. Frozen at creation, so it does not follow a bill that changes afterwards — that is what STALE records.",
             "examples": [
               "756710"
             ]
@@ -3306,9 +3312,9 @@
         "tags": [
           "Guest"
         ],
-        "summary": "The live split on the guest's bill",
+        "summary": "The split currently governing the guest's bill",
         "operationId": "getGuestActiveSplit",
-        "description": "Authenticated with a guest session. 404 when the bill has no active split.",
+        "description": "Authenticated with a guest session.\n\nReturns the ACTIVE split, or the most recent STALE one if the bill changed after it was\nagreed — a diner who ordered another round needs to be told their split no longer covers the\nbill, not shown an empty screen. **Branch on `status`.** 404 means no split was ever agreed.",
         "security": [
           {
             "guestAuth": []
@@ -4371,7 +4377,7 @@
         "tags": [
           "Bills"
         ],
-        "summary": "The bill's live split",
+        "summary": "The split currently governing the bill",
         "operationId": "getBillActiveSplit",
         "x-required-roles": [
           "OWNER",
@@ -4379,7 +4385,7 @@
           "CASHIER",
           "WAITER"
         ],
-        "description": "Roles: OWNER, MANAGER, CASHIER, WAITER. 404 when the bill has no active split.",
+        "description": "Roles: OWNER, MANAGER, CASHIER, WAITER.\n\nReturns the ACTIVE split, or the most recent STALE one if the bill changed after a split\nwas agreed. **Branch on `status`** — a STALE split is returned precisely so a client can say\n\"the bill changed, agree a new split\" rather than showing nothing. 404 means this bill never\nhad one.",
         "security": [
           {
             "staffAuth": []
