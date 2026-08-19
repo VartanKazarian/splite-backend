@@ -42,7 +42,7 @@ const normaliseReference = value => String(value ?? '').replace(/\D/g, '');
  */
 async function declareClaim({
   restaurantId, billId, amountVes, reference, phoneOrigin, bankOrigin,
-  payer = { type: 'GUEST', id: null }, meta = {}
+  payer = { type: 'GUEST', id: null }, splitParticipantId = null, meta = {}
 }) {
   const amount = toPaymentAmount(amountVes);
   if (amount === null) throw new ApiError('INVALID_AMOUNT', 'Invalid payment amount');
@@ -84,6 +84,9 @@ async function declareClaim({
         declaredReference: declaredReference || null,
         payerType: payer.type,
         payerId: payer.id,
+        // Carried on the row so that, when a staff member confirms the claim,
+        // the same transition that settles it credits this share.
+        splitParticipantId,
         // Everything the person verifying it needs in order to find the movement
         // in the bank app, and nothing that pretends to be proof.
         metadata: {

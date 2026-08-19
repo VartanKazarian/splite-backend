@@ -67,7 +67,12 @@ async function destroyRestaurant(restaurantId) {
     'DELETE FROM c2p_resolution_attempts WHERE restaurant_id = $1',
     'DELETE FROM c2p_charges WHERE restaurant_id = $1',
     'DELETE FROM payment_transitions WHERE restaurant_id = $1',
+    // payments RESTRICT split participants, so clear payments first. Then delete
+    // bill_splits, which CASCADEs to its participants and items -- deleting the
+    // participants directly would trip the deferred "shares sum to basis"
+    // constraint, since an active split briefly has basis but no shares.
     'DELETE FROM payments WHERE restaurant_id = $1',
+    'DELETE FROM bill_splits WHERE restaurant_id = $1',
     'DELETE FROM menu_products WHERE restaurant_id = $1',
     'DELETE FROM idempotency_keys WHERE restaurant_id = $1',
     'DELETE FROM audit_logs WHERE restaurant_id = $1',

@@ -105,6 +105,7 @@ function asReferenceConflict(err, reference) {
  */
 async function createC2PPayment({
   restaurantId, billId, amountVes, payer, idempotencyKey = null, payerId = null,
+  splitParticipantId = null,
   // The bank client is injectable so the settlement and idempotency guarantees
   // can be exercised against a real Postgres without a real Mercantil. Nothing
   // in production passes it; the default binds this restaurant's sealed
@@ -150,6 +151,9 @@ async function createC2PPayment({
       idempotencyKey,
       payerType: 'GUEST',
       payerId,
+      // Credited to its share when the charge settles (directly, or on a later
+      // staff resolution of an in-doubt charge).
+      splitParticipantId,
       reason: 'C2P charge submitted to Mercantil'
     });
 
