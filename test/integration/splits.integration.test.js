@@ -202,6 +202,69 @@ describe('persistent bill splits against a real Postgres', { skip }, () => {
     assert.equal(a.participants[0].amount_paid_ves, '0');
   });
 
+  it('simultaneous diners paying their own distinct shares all settle', async () => {
+    // The table pays at once: Ana taps her share the same instant Luis taps his.
+    // Both credit their own share and the bill closes exactly once.
+    const bill = await freshBill(20000);
+    const split = await splits.createSplit({
+      restaurantId: restaurant.id, bill,
+      request: { mode: 'EQUAL', participants: [{ id: 'a' }, { id: 'b' }] }, createdBy: staff
+    });
+    const [pa, pb] = split.participants.map(p => p.id);
+
+    const res = await Promise.allSettled([
+      processSplitPayment({ restaurantId: restaurant.id, billId: bill.id, amountPaidMinorUnits: 10000, splitParticipantId: pa }),
+      processSplitPayment({ restaurantId: restaurant.id, billId: bill.id, amountPaidMinorUnits: 10000, splitParticipantId: pb })
+    ]);
+    assert.equal(res.filter(r => r.status === 'fulfilled').length, 2, 'both distinct-share payments settle');
+
+    const stored = await fixtures.readBill(bill.id);
+    assert.equal(stored.amount_paid_ves, '20000');
+    assert.equal(stored.status, 'CLOSED');
+  });
+
+  it('two payments racing for one share settle it exactly once', async () => {
+    // A double-tap, or two devices on the same share. The participant row is
+    // locked FOR UPDATE, so the second wakes to a share already full and is
+    // rejected on its ceiling rather than both crediting.
+    const bill = await freshBill(20000);
+    const split = await splits.createSplit({
+      restaurantId: restaurant.id, bill,
+      request: { mode: 'EQUAL', participants: [{ id: 'a' }, { id: 'b' }] }, createdBy: staff
+    });
+    const pa = split.participants[0].id;
+
+    const res = await Promise.allSettled([
+      processSplitPayment({ restaurantId: restaurant.id, billId: bill.id, amountPaidMinorUnits: 10000, splitParticipantId: pa }),
+      processSplitPayment({ restaurantId: restaurant.id, billId: bill.id, amountPaidMinorUnits: 10000, splitParticipantId: pa })
+    ]);
+    assert.equal(res.filter(r => r.status === 'fulfilled').length, 1, 'exactly one credits the share');
+    for (const r of res) {
+      if (r.status === 'rejected') assert.equal(r.reason.code, 'SPLIT_SHARE_OVERPAID');
+    }
+    assert.equal((await fixtures.readBill(bill.id)).amount_paid_ves, '10000', 'the share is credited once');
+  });
+
+  it('a diner cannot overpay their allocation even while the bill has room', async () => {
+    // Ana owes 8000 of a 20000 bill. She tries to pay 12000 -- the bill is
+    // nowhere near full, but her share is, so the participant ceiling rejects it
+    // where the bill ceiling would not. This is the whole point of persisting
+    // the split: a plan people agreed to, not just a total not to exceed.
+    const bill = await freshBill(20000);
+    const split = await splits.createSplit({
+      restaurantId: restaurant.id, bill,
+      request: { mode: 'CUSTOM', participants: [{ id: 'a', amountVes: '8000' }, { id: 'b', amountVes: '12000' }] },
+      createdBy: staff
+    });
+    const ana = split.participants.find(p => p.ext_ref === 'a').id;
+
+    await assert.rejects(
+      () => processSplitPayment({ restaurantId: restaurant.id, billId: bill.id, amountPaidMinorUnits: 12000, splitParticipantId: ana }),
+      err => err.code === 'SPLIT_SHARE_OVERPAID' && err.statusCode === 409
+    );
+    assert.equal((await fixtures.readBill(bill.id)).amount_paid_ves, '0', 'nothing moved');
+  });
+
   it('an ITEMS split persists whole-line claims and credits across rails on confirm', async () => {
     const bill = await freshBill(20000);
     const beer = await addItem(bill.id, { price: 12000, name: 'Beer' });
