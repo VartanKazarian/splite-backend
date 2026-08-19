@@ -105,6 +105,13 @@ jobs:
         # which is exactly how a suite passes locally and fails here.
         run: npm ci
 
+      # The runtime image installs poppler-utils for pdftoppm, which rasterises
+      # an uploaded menu PDF. The integration job runs on the bare runner, so it
+      # needs the same tool or the PDF path is untested here while shipping in
+      # the image.
+      - name: Install poppler-utils (pdftoppm)
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends poppler-utils
+
       - name: Apply migrations
         run: npm run migrate
 

@@ -5,6 +5,21 @@ const { skip } = require('./helpers/env');
 const db = require('../../src/connectors/base');
 const fixtures = require('./helpers/fixtures');
 const { extractMenu } = require('../../src/services/menuOcr');
+const { execFileSync } = require('node:child_process');
+
+/**
+ * pdftoppm ships in the runtime image and is installed in CI, but a developer
+ * running the suite locally may not have poppler. Skipping is honest where
+ * failing would be noise: the binary's absence says nothing about this code.
+ */
+const pdfSkip = (() => {
+  try {
+    execFileSync('pdftoppm', ['-v'], { stdio: 'ignore' });
+    return false;
+  } catch {
+    return 'pdftoppm not installed; install poppler-utils to exercise the PDF path';
+  }
+})();
 
 /**
  * The parts of the menu import that only a real Postgres can settle: that one
@@ -103,7 +118,7 @@ describe('menu OCR import against a real Postgres', { skip }, () => {
     }
   });
 
-  it('rasterises a PDF upload into page images', async () => {
+  it('rasterises a PDF upload into page images', { skip: pdfSkip }, async () => {
     // A one-page PDF built by hand, so the test needs no fixture binary. Proves
     // the pdftoppm path end to end; the model itself is stubbed, since what is
     // under test is that a PDF becomes images at all.

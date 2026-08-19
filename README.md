@@ -456,6 +456,12 @@ with `pdftoppm` (poppler, in the image) because a menu PDF is usually a design
 export whose text layer is absent or ordered by drawing position rather than
 reading order: the picture carries what extracted text loses.
 
+`pdftoppm` is the one thing here that is not a Node dependency. It is installed
+in the runtime image and in CI; without it, image uploads still work and a PDF
+answers 400 `MENU_OCR_PDF_UNREADABLE` rather than failing obscurely. The
+integration test for that path skips when the binary is absent, so a developer
+without poppler sees a skip rather than a spurious failure.
+
 ## Charges: IVA and servicio
 
 A bill total is not just the sum of its lines. Both charges are configured per
