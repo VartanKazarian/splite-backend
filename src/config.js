@@ -315,6 +315,15 @@ module.exports = {
       debug: boolean('MERCANTIL_C2P_DEBUG', false)
     }
   },
+  reconcile: {
+    /**
+     * How long a C2P charge may sit unresolved before the reconciler mentions
+     * it. Not a failure -- IN_DOUBT and AMBIGUOUS are correct states -- but the
+     * diner has been debited and is waiting on a person, so a queue that has
+     * stopped being worked should not stay quiet. Six hours is one service.
+     */
+    unresolvedC2PHours: integer('RECONCILE_UNRESOLVED_C2P_HOURS', 6)
+  },
   purge: {
     // Retention is set by what still reads the row, not by what feels tidy.
     //
