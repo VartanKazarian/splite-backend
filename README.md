@@ -1189,9 +1189,48 @@ schema. The live document is also served at `/openapi.json`, with Swagger UI at
 ## Retention
 
 Four tables grow forever and none is consulted after a point. `npm run purge`
-clears them; `npm run purge -- --dry-run` counts without deleting. Schedule it
-from Railway's cron, daily and off-peak — nothing here is urgent, and a purge
-that misses a week deletes a week more the next time.
+clears them; `npm run purge -- --dry-run` counts without deleting. Nothing here
+is urgent — a purge that misses a week deletes a week more the next time.
+
+## Reconciliation
+
+Two counters in this schema are caches of the ledger, maintained in the same
+transaction that moves the money: `bills.amount_paid_ves`, and one level down
+`bill_split_participants.amount_paid_ves`. Each has a view returning the rows
+where the cache and the ledger disagree — `payment_ledger_drift` and
+`bill_split_share_drift` — and both should always be empty.
+
+`npm run reconcile` reads them and **exits non-zero when either is not**, so
+whatever runs it raises the finding instead of logging into the void. Both views
+existed before this and nothing read them, which is the same as not having them:
+the discrepancy would then be found by an accountant, or by a diner arguing at a
+till, which is the situation the ledger was built to make impossible.
+
+It repairs nothing, deliberately. Drift means a write path is wrong, and quietly
+correcting the symptom removes the only evidence of it — fix the cause, then
+correct the rows on purpose and record why.
+
+It also reports, as *attention* rather than failure, C2P charges left `IN_DOUBT`
+or `AMBIGUOUS` beyond `RECONCILE_UNRESOLVED_C2P_HOURS` (6). Those are correct
+states, not broken ones, but the diner has been debited and is waiting on a
+person, so a queue that has stopped being worked should not stay silent.
+
+## Scheduled maintenance
+
+`npm run maintenance` runs the purge and then the reconciler, and exits with the
+worse of the two — drift outranks a housekeeping failure, because one is money
+not adding up and the other is disk.
+
+Deploy it as a second Railway service from the same image, pointed at
+`railway.maintenance.json` (Settings → Config-as-code path), which carries a
+`cronSchedule` of `0 7 * * *` and `restartPolicyType: NEVER` so a failed run is
+reported rather than retried in a loop. It needs the same `DATABASE_URL` as the
+API and nothing else.
+
+A command on a schedule rather than a timer inside the API process: the web
+service is replicated, and N replicas each waking to delete the same rows or run
+the same scan is work multiplied by N to no effect. The purge's advisory lock
+makes concurrent runs safe, which is not the same as making them useful.
 
 A command rather than a timer inside the API process: the web process is
 replicated, and N replicas each waking to delete the same rows is work
