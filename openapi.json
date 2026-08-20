@@ -4643,7 +4643,7 @@
           "CASHIER",
           "WAITER"
         ],
-        "description": "Roles: OWNER, MANAGER, CASHIER, WAITER.\n\nThe advisory preview computes the same numbers; this stores them, so a group settles\nagainst one agreed plan from several phones. Shares sum to the outstanding balance by\nconstruction, and the database refuses a split that does not. One live split per bill —\n409 `SPLIT_ALREADY_EXISTS` until the current one is voided.",
+        "description": "Roles: OWNER, MANAGER, CASHIER, WAITER.\n\nThe advisory preview computes the same numbers; this stores them, so a group settles\nagainst one agreed plan from several phones. Shares sum to the outstanding balance by\nconstruction, and the database refuses a split that does not. One live split per bill —\n409 `SPLIT_ALREADY_EXISTS` until the current one is voided.\n\nThe bill must be **OPEN**: 409 `BILL_NOT_OPEN` otherwise. A split of a closed or voided\nbill is a plan nobody can settle — the shares compute, and then every payment against\nthem is refused, one diner at a time, at the till.",
         "security": [
           {
             "staffAuth": []

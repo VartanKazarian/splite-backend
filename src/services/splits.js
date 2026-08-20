@@ -34,6 +34,28 @@ const PARTICIPANT_COLUMNS = `id, ext_ref, name, amount_ves, amount_paid_ves`;
  * against the basis at commit, whole.
  */
 async function createSplit({ restaurantId, bill, items, request, createdBy }) {
+  // The bill has to be OPEN, checked here rather than in each route for the
+  // same reason the payment rules live in `applyToBill`: this is the one point
+  // every caller passes through, and a rule stated in two places is a rule that
+  // will eventually be stated differently.
+  //
+  // A split of a VOID bill is a plan nobody can settle. The shares compute
+  // perfectly, the table can read them off a screen and agree to them, and then
+  // every payment against them is refused by `applyToBill` with BILL_NOT_OPEN
+  // -- the failure surfacing at the till, one diner at a time, long after the
+  // group thought the question was settled.
+  //
+  // CLOSED was already refused, but only incidentally: a fully paid bill has
+  // nothing outstanding, so the engine rejected the basis rather than the
+  // status. That is the right answer reached by an argument that does not
+  // mention the bill's state, and it would stop holding the moment any status
+  // other than OPEN could carry a balance.
+  if (bill.status !== 'OPEN') {
+    throw new ApiError('BILL_NOT_OPEN', 'A split can only be agreed on an open bill', {
+      status: bill.status ?? null
+    });
+  }
+
   // Compute first, outside the transaction: an invalid request (shares that do
   // not add up, an unclaimed line, an unknown participant) is the engine's to
   // reject, with the specific error, before anything is written.

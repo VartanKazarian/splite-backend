@@ -497,7 +497,10 @@ router.post(
   async (req, res, next) => {
     try {
       const { rows } = await db.query(
-        `SELECT id, total_due_ves, amount_paid_ves, fx_rate_ves_per_unit
+        // `status` is read so createSplit can refuse a bill that is not open.
+        // It used to be left out of this list entirely, which is why nothing
+        // downstream could check it.
+        `SELECT id, status, total_due_ves, amount_paid_ves, fx_rate_ves_per_unit
            FROM bills WHERE id = $1 AND restaurant_id = $2`,
         [req.params.id, req.user.restaurantId]
       );

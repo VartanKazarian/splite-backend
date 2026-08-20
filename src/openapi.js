@@ -2073,7 +2073,11 @@ const paths = {
         'The advisory preview computes the same numbers; this stores them, so a group settles',
         'against one agreed plan from several phones. Shares sum to the outstanding balance by',
         'construction, and the database refuses a split that does not. One live split per bill \u2014',
-        '409 `SPLIT_ALREADY_EXISTS` until the current one is voided.'
+        '409 `SPLIT_ALREADY_EXISTS` until the current one is voided.',
+        '',
+        'The bill must be **OPEN**: 409 `BILL_NOT_OPEN` otherwise. A split of a closed or voided',
+        'bill is a plan nobody can settle — the shares compute, and then every payment against',
+        'them is refused, one diner at a time, at the till.'
       ].join('\n'),
       security: staff,
       parameters: [{ $ref: '#/components/parameters/BillId' }],

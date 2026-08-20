@@ -49,6 +49,66 @@ describe('persistent bill splits against a real Postgres', { skip }, () => {
 
   const staff = { type: 'STAFF', get id() { return staffUserId; } };
 
+  it('a voided bill cannot be given a split', async () => {
+    // The failure this prevents is not an error message -- it is a plan the
+    // table agrees to and then cannot settle. The shares compute perfectly
+    // against a VOID bill's outstanding balance, so staff could read them out,
+    // and every payment against them is refused by applyToBill one diner at a
+    // time, at the till, after the group thought the question was closed.
+    const bill = await freshBill(20000);
+    await db.query("UPDATE bills SET status = 'VOID' WHERE id = $1", [bill.id]);
+    const voided = await fixtures.readBill(bill.id);
+
+    await assert.rejects(
+      () => splits.createSplit({
+        restaurantId: restaurant.id, bill: voided,
+        request: { mode: 'EQUAL', participants: [{ id: 'a' }, { id: 'b' }] }, createdBy: staff
+      }),
+      err => err.code === 'BILL_NOT_OPEN' && err.statusCode === 409
+    );
+
+    const { rows } = await db.query('SELECT id FROM bill_splits WHERE bill_id = $1', [bill.id]);
+    assert.equal(rows.length, 0, 'nothing is written for a bill nobody can pay');
+  });
+
+  it('a settled bill is refused for its status, not its arithmetic', async () => {
+    // CLOSED was already refused, but by the engine: a fully paid bill has
+    // nothing outstanding, so the basis was rejected without the bill's state
+    // ever being consulted. Right answer, wrong reason -- and one that stops
+    // holding the moment any status other than OPEN can carry a balance.
+    const bill = await freshBill(20000);
+    await processSplitPayment({
+      restaurantId: restaurant.id, billId: bill.id, amountPaidMinorUnits: 20000
+    });
+    const closed = await fixtures.readBill(bill.id);
+    assert.equal(closed.status, 'CLOSED');
+
+    await assert.rejects(
+      () => splits.createSplit({
+        restaurantId: restaurant.id, bill: closed,
+        request: { mode: 'EQUAL', participants: [{ id: 'a' }, { id: 'b' }] }, createdBy: staff
+      }),
+      err => err.code === 'BILL_NOT_OPEN'
+    );
+  });
+
+  it('a bill object with no status is refused rather than assumed open', async () => {
+    // The check is only as good as the column reaching it, and the staff route
+    // did not select `status` at all until this change. Failing closed means a
+    // caller that forgets it gets an error instead of the old behaviour back.
+    const bill = await freshBill(20000);
+    const { id, total_due_ves, amount_paid_ves, fx_rate_ves_per_unit } = bill;
+
+    await assert.rejects(
+      () => splits.createSplit({
+        restaurantId: restaurant.id,
+        bill: { id, total_due_ves, amount_paid_ves, fx_rate_ves_per_unit },
+        request: { mode: 'EQUAL', participants: [{ id: 'a' }, { id: 'b' }] }, createdBy: staff
+      }),
+      err => err.code === 'BILL_NOT_OPEN'
+    );
+  });
+
   it('an EQUAL split persists shares that sum to the outstanding balance', async () => {
     const bill = await freshBill(20000);
     const split = await splits.createSplit({
