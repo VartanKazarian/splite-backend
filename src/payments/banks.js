@@ -14,20 +14,37 @@
  * bank is not a claim that it works.
  *
  * ---------------------------------------------------------------------------
- * STILL UNVERIFIED. Written from memory, and an attempt to check it against an
- * official source failed:
+ * STILL NOT OFFICIALLY SOURCED, but no longer only from memory. The table was
+ * written from memory and has since been cross-checked against two independent
+ * published lists, which agree with it on every code it already carried and
+ * added three it did not. Where they disagreed it was about a bank's *name*,
+ * not its code, and in both cases because the bank had been renamed.
+ *
+ * The authoritative document does exist -- the BCV publishes the institutions
+ * active in the SCCE (ibp_activas_en_el_scce_2025.pdf) -- and we still have not
+ * read it. Every attempt to reach a primary source has failed:
  *
  *   sudeban.gob.ve      no response (connection times out)
  *   www.sudeban.gob.ve  no response
  *   cbn.org.ve          no response
- *   bcv.org.ve          reachable, but publishes no institution-code table --
- *                       the payment-system pages describe the CCE without
- *                       listing participants, and the banking-rates page
- *                       answers 302 with an empty body
+ *   bcv.org.ve          the SCCE participant list is published as a PDF, but
+ *                       the host is blocked from this network; the pages that
+ *                       are reachable describe the CCE without listing
+ *                       participants
  *
- * Recorded so nobody repeats those four dead ends. The likely sources left are
- * a Sudeban PDF via a mirror, or asking a bank directly -- Mercantil hands its
- * integrators the destination_bank_id list.
+ * Recorded so nobody repeats those dead ends. What is left is fetching that PDF
+ * from a network that can reach bcv.org.ve, or asking a bank directly --
+ * Mercantil hands its integrators the destination_bank_id list.
+ *
+ * A note on what a bank picker somewhere else proves. A live C2P checkout's
+ * dropdown was compared against this table and offered eleven institutions we
+ * do not list. Most are dead: Banco Industrial de Venezuela was ordered into
+ * liquidation in 2016, and ABN AMRO, Banco Espírito Santo, Corp Banca and BOD
+ * left the market years ago. A dropdown is a snapshot of whenever it was last
+ * edited, so it is evidence a bank *existed*, not that it exists -- and adding
+ * a dead bank here would let a restaurant configure a payee that can never
+ * receive money. The live institutions it named that we were missing are in the
+ * table below; the rest are deliberately not.
  *
  * What limits the damage meanwhile is the cross-check in `payoutSchema`: an
  * account number carries its own bank's code, so a wrong name-to-code pairing
@@ -54,18 +71,26 @@ const BANKS = Object.freeze({
   '0134': { name: 'Banesco', integration: null },
   '0137': { name: 'Sofitasa', integration: null },
   '0138': { name: 'Banco Plaza', integration: null },
+  '0146': { name: 'Bangente', integration: null },
   '0151': { name: 'BFC Banco Fondo Común', integration: null },
   '0156': { name: '100% Banco', integration: null },
   '0157': { name: 'DelSur', integration: null },
   '0163': { name: 'Banco del Tesoro', integration: null },
   '0166': { name: 'Banco Agrícola de Venezuela', integration: null },
   '0168': { name: 'Bancrecer', integration: null },
-  '0169': { name: 'Mi Banco', integration: null },
+  // Renamed from Mi Banco in 2025. The code did not move, so a payee configured
+  // under the old name still works; only what a diner is shown changes.
+  '0169': { name: 'R4, Banco Microfinanciero', integration: null },
   '0171': { name: 'Banco Activo', integration: null },
   '0172': { name: 'Bancamiga', integration: null },
+  '0173': { name: 'Banco Internacional de Desarrollo', integration: null },
   '0174': { name: 'Banplus', integration: null },
-  '0175': { name: 'Banco Bicentenario', integration: null },
+  // Banco Bicentenario until July 2024, when it was renamed. Same institution,
+  // same code -- worth knowing, because half the lists in circulation and every
+  // restaurant owner still call it Bicentenario.
+  '0175': { name: 'Banco Digital de los Trabajadores', integration: null },
   '0177': { name: 'Banfanb', integration: null },
+  '0178': { name: 'N58 Banco Digital', integration: null },
   '0191': { name: 'Banco Nacional de Crédito', integration: null }
 });
 

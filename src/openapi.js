@@ -1192,7 +1192,7 @@ Object.assign(schemas, {
       },
       phone: {
         type: 'string',
-        description: 'The mobile line the account is registered to. Must be a Venezuelan mobile prefix (0412, 0414, 0416, 0424, 0426).'
+        description: 'The mobile line the account is registered to. Must be a Venezuelan mobile prefix (0412, 0414, 0416, 0422, 0424, 0426).'
       },
       clave: {
         type: 'string', pattern: '^[0-9]{4,16}$',

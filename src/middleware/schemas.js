@@ -220,7 +220,17 @@ const webhookProviderParamSchema = Joi.object({
 
 // Digitel, Movistar and Movilnet. The complete set, and the reason a Pago Móvil
 // phone can be validated properly rather than merely bounded.
-const MOBILE_PREFIXES = ['412', '414', '416', '424', '426'];
+//
+// 422 is Digitel's second range, opened in July 2025 and missing here until a
+// live C2P checkout was seen offering it. A diner on that range could not have
+// paid us at all, and the error we gave them said their own number was not
+// Venezuelan -- the worst kind of validation failure, one that blames the
+// customer for our list being out of date.
+const MOBILE_PREFIXES = ['412', '414', '416', '422', '424', '426'];
+
+// Built from the list rather than written beside it, because the copy that
+// drifts is always the one a diner reads.
+const MOBILE_PREFIXES_HUMAN = MOBILE_PREFIXES.map((p) => `0${p}`).join(', ');
 
 /**
  * A Venezuelan mobile line, written any way somebody writes one.
@@ -237,7 +247,7 @@ const venezuelanMobile = Joi.string().trim().min(7).max(20).pattern(/^[+()\-.\s\
     return MOBILE_PREFIXES.includes(local.slice(0, 3)) && local.length === 10
       ? value
       : helpers.message(
-        'phone must be a Venezuelan mobile line (0412, 0414, 0416, 0424 or 0426): a Pago Móvil cannot be received on a landline'
+        `phone must be a Venezuelan mobile line (${MOBILE_PREFIXES_HUMAN}): a Pago Móvil cannot be received on a landline`
       );
   });
 
