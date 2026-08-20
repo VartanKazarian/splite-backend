@@ -142,6 +142,41 @@ async function listClaims({ restaurantId, billId = null, status = 'PENDING', lim
 }
 
 /**
+ * How many claims are waiting, and how long the oldest has been.
+ *
+ * The queue endpoint returns rows; this returns the two numbers a screen needs
+ * to say "somebody is waiting" without anybody opening it. Cheap enough to poll:
+ * one index-only aggregate over `payments_pending_claims_idx`, which exists for
+ * this query.
+ *
+ * The age is the half that matters. A count alone cannot tell a claim that
+ * arrived ten seconds ago from one that has been ignored for an hour, and those
+ * are opposite situations -- the second is a diner who has probably left
+ * believing they paid. A badge that only counts hides exactly the case worth
+ * showing.
+ */
+async function claimsSummary({ restaurantId }) {
+  const { rows } = await db.query(
+    `SELECT count(*)::int AS pending, min(created_at) AS oldest
+       FROM payments
+      WHERE restaurant_id = $1
+        AND payment_method = 'PAGO_MOVIL'
+        AND status = 'PENDING'`,
+    [restaurantId]
+  );
+
+  const { pending, oldest } = rows[0];
+  return {
+    pending,
+    oldestPendingAt: oldest ? new Date(oldest).toISOString() : null,
+    // Computed here rather than left to the client: a browser with a skewed
+    // clock would otherwise turn a fresh claim into an alarming one, or hide a
+    // stale one.
+    oldestPendingAgeSeconds: oldest ? Math.max(0, Math.floor((Date.now() - new Date(oldest).getTime()) / 1000)) : null
+  };
+}
+
+/**
  * A member of staff says the money is there.
  *
  * This is the moment the bill actually moves, and it goes through `applyToBill`
@@ -277,4 +312,6 @@ async function rejectClaim({ restaurantId, claimId, reason = null, actor, meta =
   return claim;
 }
 
-module.exports = { declareClaim, listClaims, confirmClaim, rejectClaim, normaliseReference };
+module.exports = {
+  declareClaim, listClaims, claimsSummary, confirmClaim, rejectClaim, normaliseReference
+};

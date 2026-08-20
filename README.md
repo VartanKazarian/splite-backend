@@ -714,6 +714,31 @@ Staff work the queue at `GET /api/v1/payments/claims` and either confirm
 (OWNER/MANAGER/CASHIER — a waiter can take an order, deciding money arrived is a
 cashier's job upwards) or reject with a reason.
 
+**Nothing pushes.** That makes an unwatched queue the weak point of the rail
+that actually carries money today: a diner declares a payment, nobody opens the
+screen, and they leave believing they have paid. Two things make it audible
+without waiting for a notification service:
+
+- `GET /api/v1/payments/claims/summary` returns `pending`,
+  `oldestPendingAt` and `oldestPendingAgeSeconds` — cheap enough to poll from
+  every screen in the room, on its own partial index (migration 026), and
+  separate from the queue itself so a badge is not pulling claim rows and payer
+  phone numbers to render a number. Any authenticated role can read it,
+  including WAITER: a waiter cannot decide money arrived, but they are the
+  person standing in the room. Poll at a human interval — 15 to 30 seconds, not
+  per second; it shares the API rate limit with everything else the till does.
+  The **age** is the half that matters. A count cannot tell a claim that arrived
+  ten seconds ago from one ignored for an hour, and those are opposite
+  situations. It is computed server-side, so a browser with a skewed clock
+  cannot invent either one.
+- The reconciler reports claims still pending beyond
+  `RECONCILE_UNWORKED_CLAIMS_HOURS` (2) as *attention*, alongside the C2P queue
+  — see [Reconciliation](#reconciliation). Two hours is well past any plausible
+  service window for one table, so a claim that old is not a busy night, it is a
+  queue nobody is working. This is the half that needs no frontend at all: with
+  no screen ever built, a neglected evening still reaches whoever reads the
+  nightly run.
+
 References are normalised to digits and hold a partial unique index per
 restaurant, excluding FAILED and CANCELLED. That closes the cheap attack —
 table A reads their reference aloud, table B with an identical total types the
@@ -1546,7 +1571,10 @@ It repairs nothing, deliberately. Drift means a write path is wrong, and quietly
 correcting the symptom removes the only evidence of it — fix the cause, then
 correct the rows on purpose and record why.
 
-It also reports, as *attention* rather than failure, C2P charges left `IN_DOUBT`,
+It also reports, as *attention* rather than failure, declared Pago Móvil claims
+still unconfirmed beyond `RECONCILE_UNWORKED_CLAIMS_HOURS` (2) — see
+[Declared Pago Móvil](#declared-pago-móvil) for why an unwatched queue is the
+weak point of that rail — and C2P charges left `IN_DOUBT`,
 `AMBIGUOUS` or `PENDING` beyond `RECONCILE_UNRESOLVED_C2P_HOURS` (6). The first
 two are correct states, not broken ones, but the diner has been debited and is
 waiting on a person, so a queue that has stopped being worked should not stay
@@ -1700,10 +1728,11 @@ Two smaller ones, same character:
   Inventing one for a handful of approvals a week is a second authentication
   model to secure forever. If volume justifies a console, it calls the same
   functions the CLI does.
-- **Staff are not told when a claim arrives.** They poll
-  `GET /api/v1/payments/claims`. A diner declaring a payment nobody looks at is
-  the failure mode to watch for in beta, and the fix — push, or a badge fed by
-  polling — is a frontend decision.
+- **Nothing pushes a claim to staff.** The backend now supports a badge —
+  `GET /api/v1/payments/claims/summary`, plus a reconciler line for a queue
+  nobody worked — but a screen showing it, or a real push notification, is still
+  a frontend decision and is not built. See
+  [Declared Pago Móvil](#declared-pago-móvil).
 
 ### Blocking real use
 

@@ -80,6 +80,32 @@ async function unresolvedC2P({ olderThanHours = config.reconcile.unresolvedC2PHo
 }
 
 /**
+ * Declared Pago Movil claims nobody has worked.
+ *
+ * The counterpart to `unresolvedC2P`, and arguably the more urgent of the two.
+ * A C2P charge in doubt is money Splite moved and cannot yet classify; an
+ * unconfirmed claim is money a diner says they sent, sitting in a queue that
+ * only tells anybody it exists when somebody opens it. The rail that works
+ * today is the one with no notification at all, so this is what makes an
+ * ignored queue audible without waiting for a screen to be built.
+ *
+ * Attention, not drift: a pending claim is a correct state. What is not correct
+ * is a pending claim from last night.
+ */
+async function unworkedClaims({ olderThanHours = config.reconcile.unworkedClaimsHours } = {}) {
+  const { rows } = await db.query(
+    `SELECT count(*)::int AS count, min(created_at) AS oldest
+       FROM payments
+      WHERE payment_method = 'PAGO_MOVIL'
+        AND status = 'PENDING'
+        AND created_at < NOW() - ($1 || ' hours')::interval`,
+    [String(olderThanHours)]
+  );
+  // count(*) always returns a row; an empty queue is zero, not an absence.
+  return rows[0].count > 0 ? rows[0] : null;
+}
+
+/**
  * Runs every check and reports what it found.
  *
  * Never throws for a finding -- a broken invariant is a result, not an error --
@@ -88,17 +114,18 @@ async function unresolvedC2P({ olderThanHours = config.reconcile.unresolvedC2PHo
  * "no drift".
  */
 async function reconcileAll({ limit = 50 } = {}) {
-  const [ledger, shares, unresolved] = await Promise.all([
+  const [ledger, shares, unresolved, claims] = await Promise.all([
     ledgerDrift({ limit }),
     splitShareDrift({ limit }),
-    unresolvedC2P()
+    unresolvedC2P(),
+    unworkedClaims()
   ]);
 
   const driftCount = ledger.length + shares.length;
   const result = {
     ok: driftCount === 0,
     drift: { ledger, splitShares: shares },
-    attention: { unresolvedC2P: unresolved },
+    attention: { unresolvedC2P: unresolved, unworkedClaims: claims },
     checkedAt: new Date().toISOString()
   };
 
@@ -118,7 +145,14 @@ async function reconcileAll({ limit = 50 } = {}) {
     );
   }
 
+  if (claims) {
+    logger.warn(
+      { event: 'RECONCILE_UNWORKED_CLAIMS', count: claims.count, oldest: claims.oldest },
+      'Declared payments are sitting unconfirmed; the diners believe they have paid'
+    );
+  }
+
   return result;
 }
 
-module.exports = { reconcileAll, ledgerDrift, splitShareDrift, unresolvedC2P };
+module.exports = { reconcileAll, ledgerDrift, splitShareDrift, unresolvedC2P, unworkedClaims };

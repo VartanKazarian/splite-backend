@@ -463,6 +463,21 @@ const schemas = {
     }
   },
 
+  ClaimsSummary: {
+    type: 'object',
+    description:
+      'The two numbers a screen needs to say somebody is waiting, without opening the queue. Cheap enough to poll — one indexed aggregate — but poll at a human interval (15–30s), not per second: this shares the API rate limit with everything else the till is doing.',
+    properties: {
+      pending: { type: 'integer', description: 'Declared payments awaiting verification.' },
+      oldestPendingAt: { type: ['string', 'null'], format: 'date-time', description: 'When the longest-waiting claim was declared. Null when the queue is empty.' },
+      oldestPendingAgeSeconds: {
+        type: ['integer', 'null'],
+        description:
+          'How long that claim has been waiting, computed server-side so a skewed client clock cannot turn a fresh claim into an alarming one. This is the figure worth showing: a count alone cannot tell a claim that arrived ten seconds ago from one ignored for an hour, and the second is a diner who has probably left believing they paid.'
+      }
+    }
+  },
+
   TipsReport: {
     type: 'object',
     description:
@@ -2545,6 +2560,29 @@ const paths = {
         409: response('Conflict'),
         429: response('TooManyRequests'),
         500: response('ServerError')
+      }
+    }
+  },
+
+  '/api/v1/payments/claims/summary': {
+    get: {
+      tags: ['Payments'],
+      summary: 'How many declared payments are waiting, and for how long',
+      operationId: 'getPaymentClaimsSummary',
+      description: [
+        'Any authenticated staff role — including WAITER, unlike confirming. A waiter cannot decide',
+        'that money arrived, but they are the person standing in the room and should be able to see',
+        'that somebody is waiting on the till.',
+        '',
+        'This exists because nothing else tells staff a claim arrived. A diner declares a Pago Móvil,',
+        'nothing moves until a person finds it in the bank app, and if nobody opens the queue the',
+        'diner leaves believing they have paid. Separate from `GET /claims` so a badge on every screen',
+        'is not pulling full claim rows, payer phone numbers included, to render a number.'
+      ].join('\n'),
+      security: staff,
+      responses: {
+        200: { description: 'The queue, as two numbers.', content: { 'application/json': { schema: ref('ClaimsSummary') } } },
+        ...commonErrors
       }
     }
   },
