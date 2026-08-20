@@ -103,6 +103,12 @@ runs the integration suite against them. `npm run db:local:stop` shuts them down
 The integration tests skip unless `RUN_INTEGRATION=1` and a live database are
 present, so `npm test` stays fast and offline.
 
+**`.env.example` is the complete reference.** Every setting `src/config.js`
+reads appears there or in this file with its default and the reason it exists,
+and a test fails the build if one is added to the config without being written
+down in either — a setting nobody can find is a setting nobody sets, and the
+whole Mercantil C2P block had gone undocumented that way.
+
 Generate production secrets with:
 
 ```bash
