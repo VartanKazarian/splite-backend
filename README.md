@@ -747,6 +747,26 @@ queue that state implies — a charge that correctly refuses to guess is otherwi
 indistinguishable from one that was lost. One bank movement settles exactly one
 payment, enforced by the `(provider, provider_payment_id)` unique index.
 
+**A matched charge the bill can no longer take is parked, not retried forever.**
+Once the bank names a movement for a charge, `IN_DOUBT` has stopped being true —
+we now know the money moved. If the bill closed or was voided while the charge
+sat in the queue, `applyToBill` refuses it, and the charge goes to `AMBIGUOUS`
+with the reference recorded, exactly as a confirmed debit does on the charge
+path. It is the same money in the same position, so it gets the same answer: a
+person decides, usually a refund. Leaving it `IN_DOUBT` meant every later
+resolve re-ran the same query, matched the same movement and failed the same
+way, so it never reached anybody while the diner stayed debited — and because
+the attempt row rolled back with it, the queue showed a charge that looked as
+though it had never been tried.
+
+Parking is deliberately narrow. Only refusals *about the bill* qualify
+(`BILL_NOT_FOUND`, `BILL_NOT_OPEN`, `PAYMENT_EXCEEDS_BALANCE`), by allowlist
+rather than by "did it throw". `AMBIGUOUS` is a state only a person leaves, so a
+statement timeout or a dropped connection — which say nothing about the bill —
+leave the charge `IN_DOUBT` and retryable. A reference conflict does too: it
+means the movement was claimed by another payment between our search and our
+commit, so it was never ours and we have learned nothing about this charge.
+
 The charge is idempotency-keyed and rate limited to 8 per 5 minutes per session,
 because each attempt burns a clave the diner had to fetch and consumes the
 restaurant's quota with Mercantil. The clave is validated for shape, used once,

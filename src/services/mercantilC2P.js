@@ -301,7 +301,15 @@ async function createC2PPayment({
  * the diner's money has already moved, and the caller's only safe options are
  * to report the charge or to report the charge.
  */
-async function parkUnappliable({ payment, restaurantId, billId, invoiceNumber, reference, err }) {
+async function parkUnappliable({
+  payment, restaurantId, billId, invoiceNumber, reference, err,
+  // Set when this is parking a *resolution* rather than a fresh charge. The
+  // unresolved queue reads the latest attempt row for its reason, so without
+  // one a charge parked from a resolve shows staff no explanation at all --
+  // which is how this path behaved before: it threw, rolled back the attempt
+  // it had just logged, and left the queue looking untouched.
+  attempt = null
+}) {
   const conflict = asReferenceConflict(err, reference);
   const referenceTaken = conflict instanceof ApiError && conflict.code === 'PAYMENT_REFERENCE_ALREADY_USED';
   const reason = conflict instanceof ApiError
@@ -327,8 +335,19 @@ async function parkUnappliable({ payment, restaurantId, billId, invoiceNumber, r
       }
       await transitionPayment(tx, {
         paymentId: payment.id, restaurantId, toStatus: 'AMBIGUOUS',
-        reason: reason.slice(0, 200), actorType: 'PROVIDER'
+        reason: reason.slice(0, 200),
+        actorType: attempt?.actorUserId ? 'STAFF' : 'PROVIDER',
+        actorId: attempt?.actorUserId ?? null
       });
+
+      if (attempt) {
+        await tx.query('UPDATE c2p_charges SET last_resolution_at = NOW() WHERE payment_id = $1', [payment.id]);
+        await logAttempt(tx, {
+          paymentId: payment.id, restaurantId, outcome: 'UNAPPLIABLE',
+          candidates: reference ? [reference] : [],
+          reason: reason.slice(0, 200), actorUserId: attempt.actorUserId ?? null
+        });
+      }
     });
   } catch (transitionErr) {
     // Even this failing changes nothing for the caller: the payment row exists,
@@ -357,6 +376,17 @@ async function parkUnappliable({ payment, restaurantId, billId, invoiceNumber, r
     requiresStaffReview: true
   };
 }
+
+/**
+ * The refusals that mean "the bank moved this money and the bill cannot take
+ * it" -- every one of them a fact about the bill, not about our connection to
+ * the database or about another payment's claim on a movement.
+ *
+ * An allowlist on purpose. Parking a charge is a one-way door into a state only
+ * a person leaves, so an error nobody has thought about must leave the charge
+ * IN_DOUBT and retryable rather than silently ending up in a refund queue.
+ */
+const UNAPPLIABLE_CODES = new Set(['BILL_NOT_FOUND', 'BILL_NOT_OPEN', 'PAYMENT_EXCEEDS_BALANCE']);
 
 /** A status move on its own transaction, for the paths that settle nothing. */
 function moveTo(payment, restaurantId, toStatus, reason) {
@@ -526,7 +556,41 @@ async function resolveC2PPayment({ restaurantId, paymentId, actorUserId = null, 
       return { paymentId, status: 'FAILED', safeToRetry: true };
     }, { statementTimeoutMs: config.db.paymentStatementTimeoutMs });
   } catch (err) {
-    throw asReferenceConflict(err, match.movement ? digitsOnly(match.movement.reference) : null);
+    const reference = match.movement ? digitsOnly(match.movement.reference) : null;
+    const converted = asReferenceConflict(err, reference);
+
+    // A charge the bank has shown us a movement for, which we could not apply.
+    //
+    // Rethrowing leaves the row IN_DOUBT, and IN_DOUBT asserts something that
+    // has just stopped being true: that we do not know whether the money moved.
+    // We do -- the bank named the movement. The usual cause is that the bill
+    // closed or was voided in the minutes the charge was in flight, and every
+    // later resolve repeats the same query, matches the same movement and fails
+    // the same way, so the charge never reaches a person while the diner stays
+    // debited. `createC2PPayment` already answers this exact situation; it is
+    // the same money in the same position, so it gets the same answer.
+    //
+    // Only for the refusals that are *about the bill*, and by allowlist rather
+    // than by "is it an ApiError", because AMBIGUOUS is a state only a person
+    // leaves and anything unrecognised is safer left IN_DOUBT and retryable:
+    //
+    //   * A statement timeout or a dropped connection says nothing about the
+    //     bill. Parking there would turn a retry that would have settled
+    //     cleanly into a manual refund.
+    //   * A reference conflict means the movement we matched was claimed by
+    //     another payment between our search and our commit -- so it was never
+    //     ours, and we have learned nothing about this charge. Parking would
+    //     strand it; left IN_DOUBT, the next resolve can look again and may
+    //     find the movement that really is ours.
+    if (match.outcome === OUTCOME.MATCHED && UNAPPLIABLE_CODES.has(converted.code)) {
+      return parkUnappliable({
+        payment, restaurantId, billId: payment.bill_id,
+        invoiceNumber: payment.invoice_number, reference, err,
+        attempt: { actorUserId }
+      });
+    }
+
+    throw converted;
   }
 }
 
