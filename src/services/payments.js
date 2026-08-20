@@ -1,4 +1,4 @@
-const { getContext } = require('../connectors/logger');
+const { getContext, logger } = require('../connectors/logger');
 const { ApiError } = require('../errors');
 const { advanceShare } = require('./splits');
 
@@ -34,6 +34,20 @@ const PAYMENT_COLUMNS = `id, restaurant_id, bill_id, amount_ves, tip_ves, status
 // as SUCCEEDED. Its refund descendants have not moved new money, so a share is
 // credited on the way into SUCCEEDED and never again.
 const SETTLED_STATUSES = new Set(['SUCCEEDED']);
+
+/**
+ * The ways a share can permanently refuse money that has already moved.
+ *
+ * Every one is a settled fact -- the plan went stale, was voided, or the share
+ * is already paid -- so retrying cannot change it. What the caller should *do*
+ * about it differs by rail, which is why `onShareRefusal` exists rather than a
+ * single answer baked in here: a C2P charge we initiated is parked for a person
+ * to refund, while a Pago Movil a member of staff has already found in the bank
+ * app is money that indisputably arrived and belongs on the bill.
+ */
+const SHARE_REFUSALS = new Set([
+  'SPLIT_STALE', 'SPLIT_NOT_ACTIVE', 'SPLIT_SHARE_OVERPAID', 'SPLIT_SHARE_NOT_FOUND'
+]);
 
 const ALLOWED_TRANSITIONS = {
   // IN_DOUBT and AMBIGUOUS belong to provider-initiated rails: we asked a bank
@@ -163,7 +177,16 @@ async function recordPayment(client, {
  * would otherwise both read PENDING and both try to settle it.
  */
 async function transitionPayment(client, {
-  paymentId, restaurantId, toStatus, reason = null, actorType = 'SYSTEM', actorId = null
+  paymentId, restaurantId, toStatus, reason = null, actorType = 'SYSTEM', actorId = null,
+  /**
+   * What to do when the share cannot take this money.
+   *
+   * 'THROW' (the default, and every existing caller) surfaces the refusal so
+   * the rail decides -- the C2P resolver parks the charge for a person.
+   * 'DETACH' credits the bill and drops the attribution, for money whose
+   * arrival is not in question.
+   */
+  onShareRefusal = 'THROW'
 }) {
   const { rows } = await client.query(
     `SELECT id, status, split_participant_id, amount_ves, bill_id FROM payments
@@ -207,12 +230,41 @@ async function transitionPayment(client, {
   // transaction that moved the money. Only on the way *into* a settled state,
   // so a later refund transition does not double-credit.
   if (current.split_participant_id && SETTLED_STATUSES.has(toStatus)) {
-    await advanceShare(client, {
-      splitParticipantId: current.split_participant_id,
-      restaurantId,
-      amountVes: current.amount_ves,
-      billId: current.bill_id
-    });
+    // Inside a SAVEPOINT because a refusal is not always a clean throw: the
+    // overpaid case is a CHECK violation, which aborts the transaction, and
+    // every statement after it would fail with 25P02. Without this, "handle the
+    // refusal" is not something a caller can do at all.
+    await client.query('SAVEPOINT advance_share');
+    try {
+      await advanceShare(client, {
+        splitParticipantId: current.split_participant_id,
+        restaurantId,
+        amountVes: current.amount_ves,
+        billId: current.bill_id
+      });
+      await client.query('RELEASE SAVEPOINT advance_share');
+    } catch (err) {
+      if (onShareRefusal !== 'DETACH' || !SHARE_REFUSALS.has(err.code)) throw err;
+
+      await client.query('ROLLBACK TO SAVEPOINT advance_share');
+      // The money is on the bill; only the attribution is impossible. Clearing
+      // the column rather than leaving it set is what keeps
+      // `bill_split_share_drift` honest -- a settled payment still naming a
+      // share it never credited reads there as permanent drift.
+      await client.query(
+        'UPDATE payments SET split_participant_id = NULL WHERE id = $1 AND restaurant_id = $2',
+        [paymentId, restaurantId]
+      );
+      logger.warn(
+        {
+          event: 'PAYMENT_SHARE_DETACHED',
+          paymentId, restaurantId, code: err.code,
+          splitParticipantId: current.split_participant_id
+        },
+        'Settled a payment against the bill after its share refused it'
+      );
+      return { ...updated.rows[0], split_participant_id: null, shareDetached: err.code };
+    }
   }
 
   return updated.rows[0];

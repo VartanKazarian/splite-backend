@@ -336,7 +336,13 @@ const schemas = {
       fxSource: { type: ['string', 'null'] },
       usdReference: ref('UsdReference'),
       tipVes: { ...minorUnits, description: 'The tip on this payment. Excluded from every bill figure above.' },
-      totalChargedVes: { ...minorUnits, description: 'What the payer actually handed over: the settled amount plus the tip.' }
+      totalChargedVes: { ...minorUnits, description: 'What the payer actually handed over: the settled amount plus the tip.' },
+      shareDetached: {
+        type: 'string',
+        enum: ['SPLIT_STALE', 'SPLIT_NOT_ACTIVE', 'SPLIT_SHARE_OVERPAID', 'SPLIT_SHARE_NOT_FOUND'],
+        description:
+          'Present only when a confirmed claim reached the bill but could not be credited to the share it named — the split went stale or was voided while the claim sat in the queue. The money is settled; the split will still show that diner as owing, and this says why.'
+      }
     }
   },
 
@@ -1200,7 +1206,11 @@ Object.assign(schemas, {
       },
       retryAfterMinutes: { type: 'integer', description: 'How long until asking again is worthwhile.' },
       alreadyResolved: { type: 'boolean', description: 'Something else resolved it first. Not an error.' },
-      safeToRetry: { type: 'boolean', description: 'On FAILED: no debit landed, so a fresh charge is safe.' },
+      safeToRetry: {
+        type: 'boolean',
+        description:
+          'Whether raising a fresh charge is safe. True only on FAILED, where the bank was asked about the right period and no debit landed. Explicitly **false** when a charge outlives the six-hour search window: nothing there establishes that the diner was not debited, so it goes to AMBIGUOUS for a person rather than being reported as retryable. Absent means no claim either way — never read absence as true.'
+      },
       settlement: ref('PaymentResult')
     }
   },

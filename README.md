@@ -125,6 +125,15 @@ already lost precision past 2^53 by the time it arrives. Payments accept an
 `Idempotency-Key` header (or `idempotencyKey` in the body); replaying a
 completed key returns the stored response instead of charging twice.
 
+A claim is only ever granted with a row behind it. If the key's row is deleted
+between the conflicting insert and the read that follows — a failing request's
+`abort()` racing a client's retry does exactly that — the claim is re-attempted
+rather than granted on trust. Granting it left the caller holding a claim with
+nothing to store a response in, so the next retry found no row either and
+charged again. Storing that response is loud but never fatal: it runs after the
+money has moved, and throwing would reach the route's abort and free the client
+to retry a request that already succeeded.
+
 ## When BCV cannot be reached
 
 A foreign-currency bill needs a rate to have a settleable total, so the rate is
@@ -712,6 +721,19 @@ still letting a diner who mistyped correct it after a rejection.
 A claim is **not** a reservation. Two diners may each claim the whole balance;
 only the first confirmation can succeed, and the second gets 409.
 
+**A refusal from the share is not a refusal from the bill.** When a claim names
+a split share and that share can no longer take the money — the split went stale
+or was voided while the claim sat in the queue — the bill is still credited and
+the attribution is dropped, reported as `shareDetached`. Staff have found this
+transfer in the bank account, so its arrival is not in question, only where to
+file it; rolling the whole confirmation back left verified money stuck PENDING
+with no path to the bill at all, permanently, since a refusal about the *plan*
+cannot be argued with by retrying. The payment's `split_participant_id` is
+cleared rather than left dangling, because a settled payment still naming a
+share it never credited reads as permanent drift in `bill_split_share_drift`.
+The C2P rail deliberately answers the same refusal differently: there we
+initiated the debit, so the charge is parked for a person.
+
 ### Mercantil C2P
 
 The first rail where Splite asks for money to move rather than being told it
@@ -776,13 +798,42 @@ way, so it never reached anybody while the diner stayed debited — and because
 the attempt row rolled back with it, the queue showed a charge that looked as
 though it had never been tried.
 
-Parking is deliberately narrow. Only refusals *about the bill* qualify
-(`BILL_NOT_FOUND`, `BILL_NOT_OPEN`, `PAYMENT_EXCEEDS_BALANCE`), by allowlist
-rather than by "did it throw". `AMBIGUOUS` is a state only a person leaves, so a
-statement timeout or a dropped connection — which say nothing about the bill —
-leave the charge `IN_DOUBT` and retryable. A reference conflict does too: it
-means the movement was claimed by another payment between our search and our
-commit, so it was never ours and we have learned nothing about this charge.
+Parking is deliberately narrow, and by allowlist rather than by "did it throw".
+A settlement credits the bill and — when the payment names a share — that share
+too, so it can be refused from either side: `BILL_NOT_FOUND`, `BILL_NOT_OPEN`,
+`PAYMENT_EXCEEDS_BALANCE` from the bill, and `SPLIT_STALE`, `SPLIT_NOT_ACTIVE`,
+`SPLIT_SHARE_OVERPAID`, `SPLIT_SHARE_NOT_FOUND` from the share. All of them are
+settled facts that asking again cannot change.
+
+`AMBIGUOUS` is a state only a person leaves, so everything else keeps the charge
+`IN_DOUBT` and retryable. A statement timeout or a dropped connection says
+nothing about the bill. A reference conflict says nothing either: it means the
+movement was claimed by another payment between our search and our commit, so it
+was never ours.
+
+**Past six hours, resolution stops answering the question.** The bank is asked
+for movements from at most `RESOLUTION_WINDOW_MAX_MS` ago, so once a charge is
+older than that the window no longer contains the moment it happened — and both
+conclusions turn unsafe at the same time. An empty answer is not "the debit
+never landed", because we asked about the wrong hours; and a *matching* movement
+at that remove is more likely the same payer paying the same amount again, which
+would settle an old charge with new money. So the charge leaves automated
+resolution for `AMBIGUOUS` with `safeToRetry: false`, without a bank call being
+spent on it. It was previously marked `FAILED` and reported as safe to retry —
+an invitation to charge a diner twice, aimed at exactly the charges the
+reconciler surfaces, since that job reports C2P charges unresolved beyond six
+hours.
+
+The unresolved queue also reads **PENDING** charges older than the settlement
+window. PENDING is what a charge is while the bank is being called — normal for
+seconds, impossible for hours — so an old one is a charge whose outcome was
+never recorded, and it is the only kind nothing else would show. That matters
+because the in-doubt transition is now attempted rather than depended upon: if
+the database refuses it, the failure is logged and the caller still hears
+`IN_DOUBT`. Throwing would reach the route, which aborts the idempotency key,
+releasing the client to raise a second charge for a debit that may already have
+landed — the double charge caused by our own bookkeeping rather than by the
+bank.
 
 The charge is idempotency-keyed and rate limited to 8 per 5 minutes per session,
 because each attempt burns a clave the diner had to fetch and consumes the
@@ -1059,6 +1110,16 @@ index allows one `ACTIVE` split per bill — a group that changes its mind voids
 the current one (`POST /api/v1/bills/{id}/splits/{splitId}/void`, refused once a
 share has been paid into) and agrees another. `GET .../splits/active` reads the
 live one.
+
+Voiding takes the participant rows' locks rather than just summing them.
+`advanceShare` locks the participant row and reads the split's status through a
+join without locking the split, so an unlocked `SUM` could read zero while a
+share payment committed beside it — leaving a VOID split with money credited to
+one of its shares. **Settled money is also not the only money:** a declared Pago
+Móvil or an in-doubt C2P charge names a share and has not credited it yet, and
+voiding out from under one strands it. Those are refused too, naming how many
+are in flight, because rejecting or resolving them first is a real step for
+staff rather than something the system can decide.
 
 A split can only be agreed on an **OPEN** bill, checked in `createSplit` rather
 than in each route — the same reasoning that puts the payment rules inside
