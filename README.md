@@ -1043,6 +1043,17 @@ the current one (`POST /api/v1/bills/{id}/splits/{splitId}/void`, refused once a
 share has been paid into) and agrees another. `GET .../splits/active` reads the
 live one.
 
+A split can only be agreed on an **OPEN** bill, checked in `createSplit` rather
+than in each route — the same reasoning that puts the payment rules inside
+`applyToBill`. A split of a voided bill is a plan nobody can settle: the shares
+compute perfectly against its outstanding balance, the table can read them off a
+screen and agree to them, and then every payment is refused by `applyToBill`,
+one diner at a time, at the till, long after the group thought the question was
+closed. A settled bill was already refused, but incidentally — nothing
+outstanding, so the *basis* failed and the bill's state was never consulted;
+that is the right answer from an argument that stops holding the moment a status
+other than OPEN can carry a balance.
+
 The void is **scoped to the bill in the path**, not only to the tenant. That URL
 states a containment relationship, and it has to be enforced rather than
 implied: a split that is not on that bill reads as 404, the same answer a split
