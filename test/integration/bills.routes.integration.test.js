@@ -313,9 +313,9 @@ describe('bill routes over HTTP', { skip }, () => {
     assert.equal(paid.body.remaining, '3000');
     assert.ok(paid.body.paymentId, 'the response names the ledger row');
 
-    const after = await request('GET', `/api/v1/bills/${billId}`);
-    assert.equal(after.body.amountPaidVes, '2000');
-    assert.equal(after.body.remainingVes, '3000');
+    const updated = await request('GET', `/api/v1/bills/${billId}`);
+    assert.equal(updated.body.amountPaidVes, '2000');
+    assert.equal(updated.body.remainingVes, '3000');
 
     // The cache the route reads and the ledger must agree.
     const drift = await db.query('SELECT * FROM payment_ledger_drift WHERE bill_id = $1', [billId]);
@@ -357,6 +357,7 @@ describe('bill routes over HTTP', { skip }, () => {
       body: {
         billId: created.body.id,
         // A JSON number past 2^53: the client's parser already rounded it.
+        // eslint-disable-next-line no-loss-of-precision -- that rounding is the test.
         amountMinorUnits: 9007199254740993,
         currency: 'VES',
         idempotencyKey: `rounded-${created.body.id}`
@@ -579,14 +580,14 @@ describe('bill routes over HTTP', { skip }, () => {
     assert.equal((await request('GET', '/api/v1/auth/me', { auth: false })).status, 401);
 
     const tenant = await usdRestaurant('USD');
-    const before = await request('GET', '/api/v1/auth/me', { token: tenant.token });
-    assert.equal(before.status, 200);
+    const initial = await request('GET', '/api/v1/auth/me', { token: tenant.token });
+    assert.equal(initial.status, 200);
 
     // Read from the database, not the token, so deactivation bites inside the
     // access token's fifteen minutes rather than at the end of them.
     await db.query('UPDATE users SET active = false WHERE restaurant_id = $1', [tenant.id]);
-    const after = await request('GET', '/api/v1/auth/me', { token: tenant.token });
-    assert.equal(after.status, 401, 'a deactivated account stops working immediately');
+    const updated = await request('GET', '/api/v1/auth/me', { token: tenant.token });
+    assert.equal(updated.status, 401, 'a deactivated account stops working immediately');
   });
 
   it('adds, updates and removes bill lines over HTTP', async () => {
@@ -749,15 +750,15 @@ describe('bill routes over HTTP', { skip }, () => {
       currency: 'USD', totalDueVes: 757541, fxRate: '757.54060000'
     });
 
-    const before = await fixtures.readBill(bill.id);
+    const initial = await fixtures.readBill(bill.id);
     const res = await request('POST', `/api/v1/bills/${bill.id}/split/preview`, {
       body: { mode: 'EQUAL', participants: [{ id: 'a' }, { id: 'b' }] }, token: tenant.token
     });
     assert.equal(res.status, 200, JSON.stringify(res.body));
 
-    const after = await fixtures.readBill(bill.id);
+    const updated = await fixtures.readBill(bill.id);
     // Advisory means advisory: the endpoint reads and returns, nothing else.
-    assert.deepEqual(after, before, 'the bill is untouched by a preview');
+    assert.deepEqual(updated, initial, 'the bill is untouched by a preview');
   });
 
   it('creates the tables a restaurant says it has, idempotently', async () => {
@@ -829,8 +830,8 @@ describe('bill routes over HTTP', { skip }, () => {
 
     // Closing the bill frees the table again.
     await request('POST', `/api/v1/bills/${bill.body.id}/void`, { token: tenant.token });
-    const after = await request('GET', '/api/v1/tables/floor', { token: tenant.token });
-    assert.equal(after.body.data.find(t => t.name === 'F 2').openBill, null);
+    const updated = await request('GET', '/api/v1/tables/floor', { token: tenant.token });
+    assert.equal(updated.body.data.find(t => t.name === 'F 2').openBill, null);
   });
 
   it('the floor shows only the caller\'s own tables', async () => {
@@ -928,8 +929,8 @@ describe('bill routes over HTTP', { skip }, () => {
   it('sets IVA and servicio, and applies them to a new bill', async () => {
     const tenant = await usdRestaurant('VES');
 
-    const before = await request('GET', '/api/v1/menu/settings', { token: tenant.token });
-    assert.equal(before.body.vatBps, 0, 'rates start at zero, never guessed by a migration');
+    const initial = await request('GET', '/api/v1/menu/settings', { token: tenant.token });
+    assert.equal(initial.body.vatBps, 0, 'rates start at zero, never guessed by a migration');
 
     const set = await request('PATCH', '/api/v1/menu/settings/charges', {
       body: { vatBps: 1600, serviceChargeBps: 1000 }, token: tenant.token
@@ -1015,8 +1016,8 @@ describe('bill routes over HTTP', { skip }, () => {
       token: tenant.token
     });
     assert.equal(gone.status, 204);
-    const after = await request('GET', '/api/v1/menu/products', { token: tenant.token });
-    assert.ok(!after.body.data.some(p => p.id === productId), 'and it is gone from the menu');
+    const updated = await request('GET', '/api/v1/menu/products', { token: tenant.token });
+    assert.ok(!updated.body.data.some(p => p.id === productId), 'and it is gone from the menu');
 
     // The bill it was served on is untouched.
     const bill = await request('GET', `/api/v1/bills/${order.body.bill.id}`, { token: tenant.token });

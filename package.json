@@ -21,7 +21,7 @@
     "qr": "node scripts/qr.js",
     "openapi:dump": "node scripts/dump-openapi.js",
     "openapi:check": "node scripts/dump-openapi.js --check",
-    "lint": "find src scripts test -name '*.js' -print0 | xargs -0 -n 1 node --check",
+    "lint": "eslint .",
     "check:paths": "node scripts/check-invisible-paths.js",
     "audit": "npm audit --audit-level=high",
     "db:local": "bash scripts/local-services.sh start",
@@ -44,6 +44,9 @@
     "swagger-ui-express": "^5.0.1"
   },
   "devDependencies": {
+    "@eslint/js": "^10.0.1",
+    "eslint": "^10.8.1",
+    "globals": "^17.11.0",
     "nodemon": "^3.1.7",
     "qrcode": "^1.5.4"
   },

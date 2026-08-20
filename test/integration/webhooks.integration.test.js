@@ -115,9 +115,9 @@ describe('webhook delivery', { skip }, () => {
     assert.equal(res.status, 202, JSON.stringify(res.body));
     assert.deepEqual(res.body, { received: true, settled: true, reason: 'SETTLED' });
 
-    const after = await billOf(bill.id);
-    assert.equal(after.amount_paid_ves, '10000', 'the body must not be able to set the amount');
-    assert.equal(after.status, 'CLOSED');
+    const updated = await billOf(bill.id);
+    assert.equal(updated.amount_paid_ves, '10000', 'the body must not be able to set the amount');
+    assert.equal(updated.status, 'CLOSED');
   });
 
   it('answers a redelivery 2xx and settles nothing twice', async () => {
@@ -135,8 +135,8 @@ describe('webhook delivery', { skip }, () => {
     assert.equal(retry.status, 202, 'a duplicate answered non-2xx retries forever');
     assert.deepEqual(retry.body, { received: true, settled: false, reason: 'DUPLICATE' });
 
-    const after = await billOf(bill.id);
-    assert.equal(after.amount_paid_ves, '10000', 'paid exactly once');
+    const updated = await billOf(bill.id);
+    assert.equal(updated.amount_paid_ves, '10000', 'paid exactly once');
   });
 
   it('two simultaneous deliveries of one event settle it once', async () => {
@@ -152,8 +152,8 @@ describe('webhook delivery', { skip }, () => {
     assert.deepEqual(outcomes, ['DUPLICATE', 'SETTLED'], `got ${JSON.stringify([a.body, b.body])}`);
     assert.ok([a.status, b.status].every(s => s === 202));
 
-    const after = await billOf(bill.id);
-    assert.equal(after.amount_paid_ves, '10000');
+    const updated = await billOf(bill.id);
+    assert.equal(updated.amount_paid_ves, '10000');
 
     const { rows } = await db.query(
       'SELECT count(*)::int AS n FROM webhook_events_processed WHERE provider_event_id = $1',
@@ -242,9 +242,9 @@ describe('webhook delivery', { skip }, () => {
     assert.equal(late.status, 202);
     assert.equal(late.body.reason, 'DUPLICATE');
 
-    const after = await billOf(bill.id);
-    assert.equal(after.status, 'CLOSED', 'a late FAILED must not reopen a settled bill');
-    assert.equal(after.amount_paid_ves, '10000');
+    const updated = await billOf(bill.id);
+    assert.equal(updated.status, 'CLOSED', 'a late FAILED must not reopen a settled bill');
+    assert.equal(updated.amount_paid_ves, '10000');
   });
 
   it('accepts an unattributable body once and does not ask for it again', async () => {
@@ -307,9 +307,9 @@ describe('webhook delivery', { skip }, () => {
     assert.equal(res.body.settled, false);
     assert.equal(res.body.reason, 'PROVIDER_MISMATCH');
 
-    const after = await billOf(bill.id);
-    assert.equal(after.amount_paid_ves, '0', 'the claim must still await a human');
-    assert.equal(after.status, 'OPEN');
+    const updated = await billOf(bill.id);
+    assert.equal(updated.amount_paid_ves, '0', 'the claim must still await a human');
+    assert.equal(updated.status, 'OPEN');
 
     const { rows } = await db.query('SELECT status FROM payments WHERE id = $1', [claim.id]);
     assert.equal(rows[0].status, 'PENDING');

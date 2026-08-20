@@ -2,7 +2,6 @@
 'use strict';
 
 const argon2 = require('argon2');
-const crypto = require('node:crypto');
 const { loginSchema } = require('../src/middleware/schemas');
 
 /**

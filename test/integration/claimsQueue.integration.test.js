@@ -138,22 +138,22 @@ describe('the claims queue, made visible', { skip }, () => {
   const unworkedCount = async () => (await unworkedClaims({ olderThanHours: 2 }))?.count ?? 0;
 
   it('the reconciler stays quiet about a queue that is being worked', async () => {
-    const before = await unworkedCount();
+    const initial = await unworkedCount();
     const bill = await billFor(restaurant.id);
     await declare(restaurant.id, bill);   // fresh: somebody may well be looking at it now
 
-    assert.equal(await unworkedCount(), before, 'a claim declared seconds ago is not neglect');
+    assert.equal(await unworkedCount(), initial, 'a claim declared seconds ago is not neglect');
   });
 
   it('the reconciler reports a queue nobody has worked', async () => {
-    const before = await unworkedCount();
+    const initial = await unworkedCount();
     const bill = await billFor(restaurant.id);
     const stale = await declare(restaurant.id, bill);
     await db.query("UPDATE payments SET created_at = NOW() - INTERVAL '9 hours' WHERE id = $1", [stale.id]);
 
     const found = await unworkedClaims({ olderThanHours: 2 });
     assert.ok(found, 'a claim from nine hours ago is not "busy tonight"');
-    assert.equal(found.count, before + 1);
+    assert.equal(found.count, initial + 1);
     assert.ok(new Date(found.oldest) <= new Date(Date.now() - 8 * 3600 * 1000));
   });
 });

@@ -1,11 +1,8 @@
 const db = require('../connectors/base');
 const config = require('../config');
 const { ApiError } = require('../errors');
-const billItems = require('./billItems');
 const splitEngine = require('./splitEngine');
-const { usdReference } = require('./split');
 const { logAudit } = require('./audit');
-const { logger } = require('../connectors/logger');
 
 /**
  * Persistent bill splits.

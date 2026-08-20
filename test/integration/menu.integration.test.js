@@ -82,14 +82,14 @@ describe('menu products against a real Postgres', { skip }, () => {
 
   it('maintains updated_at through the database trigger', async () => {
     const product = await createProduct(restaurant.id, { name: 'Trigger Test' });
-    const before = await db.query('SELECT updated_at FROM menu_products WHERE id = $1', [product.id]);
+    const initial = await db.query('SELECT updated_at FROM menu_products WHERE id = $1', [product.id]);
 
     await db.query('UPDATE menu_products SET active = false WHERE id = $1', [product.id]);
-    const after = await db.query('SELECT updated_at FROM menu_products WHERE id = $1', [product.id]);
+    const updated = await db.query('SELECT updated_at FROM menu_products WHERE id = $1', [product.id]);
 
     // 002_phase1_hardening moved this off the call sites; a new table has to
     // actually be wired to the same trigger rather than just claim to be.
-    assert.ok(after.rows[0].updated_at > before.rows[0].updated_at, 'updated_at advanced without the caller setting it');
+    assert.ok(updated.rows[0].updated_at > initial.rows[0].updated_at, 'updated_at advanced without the caller setting it');
   });
 
   it('removes a restaurant\'s products when the restaurant goes', async () => {

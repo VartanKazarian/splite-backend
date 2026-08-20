@@ -61,7 +61,7 @@ async function call(method, pathname, { body, token } = {}) {
     body: body ? JSON.stringify(body) : undefined
   });
   const text = await res.text();
-  let parsed = null;
+  let parsed;
   try { parsed = text ? JSON.parse(text) : null; } catch { parsed = null; }
   return { status: res.status, body: parsed };
 }

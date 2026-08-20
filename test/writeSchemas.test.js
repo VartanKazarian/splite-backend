@@ -106,6 +106,8 @@ test('a payment amount that already lost precision is refused', () => {
 
   // A JSON number past 2^53 was rounded by the client's parser before it
   // arrived; banking whatever it became would be worse than refusing it.
+  // The literal below *is* what a client's parser would have handed us, so
+  // eslint-disable-next-line no-loss-of-precision -- the rounding is the point.
   assert.ok(payment(9007199254740993).error);
   for (const bad of ['0', '-1', '1.5', 'abc', '']) assert.ok(payment(bad).error, `expected ${bad} refused`);
 });

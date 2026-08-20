@@ -102,7 +102,7 @@ test('a hung close is forced out with a failure code', async () => {
     createShutdown({
       server,
       timeoutMs: 20,
-      exit: code => { clearInterval(holdLoopOpen); resolve(code); }
+      exit: exitCode => { clearInterval(holdLoopOpen); resolve(exitCode); }
     })('SIGTERM', 0);
   });
 

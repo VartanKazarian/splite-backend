@@ -32,7 +32,10 @@ jobs:
           npm --version
           npm ls --depth=0 || true
 
-      - name: Syntax check
+      - name: Lint
+        # ESLint, which parses *and* checks: an unused variable, a shadowed
+        # binding or an assignment to an undeclared name now fails the build.
+        # This step used to be `node --check`, which only parsed.
         run: npm run lint
 
       - name: OpenAPI artifact is current

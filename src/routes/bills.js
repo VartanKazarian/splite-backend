@@ -24,7 +24,6 @@ const billItems = require('../services/billItems');
 const splitEngine = require('../services/splitEngine');
 const splits = require('../services/splits');
 const { getRateFor } = require('../services/fx');
-const { usdReference } = require('../services/split');
 const dto = require('../dto');
 const { ApiError } = require('../errors');
 const { parseRate, applyRate, toMinor } = require('../services/money');
