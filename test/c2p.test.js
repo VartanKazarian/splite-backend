@@ -4,7 +4,7 @@ const fs = require('node:fs');
 const path = require('node:path');
 
 const {
-  matchInDoubtPayment, OUTCOME, phoneMatchesLast4, amountsEqual, digitsOnly
+  matchInDoubtPayment, OUTCOME, phoneMatchesLast4, amountsEqual, digitsOnly, canonicalReference
 } = require('../src/services/c2pMatcher');
 const {
   isIndeterminateStatus, toMinorUnits, toBankAmount, redact, mapCharge, MercantilC2PError
@@ -173,6 +173,69 @@ test('the matcher refuses to guess which figure it should compare', () => {
     () => matchInDoubtPayment([movement()], { amount_ves: '1260000', payer_phone_last4: '1234' }),
     /charged_ves/
   );
+});
+
+test('one movement has one spelling, whatever endpoint returned it', () => {
+  // `provider_payment_id` is what makes "one movement settles one payment"
+  // true, through a unique index and through the resolver's spent-movement
+  // probe -- both string comparisons. The charge endpoint groups the reference
+  // and the search endpoint does not, and until these agreed, one debit could
+  // settle two bills.
+  const spellings = ['900000000999', '9000 0000 0999', '900-000-000-999', '  900.000.000.999  '];
+  const canonical = spellings.map(canonicalReference);
+  assert.deepEqual(canonical, Array(spellings.length).fill('900000000999'));
+});
+
+test('an identifier that is not a number is never stripped to one', () => {
+  // `referenceFor` falls back to providerPaymentId, which is an id rather than
+  // a reference. Digits-only would turn this into '429' -- losing the
+  // identifier and inviting a collision with somebody's real reference.
+  assert.equal(canonicalReference('TX-4F2A-9'), 'TX-4F2A-9');
+  assert.equal(canonicalReference('pay_01HZX'), 'pay_01HZX');
+});
+
+test('leading zeros are preserved, so padded references stay distinct', () => {
+  // Deliberate: merging two references that may genuinely differ is a worse
+  // failure than leaving one split, and this matches what the amount and phone
+  // comparisons have always assumed.
+  assert.equal(canonicalReference('0900000000999'), '0900000000999');
+  assert.notEqual(canonicalReference('0900000000999'), canonicalReference('900000000999'));
+});
+
+test('a reference that carries no identity at all is null, not empty', () => {
+  for (const empty of ['', '   ', null, undefined]) {
+    assert.equal(canonicalReference(empty), null, JSON.stringify(empty));
+  }
+});
+
+test('separators with no digits are kept, never turned into nothing', () => {
+  // The column's unique index is partial -- `WHERE provider_payment_id IS NOT
+  // NULL` -- so returning null here would leave the one movement this function
+  // exists to pin down unconstrained, free to settle a second bill. Migration
+  // 025 refuses to blank the same value, and the two rules have to agree.
+  for (const odd of ['- - -', '.', '/ /', '---']) {
+    assert.equal(canonicalReference(odd), odd, JSON.stringify(odd));
+  }
+});
+
+test('the references shown to staff are the ones that were stored', () => {
+  // AMBIGUOUS candidates are logged to c2p_resolution_attempts and displayed;
+  // staff then search for them. Publishing a spelling that matches nothing in
+  // provider_payment_id sends somebody looking for a movement they cannot find.
+  const r = matchInDoubtPayment([
+    movement({ reference: '111 111 111 111', phoneOrigin: '04141111234' }),
+    movement({ reference: '222-222-222-222', phoneOrigin: '04145551234' })
+  ], payment());
+  assert.equal(r.outcome, OUTCOME.AMBIGUOUS);
+  assert.deepEqual(r.candidates, ['111111111111', '222222222222']);
+});
+
+test('a movement already spent under another spelling is not a candidate', () => {
+  // The consumed set is built from what the database holds; the movement comes
+  // from the bank. They meet only if both are canonical.
+  const consumed = new Set([canonicalReference('9000 0000 0999')]);
+  const r = matchInDoubtPayment([movement({ reference: '900000000999' })], payment(), consumed);
+  assert.equal(r.outcome, OUTCOME.NO_MATCH);
 });
 
 test('phone comparison uses the stored last four digits', () => {

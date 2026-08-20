@@ -769,6 +769,33 @@ queue that state implies — a charge that correctly refuses to guess is otherwi
 indistinguishable from one that was lost. One bank movement settles exactly one
 payment, enforced by the `(provider, provider_payment_id)` unique index.
 
+That guarantee is a **string comparison**, so it only holds while a movement has
+one spelling. Mercantil's charge endpoint quotes a reference grouped
+(`9000 0000 0999`) and its search endpoint returns it plain
+(`900000000999`); stored as they arrived, those are two rows — the index does
+not collide, the resolver's spent-movement probe does not match, and the same
+debit settles two tables. Every write and every comparison now goes through
+`canonicalReference`, which collapses a value that is only digits and separators
+down to its digits. It deliberately leaves anything carrying a letter alone: a
+`providerPaymentId` such as `TX-4F2A-9` is an identifier rather than a number,
+and stripping it to `429` would lose it and invite a collision with a real
+reference. Leading zeros are kept too, so `0900…` and `900…` stay distinct —
+merging references that may genuinely differ is a worse failure than leaving one
+split, and if Mercantil turns out to pad inconsistently, that is a question for
+them rather than a guess for us. A value that is *only* separators is kept
+verbatim as well: the unique index is partial (`WHERE provider_payment_id IS NOT
+NULL`), so blanking it would leave that movement unconstrained and free to
+settle a second bill — the very thing being prevented.
+
+Migration 025 backfills the rows written under the old rule, and checks for
+collisions first so a failure names the payments rather than surfacing as a bare
+constraint violation. **That failure repeats on every deploy, deliberately.**
+The migration ledger row is written in the same transaction as the migration, so
+a failure records nothing and the next deploy stops in the same place; there is
+no skip and none should be added. Two payments holding one movement is a double
+settlement, a person has to refund one of them, and until they do, holding back
+every later migration is the correct outcome.
+
 **A matched charge the bill can no longer take is parked, not retried forever.**
 Once the bank names a movement for a charge, `IN_DOUBT` has stopped being true —
 we now know the money moved. If the bill closed or was voided while the charge

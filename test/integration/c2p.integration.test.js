@@ -436,6 +436,86 @@ describe('Mercantil C2P against a real Postgres', { skip }, () => {
     assert.equal(out.status, 'SUCCEEDED');
     assert.equal((await fixtures.readBill(bill.id)).amount_paid_ves, '126000');
   });
+  it('one debit cannot settle two bills because two endpoints spelled it differently', async () => {
+    // The charge endpoint quotes the reference grouped; the search endpoint
+    // returns it plain. Stored as they arrived, those are two strings: the
+    // unique index does not collide, the spent-movement probe does not match,
+    // and the same money closes two tables.
+    const billA = await freshBill({ totalDue: 126000, totalDueVes: 126000 });
+    const settled = await createC2PPayment({
+      restaurantId: restaurant.id, billId: billA.id, amountVes: '126000',
+      payer: payer(), idempotencyKey: `spellA-${seq}-${Math.random().toString(36).slice(2)}`,
+      bankClient: {
+        async charge() {
+          return { status: 'SUCCEEDED', providerPaymentId: null, bankReference: '9000 0000 0999' };
+        },
+        async search() { return []; }
+      }
+    });
+    assert.equal(settled.status, 'SUCCEEDED');
+
+    const { rows } = await db.query(
+      'SELECT provider_payment_id FROM payments WHERE id = $1', [settled.paymentId]);
+    assert.equal(rows[0].provider_payment_id, '900000000999', 'stored under the one spelling');
+
+    // A second charge, in doubt, whose search returns that same movement plain.
+    const billB = await freshBill({ totalDue: 126000, totalDueVes: 126000 });
+    const doubtful = await inDoubtCharge(billB);
+    await db.query(
+      "UPDATE payments SET created_at = NOW() - INTERVAL '30 minutes' WHERE id = $1", [doubtful.paymentId]);
+
+    const out = await resolveC2PPayment({
+      restaurantId: restaurant.id, paymentId: doubtful.paymentId,
+      bankClient: bank([movement({ reference: '900000000999' })])
+    });
+
+    assert.notEqual(out.status, 'SUCCEEDED', 'a spent movement cannot settle a second charge');
+    assert.equal((await fixtures.readBill(billA.id)).amount_paid_ves, '126000');
+    assert.equal((await fixtures.readBill(billB.id)).amount_paid_ves, '0');
+  });
+
+  it('a reference of nothing but separators is still pinned to one payment', async () => {
+    // The column's unique index is partial, so writing NULL here would leave
+    // the movement unconstrained -- and a movement that can be written twice is
+    // a movement that can settle two bills, which is the thing this whole
+    // spelling rule exists to stop.
+    const bill = await freshBill({ totalDue: 126000, totalDueVes: 126000 });
+    const result = await createC2PPayment({
+      restaurantId: restaurant.id, billId: bill.id, amountVes: '126000',
+      payer: payer(), idempotencyKey: `sep-${seq}-${Math.random().toString(36).slice(2)}`,
+      bankClient: {
+        async charge() {
+          return { status: 'SUCCEEDED', providerPaymentId: null, bankReference: '- - -' };
+        },
+        async search() { return []; }
+      }
+    });
+
+    const { rows } = await db.query(
+      'SELECT provider_payment_id FROM payments WHERE id = $1', [result.paymentId]);
+    assert.equal(rows[0].provider_payment_id, '- - -', 'kept, not blanked into NULL');
+  });
+
+  it('a non-numeric provider id survives storage intact', async () => {
+    // referenceFor falls back to providerPaymentId when the bank sends no
+    // reference. Canonicalising by stripping digits would store `019` here.
+    const bill = await freshBill({ totalDue: 126000, totalDueVes: 126000 });
+    const result = await createC2PPayment({
+      restaurantId: restaurant.id, billId: bill.id, amountVes: '126000',
+      payer: payer(), idempotencyKey: `provid-${seq}-${Math.random().toString(36).slice(2)}`,
+      bankClient: {
+        async charge() {
+          return { status: 'SUCCEEDED', providerPaymentId: 'TX-0F2A-19', bankReference: null };
+        },
+        async search() { return []; }
+      }
+    });
+
+    const { rows } = await db.query(
+      'SELECT provider_payment_id FROM payments WHERE id = $1', [result.paymentId]);
+    assert.equal(rows[0].provider_payment_id, 'TX-0F2A-19');
+  });
+
   it('refuses to conclude anything about a charge older than the search window', async () => {
     // `from` is floored at now-6h, so past that age the window no longer
     // contains the moment the charge happened. Both conclusions become unsafe
