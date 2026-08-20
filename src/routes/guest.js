@@ -247,6 +247,7 @@ router.post('/bill/payment-claims', authenticateGuest, perSession, validateBody(
       reference: req.body.reference,
       phoneOrigin: req.body.phoneOrigin,
       bankOrigin: req.body.bankOrigin,
+      idOrigin: req.body.idOrigin,
       payer: { type: 'GUEST', id: null },
       splitParticipantId: req.body.splitParticipantId ?? null,
       tipVes: req.body.tipVes ?? '0',

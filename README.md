@@ -626,10 +626,12 @@ our original list and the one in Mercantil's own C2P form, which offers `C` and
 omits `E`. Turning away a legitimate account holder at a configuration screen is
 the expensive error.
 
-`phone` must be a **mobile** line — `0412`, `0414`, `0416`, `0424`, `0426`,
-confirmed against that same form. A landline cannot receive a Pago Móvil at all,
-so accepting one configures a payee that can never be paid, and the diner finds
-that out rather than the restaurant.
+`phone` must be a **mobile** line — `0412`, `0414`, `0416`, `0422`, `0424`,
+`0426`. A landline cannot receive a Pago Móvil at all, so accepting one
+configures a payee that can never be paid, and the diner finds that out rather
+than the restaurant. `0422` was added after a live C2P checkout was seen
+offering it: a diner on that range could not have paid us, and the error we gave
+them said their own number was not Venezuelan.
 
 **The diner is not shown the account number.** A Pago Móvil is addressed by
 bank, phone and identity document; the account number adds nothing to it, and
@@ -651,12 +653,30 @@ id, secret key, integrator id and terminal id — **one set per restaurant** —
 encrypts the identity document, both phone numbers and the payment key with
 AES-128-ECB before sending. That is one integration. Banesco is another.
 
-> **The bank list is still unverified.** An attempt to check it failed:
-> `sudeban.gob.ve`, `www.sudeban.gob.ve` and `cbn.org.ve` do not respond, and
-> `bcv.org.ve` — which is reachable — publishes no institution-code table. The
-> dead ends are recorded in `src/payments/banks.js` so nobody repeats them; what
-> is left is a Sudeban PDF via a mirror, or asking a bank directly, since
+> **The bank list is still not officially sourced**, though it is no longer only
+> from memory. It has been cross-checked against two independent published lists,
+> which agreed with every code already in it and added three that were missing
+> (`0146` Bangente, `0173` Banco Internacional de Desarrollo, `0178` N58). The
+> only disagreements were names, both of them renames: `0169` Mi Banco is now
+> R4, and `0175` Banco Bicentenario became Banco Digital de los Trabajadores in
+> July 2024. Codes did not move, so payees configured under the old names still
+> work.
+>
+> The authoritative document exists — the BCV publishes the institutions active
+> in the SCCE — and we still have not read it: `sudeban.gob.ve`,
+> `www.sudeban.gob.ve` and `cbn.org.ve` do not respond, and `bcv.org.ve` is
+> blocked from our network. The dead ends are recorded in
+> `src/payments/banks.js` so nobody repeats them; what is left is fetching that
+> PDF from a network that can reach the BCV, or asking a bank directly, since
 > Mercantil gives its integrators the `destination_bank_id` list.
+>
+> **A bank picker elsewhere is not a registry.** A live Venezuelan C2P checkout
+> was compared against this table and offered eleven institutions we do not
+> list — but most are dead, including Banco Industrial de Venezuela, ordered
+> into liquidation in 2016. Its dropdown is a snapshot of whenever it was last
+> edited. The live ones it named were added; the rest deliberately were not,
+> because listing a dead bank lets a restaurant configure a payee that can never
+> receive money.
 >
 > The cross-check limits the damage meanwhile: an account number carries its own
 > bank's code, so a wrong name-to-code pairing shows up as a rejected form at
@@ -802,6 +822,29 @@ because the restaurant would stop asking.
 Staff work the queue at `GET /api/v1/payments/claims` and either confirm
 (OWNER/MANAGER/CASHIER — a waiter can take an order, deciding money arrived is a
 cashier's job upwards) or reject with a reason.
+
+**What the verifier is given to match on.** The reference is required and is
+what makes a claim checkable at all. Three optional fields make it quick, and
+they are the three a receiving bank prints beside the movement:
+
+| Field | Shape | Why |
+| --- | --- | --- |
+| `phoneOrigin` | a Venezuelan mobile line | a Pago Móvil has no other origin, so a landline here is a typo in the one field that finds the movement |
+| `bankOrigin` | a four-digit bank code | "Banesco", "banesco" and "BANESCO 0134" are one bank that compares as three |
+| `idOrigin` | a cédula or RIF | the strongest of the three — a phone can be borrowed and a bank is shared by millions |
+
+All three are optional: a diner who cannot supply them is still a diner who
+paid. But they are validated as the facts they are rather than accepted as free
+text, because the person who pays for a sloppy value is the one reading it off a
+screen with a bank app open in the other hand. Staff see them through
+`staffPaymentClaim`, which also resolves `bankOriginName` — the diner-facing
+`paymentClaim` carries none of it, since the guest surface is reachable by
+anyone who scans a sticker on a table.
+
+`bankOrigin` became a code after it had been free text, so claims declared
+earlier may carry a name. Those are shown as they were given with
+`bankOriginName: null`, because somebody working last week's queue is better
+served by an imperfect answer than by a blank.
 
 **Nothing pushes.** That makes an unwatched queue the weak point of the rail
 that actually carries money today: a diner declares a payment, nobody opens the

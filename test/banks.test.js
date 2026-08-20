@@ -2,7 +2,18 @@ const { test } = require('node:test');
 const assert = require('node:assert/strict');
 
 const banks = require('../src/payments/banks');
-const { payoutSchema } = require('../src/middleware/schemas');
+const { payoutSchema, c2pChargeSchema } = require('../src/middleware/schemas');
+
+// A complete charge, so the phone under test is the only thing that can fail.
+// The rule is shared between the payout form and the till, and it is the till
+// where a wrongly rejected number costs a payment.
+const charge = {
+  amountVes: '1000',
+  bankCode: '0105',
+  idNumber: 'V12345678',
+  clave: '12345678',
+  idempotencyKey: 'test-key-0000000000000001'
+};
 
 test('every code is four digits and every entry names its bank', () => {
   for (const code of banks.CODES) {
@@ -85,12 +96,29 @@ test('a landline is refused, because it can never receive a Pago Móvil', () => 
   assert.match(error.message, /mobile line/);
 });
 
-test('accepts every Venezuelan mobile prefix, however written', () => {
-  // The five in Mercantil's own C2P form: Digitel, Movistar and Movilnet.
+// One case per prefix rather than one loop over all of them, so a range that
+// stops being accepted names itself in the failure. A diner on a rejected range
+// cannot pay at all, and the message they get tells them their own number is
+// not Venezuelan -- which is why this is checked per range and not in bulk.
+for (const prefix of ['0412', '0414', '0416', '0422', '0424', '0426']) {
+  test(`accepts ${prefix}, however it is written`, () => {
+    const base = { bankCode: '0105', accountNumber: '01050000000000000001', holderId: 'J123456789' };
+    const local = `${prefix.slice(1)}1234567`;
+    // The same line as four people write it. All four reach the same payee.
+    for (const phone of [`0${local}`, `0${local.slice(0, 3)}-${local.slice(3, 6)}.${local.slice(6)}`,
+      `+58 ${local.slice(0, 3)} ${local.slice(3)}`, `(0${local.slice(0, 3)}) ${local.slice(3)}`]) {
+      assert.equal(payoutSchema.validate({ ...base, phone }).error, undefined, phone);
+      assert.equal(c2pChargeSchema.validate({ ...charge, phone }).error, undefined, phone);
+    }
+  });
+}
+
+test('the rejection message names every prefix that would have worked', () => {
+  // Enumerated by hand here on purpose: the schema builds the list from the
+  // array, so a range added without a diner-facing consequence is caught.
   const base = { bankCode: '0105', accountNumber: '01050000000000000001', holderId: 'J123456789' };
-  for (const phone of ['04121234567', '0414-123.45.67', '+58 416 1234567', '04241234567', '0426 1234567']) {
-    assert.equal(payoutSchema.validate({ ...base, phone }).error, undefined, phone);
-  }
+  const { error } = payoutSchema.validate({ ...base, phone: '04181234567' });
+  assert.match(error.message, /0412, 0414, 0416, 0422, 0424, 0426/);
 });
 
 test('takes the union of our identity prefixes and Mercantil\'s', () => {

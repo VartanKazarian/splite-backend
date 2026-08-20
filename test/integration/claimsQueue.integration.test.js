@@ -6,6 +6,7 @@ const db = require('../../src/connectors/base');
 const fixtures = require('./helpers/fixtures');
 const claims = require('../../src/services/paymentClaims');
 const { unworkedClaims } = require('../../src/services/reconcile');
+const dto = require('../../src/dto');
 
 /**
  * Making an unwatched queue audible.
@@ -47,6 +48,35 @@ describe('the claims queue, made visible', { skip }, () => {
     restaurantId: tenantId, billId: bill.id, amountVes: amount,
     reference: String(Date.now() + seq++).slice(-12),
     payer: { type: 'GUEST', id: null }
+  });
+
+  it('the payer detail survives the round trip to the verifier', async () => {
+    // The whole point of these three fields is that somebody at the till reads
+    // them off a screen while looking at a bank app, so what matters is that
+    // they come back out -- through the metadata blob and the DTO -- rather
+    // than that they went in.
+    const bill = await billFor(restaurant.id);
+    const claim = await claims.declareClaim({
+      restaurantId: restaurant.id, billId: bill.id, amountVes: '5000',
+      reference: String(Date.now() + seq++).slice(-12),
+      phoneOrigin: '04145551234', bankOrigin: '0134', idOrigin: 'V12345678',
+      payer: { type: 'GUEST', id: null }
+    });
+
+    const { rows } = await db.query(
+      'SELECT * FROM payments WHERE id = $1 AND restaurant_id = $2',
+      [claim.id, restaurant.id]
+    );
+    const staffView = dto.staffPaymentClaim(rows[0]);
+    assert.equal(staffView.phoneOrigin, '04145551234');
+    assert.equal(staffView.bankOrigin, '0134');
+    assert.equal(staffView.bankOriginName, 'Banesco');
+    assert.equal(staffView.idOrigin, 'V12345678');
+
+    // And the diner-facing view of the same row carries none of it.
+    const guestView = dto.paymentClaim(rows[0]);
+    assert.equal(guestView.idOrigin, undefined);
+    assert.equal(guestView.phoneOrigin, undefined);
   });
 
   it('an empty queue reports zero rather than nothing', async () => {

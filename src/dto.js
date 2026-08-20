@@ -193,7 +193,8 @@ function guestBill(row, items = []) {
  * number the payer already has and the restaurant is about to look up.
  *
  * What is not published is the raw metadata blob. `phoneOrigin` is a diner's
- * personal number, and it goes only to staff, through `staffPaymentClaim`.
+ * personal number and `idOrigin` is their identity document; both go only to
+ * staff, through `staffPaymentClaim`.
  */
 function paymentClaim(row) {
   return {
@@ -218,14 +219,23 @@ function paymentClaim(row) {
  *
  * Split from `paymentClaim` rather than made conditional: a field that is
  * sometimes present is the ambiguity the DTO boundary exists to remove, and the
- * field in question is somebody's phone number.
+ * fields in question are somebody's phone number and identity document.
+ *
+ * `bankOriginName` is resolved here rather than left to the client, and it is
+ * null for anything that is not a code we know. Claims declared before the
+ * field was a code carry free text like "Banesco": that is shown as it was
+ * given rather than dropped, because a verifier reading last week's queue is
+ * better served by an imperfect answer than by a blank.
  */
 function staffPaymentClaim(row) {
   const metadata = row.metadata || {};
+  const bankOrigin = metadata.bankOrigin ?? null;
   return {
     ...paymentClaim(row),
     phoneOrigin: metadata.phoneOrigin ?? null,
-    bankOrigin: metadata.bankOrigin ?? null,
+    bankOrigin,
+    bankOriginName: banks.lookup(bankOrigin)?.name ?? null,
+    idOrigin: metadata.idOrigin ?? null,
     declaredAt: metadata.declaredAt ?? null
   };
 }
