@@ -23,6 +23,8 @@ opens so a diner's total cannot move while they eat.
 
 - VES-only settlement with exact BigInt arithmetic and largest-remainder splits
 - Menus priced in VES, USD or EUR, at the BCV rate in force, never guessed
+- Menus built from a photo or PDF by a vision model, with staff confirming every
+  row before anything is written
 - Bill line items with immutable price snapshots; totals derived, never supplied
 - A split engine with four modes — FULL, EQUAL, ITEMS and CUSTOM
 - Persistent splits: participant shares stored and settled independently, each
@@ -1522,7 +1524,9 @@ schema. The live document is also served at `/openapi.json`, with Swagger UI at
 
 Four tables grow forever and none is consulted after a point. `npm run purge`
 clears them; `npm run purge -- --dry-run` counts without deleting. Nothing here
-is urgent — a purge that misses a week deletes a week more the next time.
+is urgent — a purge that misses a week deletes a week more the next time. It
+runs daily on a schedule; see
+[Scheduled maintenance](#scheduled-maintenance).
 
 ## Reconciliation
 
@@ -1542,10 +1546,14 @@ It repairs nothing, deliberately. Drift means a write path is wrong, and quietly
 correcting the symptom removes the only evidence of it — fix the cause, then
 correct the rows on purpose and record why.
 
-It also reports, as *attention* rather than failure, C2P charges left `IN_DOUBT`
-or `AMBIGUOUS` beyond `RECONCILE_UNRESOLVED_C2P_HOURS` (6). Those are correct
-states, not broken ones, but the diner has been debited and is waiting on a
-person, so a queue that has stopped being worked should not stay silent.
+It also reports, as *attention* rather than failure, C2P charges left `IN_DOUBT`,
+`AMBIGUOUS` or `PENDING` beyond `RECONCILE_UNRESOLVED_C2P_HOURS` (6). The first
+two are correct states, not broken ones, but the diner has been debited and is
+waiting on a person, so a queue that has stopped being worked should not stay
+silent. `PENDING` is the odd one: it is what a charge is *while the bank is
+being called*, so it is normal for seconds and impossible for hours — one this
+old is a charge whose outcome was never recorded, and the only kind nothing else
+would surface.
 
 ## Scheduled maintenance
 
@@ -1747,26 +1755,20 @@ From the working copy, onto the current model:
 ### Phase 2, not started
 
 - **A real provider adapter.** The webhook route is mounted and
-  `src/middleware/webhookSignature.js` is finally wired to it, but the only
-  provider defined is `SPLITE` — our own HMAC scheme. A Venezuelan rail is an
-  entry in `PROVIDERS` supplying its own verifier and parser, and nothing else
-  changes.
-- **A real provider adapter**, still: `SPLITE` is our own HMAC scheme.
+  `src/middleware/webhookSignature.js` is wired to it, but the only provider
+  defined is `SPLITE` — our own HMAC scheme. A Venezuelan rail is an entry in
+  `PROVIDERS` supplying its own verifier and parser, and nothing else changes.
 - **MFA is unstarted**, and it is the auth work that would actually matter. See
   [Login throttling](#login-throttling) for why the per-account counter added
   alongside it is not a substitute.
-- **Nothing schedules the purge yet.** `npm run purge` exists and is tested;
-  what is missing is a Railway cron entry calling it daily. Until then the
-  tables it clears keep growing.
 
 ### Security and correctness
 
-- **Access tokens cannot be revoked** within their 15-minute life — see below.
-  The Redis refresh mirror that claimed to solve this has been removed: nothing
-  read it, and nothing usefully could, since the access token carries no `jti`
-  and the refresh path has to read Postgres anyway in order to rotate.
-- **Access tokens cannot be revoked** within their 15-minute life. Acceptable at
-  that TTL, but it means "revoke" only ever affects refresh tokens.
+- **Access tokens cannot be revoked** within their 15-minute life, so "revoke"
+  only ever affects refresh tokens. Acceptable at that TTL. The Redis refresh
+  mirror that claimed to solve it has been removed: nothing read it, and nothing
+  usefully could, since the access token carries no `jti` and the refresh path
+  has to read Postgres anyway in order to rotate.
 - **The app-level rate limiter still cannot key on a user**, being mounted ahead
   of authentication. It is now only a coarse backstop: the bills router and the
   guest router each apply their own limiter after authenticating, keyed on the
