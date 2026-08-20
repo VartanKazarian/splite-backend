@@ -1144,6 +1144,21 @@ Object.assign(schemas, {
     }
   },
 
+  StaffMember: {
+    type: 'object',
+    description:
+      'Somebody who works at the signed-in restaurant. The same field names as `user` in a login response, so a client keeps one type. There is no field that could carry a password hash, and the service never selects the column.',
+    properties: {
+      id: { type: 'string', format: 'uuid' },
+      email: { type: ['string', 'null'] },
+      role: { type: 'string', enum: ['OWNER', 'MANAGER', 'CASHIER', 'WAITER'] },
+      active: { type: 'boolean' },
+      restaurantId: { type: 'string', format: 'uuid' },
+      createdAt: { type: 'string', format: 'date-time' },
+      updatedAt: { type: 'string', format: 'date-time' }
+    }
+  },
+
   StaffPaymentClaim: {
     allOf: [
       ref('PaymentClaim'),
@@ -3127,6 +3142,195 @@ const paths = {
     }
   },
 
+  '/api/v1/account/users': {
+    get: {
+      tags: ['Account'],
+      summary: 'The people who work here',
+      operationId: 'listStaff',
+      description: [
+        'OWNER and MANAGER only.',
+        '',
+        'Deactivated accounts are listed too, and last. They are the ones somebody needs to find in',
+        'order to reinstate, and hiding them makes a reactivation look like a second account with the',
+        'same address — which the unique index then refuses, confusingly.'
+      ].join('\n'),
+      security: staff,
+      responses: {
+        200: {
+          description: 'Staff, active first.',
+          content: {
+            'application/json': {
+              schema: {
+                type: 'object',
+                properties: { data: { type: 'array', items: ref('StaffMember') } }
+              }
+            }
+          }
+        },
+        403: response('Forbidden'),
+        ...commonErrors
+      }
+    },
+
+    post: {
+      tags: ['Account'],
+      summary: 'Add somebody',
+      operationId: 'createStaff',
+      description: [
+        'OWNER and MANAGER only, and a manager may only grant a role below their own — without that',
+        'second half, "may manage staff" silently means "may become an owner".',
+        '',
+        'The password takes the same rule as registration rather than a laxer one: this account signs',
+        'in through exactly the same door, so a shorter password here would be a quieter way into the',
+        'same building. There is no self-service change yet, so tell the person what you set.',
+        '',
+        '`role` is required and not defaulted. What this person may do is the whole point of creating',
+        'them, and a default would be the answer nobody chose.'
+      ].join('\n'),
+      security: staff,
+      requestBody: {
+        required: true,
+        content: {
+          'application/json': {
+            schema: {
+              type: 'object',
+              required: ['email', 'password', 'role'],
+              properties: {
+                email: { type: 'string', format: 'email', maxLength: 254 },
+                password: { type: 'string', minLength: 12, maxLength: 128 },
+                role: { type: 'string', enum: ['OWNER', 'MANAGER', 'CASHIER', 'WAITER'] }
+              }
+            }
+          }
+        }
+      },
+      responses: {
+        201: {
+          description: 'Created.',
+          content: {
+            'application/json': {
+              schema: { type: 'object', properties: { user: ref('StaffMember') } }
+            }
+          }
+        },
+        403: response('Forbidden'),
+        409: response('Conflict'),
+        ...commonErrors
+      }
+    }
+  },
+
+  '/api/v1/account/users/{userId}': {
+    patch: {
+      tags: ['Account'],
+      summary: 'Change a role, a standing, or both',
+      operationId: 'updateStaff',
+      description: [
+        'OWNER and MANAGER only. Three rules apply, and each has its own error code:',
+        '',
+        '- **Rank.** An owner may act on anybody but themselves; anyone else only on a strictly lower',
+        '  role, and may only grant one (`STAFF_OUTRANKED`, `STAFF_ROLE_TOO_HIGH`).',
+        '- **Never yourself** (`STAFF_SELF_FORBIDDEN`). It stops an owner demoting themselves out of',
+        '  the only account that could undo it, and costs nothing: another owner can still do it.',
+        '- **The last active owner stays** (`STAFF_LAST_OWNER`), checked under lock so two requests',
+        '  removing the last two owners cannot both see the other and succeed.',
+        '',
+        '**`sessionsRevoked` is the honest half of the answer.** Deactivating or changing a role kills',
+        'every refresh token the person holds, so they cannot mint a new access token. The access',
+        'token already in their hands keeps working until it expires — at most `JWT_ACCESS_TTL`,',
+        'fifteen minutes by default. Somebody removing a person after an argument needs to know the',
+        'door is not shut this second.'
+      ].join('\n'),
+      security: staff,
+      parameters: [
+        { name: 'userId', in: 'path', required: true, schema: { type: 'string', format: 'uuid' } }
+      ],
+      requestBody: {
+        required: true,
+        content: {
+          'application/json': {
+            schema: {
+              type: 'object',
+              minProperties: 1,
+              description: 'At least one of the two: a PATCH that changes nothing is a request somebody meant to be a change.',
+              properties: {
+                role: { type: 'string', enum: ['OWNER', 'MANAGER', 'CASHIER', 'WAITER'] },
+                active: { type: 'boolean' }
+              }
+            }
+          }
+        }
+      },
+      responses: {
+        200: {
+          description: 'Updated.',
+          content: {
+            'application/json': {
+              schema: {
+                type: 'object',
+                properties: {
+                  user: ref('StaffMember'),
+                  sessionsRevoked: { type: 'integer', description: 'Refresh sessions ended by this change.' }
+                }
+              }
+            }
+          }
+        },
+        403: response('Forbidden'),
+        404: response('NotFound'),
+        409: response('Conflict'),
+        ...commonErrors
+      }
+    }
+  },
+
+  '/api/v1/account/users/{userId}/password': {
+    post: {
+      tags: ['Account'],
+      summary: "Set somebody else's password",
+      operationId: 'resetStaffPassword',
+      description: [
+        'OWNER and MANAGER only, subject to the same rank and self rules as a role change.',
+        '',
+        'This is also how a forgotten password is recovered, because there is no self-service change',
+        'yet. It revokes their sessions, which is the point: a reset that leaves the old sessions',
+        'running has not locked anybody out.'
+      ].join('\n'),
+      security: staff,
+      parameters: [
+        { name: 'userId', in: 'path', required: true, schema: { type: 'string', format: 'uuid' } }
+      ],
+      requestBody: {
+        required: true,
+        content: {
+          'application/json': {
+            schema: {
+              type: 'object',
+              required: ['password'],
+              properties: { password: { type: 'string', minLength: 12, maxLength: 128 } }
+            }
+          }
+        }
+      },
+      responses: {
+        200: {
+          description: 'Set.',
+          content: {
+            'application/json': {
+              schema: {
+                type: 'object',
+                properties: { sessionsRevoked: { type: 'integer' } }
+              }
+            }
+          }
+        },
+        403: response('Forbidden'),
+        404: response('NotFound'),
+        ...commonErrors
+      }
+    }
+  },
+
   '/api/v1/account/banks': {
     get: {
       tags: ['Account'],
@@ -3139,8 +3343,10 @@ const paths = {
         'where diners send money whether or not we integrate with it, but only a bank with a module',
         'can take part in an in-app payment. Nothing is chargeable today.',
         '',
-        '**The list is unverified against Sudeban\'s register.** The codes are load-bearing — a wrong',
-        'one sends money to another institution — and it must be confirmed before production.'
+        '**The list is not officially sourced.** It has been cross-checked against two independent',
+        'published lists, which agreed on every code, but the BCV register itself has not been read.',
+        'The codes are load-bearing — a wrong one sends money to another institution — so confirming',
+        'them against that register is a prerequisite for the first bank module.'
       ].join('\n'),
       security: staff,
       responses: {

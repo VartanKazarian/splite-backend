@@ -11,6 +11,38 @@ const registerSchema = Joi.object({
   password: Joi.string().min(12).max(128).required()
 });
 
+const ROLES = ['OWNER', 'MANAGER', 'CASHIER', 'WAITER'];
+
+/**
+ * Staff administration.
+ *
+ * `password` takes the same rule as registration rather than a laxer one for
+ * convenience: an account created by an administrator signs in through exactly
+ * the same door as one created by signup, so a shorter password here would be a
+ * quieter way into the same building.
+ *
+ * The role is not defaulted. "What may this person do" is the whole point of
+ * creating them, and a default would be the answer nobody chose.
+ */
+const createStaffSchema = Joi.object({
+  email: Joi.string().email({ minDomainSegments: 2 }).max(254).lowercase().required(),
+  password: Joi.string().min(12).max(128).required(),
+  role: Joi.string().valid(...ROLES).required()
+});
+
+// At least one of the two, because a PATCH that changes nothing is a request
+// somebody meant to be a change.
+const updateStaffSchema = Joi.object({
+  role: Joi.string().valid(...ROLES),
+  active: Joi.boolean()
+}).min(1);
+
+const resetStaffPasswordSchema = Joi.object({
+  password: Joi.string().min(12).max(128).required()
+});
+
+const userIdParamSchema = Joi.object({ userId: uuid.required() });
+
 const loginSchema = Joi.object({
   email: Joi.string().email({ minDomainSegments: 2 }).max(254).lowercase().required(),
   password: Joi.string().min(1).max(128).required()
@@ -566,6 +598,11 @@ const validateQuery = schema => validate(schema, 'query');
 module.exports = {
   registerSchema,
   loginSchema,
+  ROLES,
+  createStaffSchema,
+  updateStaffSchema,
+  resetStaffPasswordSchema,
+  userIdParamSchema,
   mfaChallengeSchema,
   mfaCodeSchema,
   refreshSchema,

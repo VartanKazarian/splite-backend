@@ -15,6 +15,7 @@ opens so a diner's total cannot move while they eat.
 - Short-lived access JWTs plus rotating refresh sessions with reuse detection
 - Redis-backed rate limiting, fail-closed on the auth surface
 - RBAC: `OWNER`, `MANAGER`, `CASHIER`, `WAITER`
+- Staff administration by rank, with a restaurant that cannot lose its last owner
 - Optional TOTP second factor with sealed secrets and single-use recovery codes
 - Signed, expiring, rotatable QR tokens; hashed guest session tokens
 - Guest bill access scoped to the scanned table, naming no resource ids
@@ -475,9 +476,58 @@ rather than storing anything.
 
 It is **optional per user**, and there is no enforcement point that requires it
 of a role. That is deliberate for now rather than finished: a mandatory rollout
-with no admin surface and no mail is a way to lock people out of their own
-accounts. Requiring it of OWNER is a decision to take once there is a way to
-help somebody who gets stuck.
+with no mail is a way to lock people out of their own accounts. Requiring it of
+OWNER is a decision to take once there is a way to help somebody who gets stuck
+— an administrator can now reset a password, which is most of that way.
+
+## Staff
+
+```
+GET    /api/v1/account/users                    who works here
+POST   /api/v1/account/users                    add somebody
+PATCH  /api/v1/account/users/:userId            change a role, a standing, or both
+POST   /api/v1/account/users/:userId/password   set somebody else's password
+```
+
+This existed only as SQL until recently. A restaurant was created with one owner
+and could never gain a second account, and firing a cashier meant somebody with
+database access running an `UPDATE` — on a system where **CASHIER and above
+decide that money arrived**. That is not an access-control model; it is an
+access-control model plus a promise.
+
+OWNER and MANAGER reach these routes. Three rules decide what each may actually
+do, and they live in `src/services/staff.js` rather than in the router, because
+a rule enforced in a router is a rule enforced on the paths somebody remembered:
+
+1. **Rank.** An owner may act on anybody but themselves. Everyone else may act
+   only on a strictly lower role — and may only *grant* a strictly lower role.
+   Without that second half, "may manage staff" silently means "may become an
+   owner". A manager cannot touch a peer either: otherwise the first argument
+   between two managers settles itself.
+2. **Never yourself**, neither role nor standing. It stops an owner demoting
+   themselves out of the only account that could undo it, and costs nothing —
+   another owner can still do it for them.
+3. **The last active owner stays.** Worth being precise about what this guards:
+   serially it is unreachable, because once a restaurant is down to one active
+   owner, only an owner may act on an owner, the only one left is themselves,
+   and rule 2 refuses that. Rules 1 and 2 *are* the serial guard. The check
+   exists for the race — both of the last two owners removing each other at the
+   same instant, each reading the other as remaining — and so it is counted
+   inside the transaction with the row already locked.
+
+**Deactivating is not instant, and the response says so.** It revokes every
+refresh session the person holds, so they cannot mint a new access token, and
+returns `sessionsRevoked` as proof. The access token already in their hands
+keeps working until it expires — at most `JWT_ACCESS_TTL`, fifteen minutes by
+default. That is the standing cost of stateless tokens, and somebody removing a
+person after an argument needs to know the door is not shut this second rather
+than discovering it later.
+
+A password reset revokes sessions for the same reason: a reset that leaves the
+old sessions running has not locked anybody out. It is also how a forgotten
+password is recovered, because **there is no self-service password change yet**
+— an administrator sets a new one and tells the person. That is the next gap in
+this surface, and it is named here rather than left to be discovered.
 
 ## Bill line items
 

@@ -1,7 +1,11 @@
 const express = require('express');
 const db = require('../connectors/base');
 const { authenticateToken, requireRole } = require('../middleware/auth');
-const { validateBody, validateParams, payoutSchema, paymentProviderParamSchema } = require('../middleware/schemas');
+const {
+  validateBody, validateParams, payoutSchema, paymentProviderParamSchema,
+  createStaffSchema, updateStaffSchema, resetStaffPasswordSchema, userIdParamSchema
+} = require('../middleware/schemas');
+const staff = require('../services/staff');
 const providerConfigs = require('../payments/providerConfigs');
 const { logAudit, auditContext } = require('../services/audit');
 const banks = require('../payments/banks');
@@ -167,6 +171,91 @@ router.delete(
         details: { provider }
       });
       res.status(204).end();
+    } catch (err) { next(err); }
+  }
+);
+
+/**
+ * The people who work here.
+ *
+ * Under /account rather than a top-level /users because that is what it is: the
+ * signed-in restaurant's own staff. There is no cross-tenant surface to build
+ * later, and a top-level noun invites one.
+ *
+ * OWNER and MANAGER only. The service enforces which of the two may do what to
+ * whom -- rank, never yourself, and the last active owner stays -- because a
+ * rule enforced in a router is a rule enforced on the paths somebody remembered.
+ */
+const managesStaff = requireRole('OWNER', 'MANAGER');
+
+router.get('/users', managesStaff, async (req, res, next) => {
+  try {
+    const rows = await staff.listStaff({ restaurantId: req.user.restaurantId });
+    res.json({ data: rows.map(dto.staffMember) });
+  } catch (err) { next(err); }
+});
+
+router.post('/users', managesStaff, validateBody(createStaffSchema), async (req, res, next) => {
+  try {
+    const created = await staff.createStaff({
+      restaurantId: req.user.restaurantId,
+      actor: { id: req.user.sub, role: req.user.role },
+      email: req.body.email,
+      password: req.body.password,
+      role: req.body.role,
+      meta: auditContext(req)
+    });
+    res.status(201).json({ user: dto.staffMember(created) });
+  } catch (err) { next(err); }
+});
+
+/**
+ * Changes a role, a standing, or both.
+ *
+ * `sessionsRevoked` is reported rather than kept private: somebody removing a
+ * person after an argument wants to know the refresh tokens are dead, and the
+ * number is also the honest way to say that the access token they are holding
+ * is not -- it keeps working until it expires.
+ */
+router.patch(
+  '/users/:userId',
+  managesStaff,
+  validateParams(userIdParamSchema),
+  validateBody(updateStaffSchema),
+  async (req, res, next) => {
+    try {
+      const { user, sessionsRevoked } = await staff.updateStaff({
+        restaurantId: req.user.restaurantId,
+        actor: { id: req.user.sub, role: req.user.role },
+        userId: req.params.userId,
+        role: req.body.role,
+        active: req.body.active,
+        meta: auditContext(req)
+      });
+      res.json({ user: dto.staffMember(user), sessionsRevoked });
+    } catch (err) { next(err); }
+  }
+);
+
+/**
+ * Sets somebody else's password, which is also how a forgotten one is
+ * recovered: there is no self-service change yet.
+ */
+router.post(
+  '/users/:userId/password',
+  managesStaff,
+  validateParams(userIdParamSchema),
+  validateBody(resetStaffPasswordSchema),
+  async (req, res, next) => {
+    try {
+      const { sessionsRevoked } = await staff.resetStaffPassword({
+        restaurantId: req.user.restaurantId,
+        actor: { id: req.user.sub, role: req.user.role },
+        userId: req.params.userId,
+        password: req.body.password,
+        meta: auditContext(req)
+      });
+      res.json({ sessionsRevoked });
     } catch (err) { next(err); }
   }
 );

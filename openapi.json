@@ -95,6 +95,23 @@
       },
       "RATE_LIMITER_UNAVAILABLE": {
         "retryAfterSeconds": "integer -- matches the Retry-After header"
+      },
+      "STAFF_OUTRANKED": {
+        "actorRole": "string -- your role",
+        "targetRole": "string -- theirs, which is at or above it"
+      },
+      "STAFF_ROLE_TOO_HIGH": {
+        "actorRole": "string -- your role",
+        "role": "string -- the role you tried to grant, which is at or above it"
+      },
+      "STAFF_SELF_FORBIDDEN": {
+        "hint": "string -- who can do this for you instead"
+      },
+      "STAFF_EMAIL_TAKEN": {
+        "email": "string -- the address, which already belongs to somebody here"
+      },
+      "STAFF_LAST_OWNER": {
+        "hint": "string -- what has to happen first"
       }
     },
     "x-wire-format": {
@@ -313,7 +330,11 @@
                   "FORBIDDEN_ROLE",
                   "CROSS_TENANT_DENIED",
                   "CORS_ORIGIN_NOT_ALLOWED",
+                  "STAFF_OUTRANKED",
+                  "STAFF_ROLE_TOO_HIGH",
+                  "STAFF_SELF_FORBIDDEN",
                   "NOT_FOUND",
+                  "STAFF_NOT_FOUND",
                   "BILL_NOT_FOUND",
                   "BILL_ITEM_NOT_FOUND",
                   "TABLE_NOT_FOUND",
@@ -325,6 +346,8 @@
                   "SPLIT_SHARE_NOT_FOUND",
                   "WEBHOOK_PROVIDER_UNKNOWN",
                   "OPEN_BILL_EXISTS",
+                  "STAFF_EMAIL_TAKEN",
+                  "STAFF_LAST_OWNER",
                   "MFA_ALREADY_ENABLED",
                   "MFA_NOT_ENABLED",
                   "MFA_NOT_ENROLLED",
@@ -2740,6 +2763,46 @@
               "null"
             ],
             "description": "Normalised to digits. What the payer transcribed from their bank, and what staff will look for in the bank app."
+          },
+          "createdAt": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "updatedAt": {
+            "type": "string",
+            "format": "date-time"
+          }
+        }
+      },
+      "StaffMember": {
+        "type": "object",
+        "description": "Somebody who works at the signed-in restaurant. The same field names as `user` in a login response, so a client keeps one type. There is no field that could carry a password hash, and the service never selects the column.",
+        "properties": {
+          "id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "email": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "role": {
+            "type": "string",
+            "enum": [
+              "OWNER",
+              "MANAGER",
+              "CASHIER",
+              "WAITER"
+            ]
+          },
+          "active": {
+            "type": "boolean"
+          },
+          "restaurantId": {
+            "type": "string",
+            "format": "uuid"
           },
           "createdAt": {
             "type": "string",
@@ -6788,6 +6851,315 @@
         }
       }
     },
+    "/api/v1/account/users": {
+      "get": {
+        "tags": [
+          "Account"
+        ],
+        "summary": "The people who work here",
+        "operationId": "listStaff",
+        "description": "OWNER and MANAGER only.\n\nDeactivated accounts are listed too, and last. They are the ones somebody needs to find in\norder to reinstate, and hiding them makes a reactivation look like a second account with the\nsame address — which the unique index then refuses, confusingly.",
+        "security": [
+          {
+            "staffAuth": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Staff, active first.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "data": {
+                      "type": "array",
+                      "items": {
+                        "$ref": "#/components/schemas/StaffMember"
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "403": {
+            "$ref": "#/components/responses/Forbidden"
+          },
+          "429": {
+            "$ref": "#/components/responses/TooManyRequests"
+          },
+          "500": {
+            "$ref": "#/components/responses/ServerError"
+          }
+        }
+      },
+      "post": {
+        "tags": [
+          "Account"
+        ],
+        "summary": "Add somebody",
+        "operationId": "createStaff",
+        "description": "OWNER and MANAGER only, and a manager may only grant a role below their own — without that\nsecond half, \"may manage staff\" silently means \"may become an owner\".\n\nThe password takes the same rule as registration rather than a laxer one: this account signs\nin through exactly the same door, so a shorter password here would be a quieter way into the\nsame building. There is no self-service change yet, so tell the person what you set.\n\n`role` is required and not defaulted. What this person may do is the whole point of creating\nthem, and a default would be the answer nobody chose.",
+        "security": [
+          {
+            "staffAuth": []
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "required": [
+                  "email",
+                  "password",
+                  "role"
+                ],
+                "properties": {
+                  "email": {
+                    "type": "string",
+                    "format": "email",
+                    "maxLength": 254
+                  },
+                  "password": {
+                    "type": "string",
+                    "minLength": 12,
+                    "maxLength": 128
+                  },
+                  "role": {
+                    "type": "string",
+                    "enum": [
+                      "OWNER",
+                      "MANAGER",
+                      "CASHIER",
+                      "WAITER"
+                    ]
+                  }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "Created.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "user": {
+                      "$ref": "#/components/schemas/StaffMember"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "403": {
+            "$ref": "#/components/responses/Forbidden"
+          },
+          "409": {
+            "$ref": "#/components/responses/Conflict"
+          },
+          "429": {
+            "$ref": "#/components/responses/TooManyRequests"
+          },
+          "500": {
+            "$ref": "#/components/responses/ServerError"
+          }
+        }
+      }
+    },
+    "/api/v1/account/users/{userId}": {
+      "patch": {
+        "tags": [
+          "Account"
+        ],
+        "summary": "Change a role, a standing, or both",
+        "operationId": "updateStaff",
+        "description": "OWNER and MANAGER only. Three rules apply, and each has its own error code:\n\n- **Rank.** An owner may act on anybody but themselves; anyone else only on a strictly lower\n  role, and may only grant one (`STAFF_OUTRANKED`, `STAFF_ROLE_TOO_HIGH`).\n- **Never yourself** (`STAFF_SELF_FORBIDDEN`). It stops an owner demoting themselves out of\n  the only account that could undo it, and costs nothing: another owner can still do it.\n- **The last active owner stays** (`STAFF_LAST_OWNER`), checked under lock so two requests\n  removing the last two owners cannot both see the other and succeed.\n\n**`sessionsRevoked` is the honest half of the answer.** Deactivating or changing a role kills\nevery refresh token the person holds, so they cannot mint a new access token. The access\ntoken already in their hands keeps working until it expires — at most `JWT_ACCESS_TTL`,\nfifteen minutes by default. Somebody removing a person after an argument needs to know the\ndoor is not shut this second.",
+        "security": [
+          {
+            "staffAuth": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "userId",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "minProperties": 1,
+                "description": "At least one of the two: a PATCH that changes nothing is a request somebody meant to be a change.",
+                "properties": {
+                  "role": {
+                    "type": "string",
+                    "enum": [
+                      "OWNER",
+                      "MANAGER",
+                      "CASHIER",
+                      "WAITER"
+                    ]
+                  },
+                  "active": {
+                    "type": "boolean"
+                  }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Updated.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "user": {
+                      "$ref": "#/components/schemas/StaffMember"
+                    },
+                    "sessionsRevoked": {
+                      "type": "integer",
+                      "description": "Refresh sessions ended by this change."
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "403": {
+            "$ref": "#/components/responses/Forbidden"
+          },
+          "404": {
+            "$ref": "#/components/responses/NotFound"
+          },
+          "409": {
+            "$ref": "#/components/responses/Conflict"
+          },
+          "429": {
+            "$ref": "#/components/responses/TooManyRequests"
+          },
+          "500": {
+            "$ref": "#/components/responses/ServerError"
+          }
+        }
+      }
+    },
+    "/api/v1/account/users/{userId}/password": {
+      "post": {
+        "tags": [
+          "Account"
+        ],
+        "summary": "Set somebody else's password",
+        "operationId": "resetStaffPassword",
+        "description": "OWNER and MANAGER only, subject to the same rank and self rules as a role change.\n\nThis is also how a forgotten password is recovered, because there is no self-service change\nyet. It revokes their sessions, which is the point: a reset that leaves the old sessions\nrunning has not locked anybody out.",
+        "security": [
+          {
+            "staffAuth": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "userId",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "required": [
+                  "password"
+                ],
+                "properties": {
+                  "password": {
+                    "type": "string",
+                    "minLength": 12,
+                    "maxLength": 128
+                  }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Set.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "sessionsRevoked": {
+                      "type": "integer"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "403": {
+            "$ref": "#/components/responses/Forbidden"
+          },
+          "404": {
+            "$ref": "#/components/responses/NotFound"
+          },
+          "429": {
+            "$ref": "#/components/responses/TooManyRequests"
+          },
+          "500": {
+            "$ref": "#/components/responses/ServerError"
+          }
+        }
+      }
+    },
     "/api/v1/account/banks": {
       "get": {
         "tags": [
@@ -6795,7 +7167,7 @@
         ],
         "summary": "Venezuelan banks a payee can be configured against",
         "operationId": "listBanks",
-        "description": "Any authenticated staff role.\n\nRead `chargeable` rather than assuming: a restaurant may name any bank, because that is\nwhere diners send money whether or not we integrate with it, but only a bank with a module\ncan take part in an in-app payment. Nothing is chargeable today.\n\n**The list is unverified against Sudeban's register.** The codes are load-bearing — a wrong\none sends money to another institution — and it must be confirmed before production.",
+        "description": "Any authenticated staff role.\n\nRead `chargeable` rather than assuming: a restaurant may name any bank, because that is\nwhere diners send money whether or not we integrate with it, but only a bank with a module\ncan take part in an in-app payment. Nothing is chargeable today.\n\n**The list is not officially sourced.** It has been cross-checked against two independent\npublished lists, which agreed on every code, but the BCV register itself has not been read.\nThe codes are load-bearing — a wrong one sends money to another institution — so confirming\nthem against that register is a prerequisite for the first bank module.",
         "security": [
           {
             "staffAuth": []
