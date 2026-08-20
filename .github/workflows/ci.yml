@@ -93,6 +93,12 @@ jobs:
       DB_SSL: 'false'
       REDIS_URL: redis://localhost:6379
       RUN_INTEGRATION: '1'
+      # A throwaway ring so the second-factor suite can seal a secret. It
+      # protects nothing: the database it writes to is destroyed with the job.
+      # Deliberately literal rather than a repository secret, so a fork's CI
+      # runs the same tests as ours.
+      MFA_SECRET_KEYS: '1:Y2ktb25seS10ZXN0LWtleS0zMi1ieXRlcy1sb25nISE='
+      MFA_ACTIVE_KEY_VERSION: '1'
 
     steps:
       - uses: actions/checkout@v4

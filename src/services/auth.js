@@ -3,9 +3,13 @@ const { ApiError } = require('../errors');
 const argon2 = require('argon2');
 const db = require('../connectors/base');
 const config = require('../config');
-const { signAccessToken, signRefreshToken, verifyRefreshToken, hashToken } = require('../utils/tokens');
+const {
+  signAccessToken, signRefreshToken, verifyRefreshToken, hashToken,
+  signMfaChallenge, verifyMfaChallenge
+} = require('../utils/tokens');
 const { logAudit } = require('./audit');
 const loginThrottle = require('./loginThrottle');
+const mfa = require('./mfa');
 
 const ARGON2_OPTIONS = { type: argon2.argon2id, memoryCost: 19456, timeCost: 2, parallelism: 1 };
 
@@ -71,7 +75,8 @@ async function login(email, password, meta = {}) {
   // Staff emails are globally unique (migration 002). LIMIT 1 without that
   // constraint would non-deterministically pick a tenant.
   const { rows } = await db.query(
-    `SELECT id, restaurant_id, email, password_hash, role, active
+    `SELECT id, restaurant_id, email, password_hash, role, active,
+            mfa_secret, mfa_enabled_at, mfa_last_step
        FROM users
       WHERE lower(email) = lower($1)
       LIMIT 1`,
@@ -103,6 +108,30 @@ async function login(email, password, meta = {}) {
   // getting it wrong, not somebody guessing.
   await loginThrottle.clearFailures(email);
 
+  /**
+   * With a second factor, a correct password is not a session -- it is half of
+   * one. No tokens are issued here, and the challenge carries no role or
+   * tenant: it says only which account is mid-login, for the five minutes it
+   * takes to read six digits.
+   */
+  if (user.mfa_enabled_at) {
+    await logAudit({
+      action: 'AUTH_MFA_CHALLENGED',
+      restaurantId: user.restaurant_id,
+      actorId: user.id,
+      resourceType: 'user',
+      resourceId: user.id,
+      ip: meta.ip,
+      userAgent: meta.userAgent,
+      requestId: meta.requestId
+    });
+    return {
+      mfaRequired: true,
+      challenge: signMfaChallenge(user.id),
+      expiresIn: config.mfa.challengeTtlSeconds
+    };
+  }
+
   const session = await issueSession(user, meta);
   await logAudit({
     action: 'AUTH_LOGIN_SUCCEEDED',
@@ -115,6 +144,84 @@ async function login(email, password, meta = {}) {
     requestId: meta.requestId
   });
   return session;
+}
+
+/**
+ * The other half of a login: a code against a challenge.
+ *
+ * Throttled on the account the challenge names, using the same counter the
+ * password path uses, because a challenge is a standing invitation to guess six
+ * digits and the two limits protect the same account.
+ *
+ * Every failure here is `INVALID_CREDENTIALS`, the same error the password path
+ * gives. Which half failed is not a client's business, and a distinct code
+ * would confirm to somebody holding a stolen password that it was the right
+ * one.
+ */
+async function completeMfaLogin(challenge, code, meta = {}) {
+  let claims;
+  try {
+    claims = verifyMfaChallenge(challenge);
+  } catch {
+    throw unauthorized();
+  }
+
+  // Keyed on the user id, so it is a different budget from the password
+  // counter (which keys on the submitted address). What matters is that it is
+  // per *account* rather than per challenge: asking for a fresh challenge by
+  // logging in again does not hand the guesser a new allowance.
+  await loginThrottle.assertNotThrottled(claims.sub);
+
+  const session = await db.withTransaction(async client => {
+    const { rows } = await client.query(
+      `SELECT id, restaurant_id, email, role, active, mfa_secret, mfa_enabled_at, mfa_last_step
+         FROM users
+        WHERE id = $1
+        FOR UPDATE`,
+      [claims.sub]
+    );
+    const user = rows[0];
+    // Re-read rather than trusted from the challenge: an account deactivated,
+    // or a factor removed, in the five minutes since the password must take
+    // effect now rather than at the end of them.
+    if (!user || !user.active || !user.mfa_enabled_at) return null;
+
+    const accepted = await mfa.consume(client, { user, code });
+    if (!accepted) return null;
+
+    // Issued on the same transaction that spent the code, so a refresh session
+    // cannot exist for a code that was rolled back.
+    return { ...await issueSession(user, meta, client), via: accepted.via };
+  });
+
+  if (!session) {
+    await loginThrottle.recordFailure(claims.sub);
+    await logAudit({
+      action: 'AUTH_MFA_FAILED',
+      actorId: claims.sub,
+      resourceType: 'user',
+      resourceId: claims.sub,
+      ip: meta.ip,
+      userAgent: meta.userAgent,
+      requestId: meta.requestId
+    });
+    throw unauthorized();
+  }
+
+  await loginThrottle.clearFailures(claims.sub);
+  const { via, ...issued } = session;
+  await logAudit({
+    action: 'AUTH_LOGIN_SUCCEEDED',
+    restaurantId: issued.user.restaurantId,
+    actorId: issued.user.id,
+    resourceType: 'user',
+    resourceId: issued.user.id,
+    ip: meta.ip,
+    userAgent: meta.userAgent,
+    requestId: meta.requestId,
+    details: { secondFactor: via }
+  });
+  return issued;
 }
 
 /**
@@ -225,5 +332,5 @@ module.exports = {
   // issueSession is exported for onboarding, which signs the owner in inside
   // the same transaction that creates them -- so the refresh session it writes
   // rolls back with the tenant if anything later in that transaction fails.
-  currentUser, login, refresh, revokeSession, revokeAllSessionsForUser, hashPassword, issueSession,
+  currentUser, login, completeMfaLogin, refresh, revokeSession, revokeAllSessionsForUser, hashPassword, issueSession,
   ARGON2_OPTIONS };

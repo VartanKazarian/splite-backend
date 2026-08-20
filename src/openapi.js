@@ -848,6 +848,69 @@ const schemas = {
     properties: { currency: { type: 'string', enum: ['VES', 'USD', 'EUR'] } }
   },
 
+  MfaChallenge: {
+    type: 'object',
+    description: 'What `/auth/login` returns instead of a session when the account has a second factor.',
+    required: ['mfaRequired', 'challenge'],
+    properties: {
+      mfaRequired: { type: 'boolean', const: true, description: 'Branch on this, not on the absence of a token.' },
+      challenge: {
+        type: 'string',
+        description: 'Spend it at `/auth/login/mfa`. It names the account and nothing else — no role, no restaurant — and is not usable as an access token.'
+      },
+      expiresIn: { type: 'integer', description: 'Seconds. Long enough to read six digits, short enough that a captured challenge is worthless by the time it is replayed.' }
+    }
+  },
+
+  MfaChallengeRequest: {
+    type: 'object',
+    required: ['challenge', 'code'],
+    properties: {
+      challenge: { type: 'string', description: 'From the `/auth/login` response.' },
+      code: {
+        type: 'string', minLength: 6, maxLength: 32,
+        description: 'A six-digit TOTP code, or a recovery code. One field for both on purpose: the server must not behave differently for the two.'
+      }
+    }
+  },
+
+  MfaCodeRequest: {
+    type: 'object',
+    required: ['code'],
+    properties: {
+      code: { type: 'string', minLength: 6, maxLength: 32, description: 'A TOTP code or a recovery code.' }
+    }
+  },
+
+  MfaStatus: {
+    type: 'object',
+    properties: {
+      enabled: { type: 'boolean' },
+      enabledAt: { type: ['string', 'null'], format: 'date-time' },
+      recoveryCodesRemaining: { type: 'integer', description: 'Unspent codes. A client should prompt to regenerate as this approaches zero.' }
+    }
+  },
+
+  MfaEnrolment: {
+    type: 'object',
+    description: 'A secret that is stored but not yet in force.',
+    properties: {
+      secret: { type: 'string', description: 'Base32, for a user typing it in by hand.' },
+      otpauthUri: { type: 'string', description: 'Render as a QR code. Carries SHA1/6 digits/30s, which is what every authenticator app assumes.' }
+    }
+  },
+
+  MfaRecoveryCodes: {
+    type: 'object',
+    properties: {
+      recoveryCodes: {
+        type: 'array',
+        items: { type: 'string' },
+        description: 'The only time these are readable — they are stored hashed. Each is spendable once, in place of a TOTP code.'
+      }
+    }
+  },
+
   LoginRequest: {
     type: 'object',
     required: ['email', 'password'],
@@ -1549,16 +1612,151 @@ const paths = {
     }
   },
 
+  '/api/v1/auth/login/mfa': {
+    post: {
+      tags: ['Auth'],
+      summary: 'Complete a login with a second factor',
+      operationId: 'completeMfaLogin',
+      description: [
+        'Spends the challenge from `/auth/login` together with a code, and returns the session that',
+        'the password alone did not.',
+        '',
+        'The `code` field takes **either** a six-digit TOTP code or a recovery code, and the response',
+        'does not say which was used. Both complete the login; distinguishing them would tell somebody',
+        'holding a stolen password which secret they were guessing against.',
+        '',
+        'Every failure is 401 `INVALID_CREDENTIALS` — an expired challenge, a wrong code, a spent',
+        'recovery code, an account deactivated in the meantime. Throttled per account, and asking',
+        '`/auth/login` for a fresh challenge does not reset that budget.'
+      ].join('\n'),
+      security: [],
+      requestBody: { required: true, content: { 'application/json': { schema: ref('MfaChallengeRequest') } } },
+      responses: {
+        200: { description: 'Session issued.', content: { 'application/json': { schema: ref('Session') } } },
+        400: response('BadRequest'),
+        401: response('Unauthorized'),
+        429: response('TooManyRequests'),
+        500: response('ServerError'),
+        503: response('ServiceUnavailable')
+      }
+    }
+  },
+
+  '/api/v1/auth/mfa': {
+    get: {
+      tags: ['Auth'],
+      summary: 'Whether the caller has a second factor',
+      operationId: 'getMfaStatus',
+      security: staff,
+      description:
+        'The caller\'s own account only. Nothing here reads, enrols or removes another user\'s factor, including for an OWNER: a manager who could strip a colleague\'s second factor could take over their account.',
+      responses: {
+        200: { description: 'Second-factor status.', content: { 'application/json': { schema: ref('MfaStatus') } } },
+        ...commonErrors
+      }
+    }
+  },
+
+  '/api/v1/auth/mfa/enrol': {
+    post: {
+      tags: ['Auth'],
+      summary: 'Begin enrolling a second factor',
+      operationId: 'beginMfaEnrolment',
+      security: staff,
+      description: [
+        'Mints a TOTP secret and returns it with an `otpauth://` URI for a QR code. **Nothing is',
+        'enabled yet:** the account still signs in on its password alone until a code is confirmed,',
+        'which is what makes a failed scan a retry rather than a lockout.',
+        '',
+        'Calling it again before confirming replaces the secret. 409 `MFA_ALREADY_ENABLED` once a',
+        'factor is live — disable it first, which costs a code.',
+        '',
+        '503 `MFA_KEY_MISSING` when the deployment has no `MFA_SECRET_KEYS` ring configured.'
+      ].join('\n'),
+      responses: {
+        201: { description: 'Secret minted.', content: { 'application/json': { schema: ref('MfaEnrolment') } } },
+        ...commonErrors,
+        409: response('Conflict')
+      }
+    }
+  },
+
+  '/api/v1/auth/mfa/confirm': {
+    post: {
+      tags: ['Auth'],
+      summary: 'Turn on the second factor with a code',
+      operationId: 'confirmMfaEnrolment',
+      security: staff,
+      description: [
+        'Proves the authenticator holds the secret, and only then does the factor become live.',
+        '',
+        'Returns the recovery codes, which are **the only time they are readable** — they are stored',
+        'hashed. They are not optional: this system has no admin surface, so an owner who loses their',
+        'phone with no code is locked out of their own business with nobody able to let them back in.'
+      ].join('\n'),
+      requestBody: { required: true, content: { 'application/json': { schema: ref('MfaCodeRequest') } } },
+      responses: {
+        200: { description: 'Enabled, with recovery codes.', content: { 'application/json': { schema: ref('MfaRecoveryCodes') } } },
+        ...commonErrors,
+        409: response('Conflict')
+      }
+    }
+  },
+
+  '/api/v1/auth/mfa/disable': {
+    post: {
+      tags: ['Auth'],
+      summary: 'Remove the second factor',
+      operationId: 'disableMfa',
+      security: staff,
+      description:
+        'Costs a code, TOTP or recovery. A live session is deliberately not enough: a borrowed unlocked laptop would otherwise be able to strip the factor and leave the account on a password its borrower may already have.',
+      requestBody: { required: true, content: { 'application/json': { schema: ref('MfaCodeRequest') } } },
+      responses: {
+        200: { description: 'Disabled.', content: { 'application/json': { schema: { type: 'object', properties: { disabled: { type: 'boolean' } } } } } },
+        ...commonErrors,
+        409: response('Conflict')
+      }
+    }
+  },
+
+  '/api/v1/auth/mfa/recovery-codes': {
+    post: {
+      tags: ['Auth'],
+      summary: 'Replace the recovery codes',
+      operationId: 'regenerateMfaRecoveryCodes',
+      security: staff,
+      description:
+        'A fresh sheet for somebody who has spent theirs. Costs a code, and invalidates every code issued before it — including any still unspent on a sheet somebody else may be holding.',
+      requestBody: { required: true, content: { 'application/json': { schema: ref('MfaCodeRequest') } } },
+      responses: {
+        200: { description: 'New codes.', content: { 'application/json': { schema: ref('MfaRecoveryCodes') } } },
+        ...commonErrors,
+        409: response('Conflict')
+      }
+    }
+  },
+
   '/api/v1/auth/login': {
     post: {
       tags: ['Auth'],
       summary: 'Exchange credentials for a session',
-      description:
-        'Rate limited to 10/minute per IP, and fails closed in production: if Redis is unavailable this returns 503 rather than waving brute-force attempts through. Unknown and known emails take the same time.',
+      description: [
+        'Rate limited to 10/minute per IP, and fails closed in production: if Redis is unavailable this',
+        'returns 503 rather than waving brute-force attempts through. Unknown and known emails take the',
+        'same time.',
+        '',
+        'When the account has a second factor, a correct password does **not** return a session. It',
+        'returns `{ mfaRequired: true, challenge }`, and the challenge is spent at',
+        '`POST /api/v1/auth/login/mfa`. Branch on `mfaRequired`, not on the absence of a token.'
+      ].join('\n'),
       security: [],
       requestBody: { required: true, content: { 'application/json': { schema: ref('LoginRequest') } } },
       responses: {
-        200: { description: 'Session issued.', content: { 'application/json': { schema: ref('Session') } } },
+        200: {
+          description: 'A session, or an MFA challenge when the account has a second factor.',
+          content: { 'application/json': { schema: { oneOf: [ref('Session'), ref('MfaChallenge')] } } }
+        },
         400: response('BadRequest'),
         401: response('Unauthorized'),
         429: response('TooManyRequests'),

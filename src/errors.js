@@ -48,6 +48,7 @@ const CODES = {
   AUTH_TOKEN_MISSING: 401,
   AUTH_TOKEN_INVALID: 401,
   INVALID_CREDENTIALS: 401,
+  MFA_CODE_INVALID: 401,
   GUEST_SESSION_MISSING: 401,
   GUEST_SESSION_INVALID: 401,
   // One code for "no such token", "already used" and "expired" on purpose. A
@@ -84,6 +85,11 @@ const CODES = {
 
   // 409 -- valid request, incompatible with current state.
   OPEN_BILL_EXISTS: 409,
+  // Enrolment state, all of them "the account is not in the state this asks
+  // for" rather than an authentication failure.
+  MFA_ALREADY_ENABLED: 409,
+  MFA_NOT_ENABLED: 409,
+  MFA_NOT_ENROLLED: 409,
   BILL_NOT_OPEN: 409,
   BILL_NOT_ITEMISED: 409,
   TOTAL_BELOW_AMOUNT_PAID: 409,
@@ -130,6 +136,8 @@ const CODES = {
   // longer in the ring. Never a missing credential -- a failed tag means a
   // modified one, and the only safe answer to that is to stop.
   PAYMENT_CREDENTIALS_UNREADABLE: 500,
+  // A secret we cannot open is our failure, not the caller's.
+  MFA_SECRET_UNREADABLE: 500,
   PAYMENT_PROVIDER_UNKNOWN: 404,
 
   // 429 / 503 -- try again, and the caller can tell whether it is their fault.
@@ -148,6 +156,9 @@ const CODES = {
   // 503 -- the deployment cannot handle credentials right now. Not 500: this is
   // configuration, and saying so is what stops somebody hunting a bug.
   PAYMENT_CREDENTIALS_KEY_MISSING: 503,
+  // The deployment has no MFA key ring, so enrolment is unavailable rather
+  // than broken -- the same shape as a payment rail with no credentials.
+  MFA_KEY_MISSING: 503,
 
   // The rail exists but is not usable: no endpoint configured for the
   // deployment, or credentials stored for the restaurant that nobody has proven
