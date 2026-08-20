@@ -249,6 +249,7 @@ router.post('/bill/payment-claims', authenticateGuest, perSession, validateBody(
       bankOrigin: req.body.bankOrigin,
       payer: { type: 'GUEST', id: null },
       splitParticipantId: req.body.splitParticipantId ?? null,
+      tipVes: req.body.tipVes ?? '0',
       meta: { ip: req.ip, userAgent: req.get('user-agent'), requestId: req.id }
     });
 
@@ -334,7 +335,8 @@ router.post(
           clave: req.body.clave
         },
         idempotencyKey: key,
-        splitParticipantId: req.body.splitParticipantId ?? null
+        splitParticipantId: req.body.splitParticipantId ?? null,
+        tipVes: req.body.tipVes ?? '0'
       });
 
       // Stored before replying, so a retry that races the response replays the

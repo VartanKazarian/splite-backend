@@ -110,9 +110,17 @@ async function getSplit({ restaurantId, splitId, bill = null }) {
   )).rows[0];
   if (!split) throw new ApiError('SPLIT_NOT_FOUND', 'Split not found');
 
+  // `created_at` alone is not an order. Every participant of a split is inserted
+  // in one transaction and the column defaults to NOW(), which in Postgres is
+  // the *transaction* timestamp -- so all of them carry the same instant and the
+  // sort falls back to whatever order the heap returns. Two reads of one split
+  // could list its participants differently, which is a shuffled screen for a
+  // client and a coin flip for any caller indexing into the array. `ext_ref` is
+  // the label the client chose and is unique within a split, so it breaks the
+  // tie deterministically.
   const participants = (await db.query(
     `SELECT ${PARTICIPANT_COLUMNS} FROM bill_split_participants
-      WHERE split_id = $1 ORDER BY created_at ASC`,
+      WHERE split_id = $1 ORDER BY created_at ASC, ext_ref ASC`,
     [splitId]
   )).rows;
 

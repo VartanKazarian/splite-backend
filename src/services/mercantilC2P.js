@@ -1,7 +1,7 @@
 const db = require('../connectors/base');
 const config = require('../config');
 const { ApiError } = require('../errors');
-const { applyToBill, settlementView, toPaymentAmount } = require('./locks');
+const { applyToBill, settlementView, toPaymentAmount, toTipAmount } = require('./locks');
 const { recordPayment, transitionPayment } = require('./payments');
 const { MercantilC2PClient, MercantilC2PError } = require('../payments/providers/mercantil/c2p');
 const { matchInDoubtPayment, OUTCOME, digitsOnly } = require('./c2pMatcher');
@@ -137,7 +137,7 @@ function asReferenceConflict(err, reference) {
  */
 async function createC2PPayment({
   restaurantId, billId, amountVes, payer, idempotencyKey = null, payerId = null,
-  splitParticipantId = null,
+  splitParticipantId = null, tipVes = 0,
   // The bank client is injectable so the settlement and idempotency guarantees
   // can be exercised against a real Postgres without a real Mercantil. Nothing
   // in production passes it; the default binds this restaurant's sealed
@@ -146,6 +146,16 @@ async function createC2PPayment({
 }) {
   const amount = toPaymentAmount(amountVes);
   if (amount === null) throw new ApiError('INVALID_AMOUNT', 'Invalid payment amount');
+
+  // A tip of nothing is the ordinary case, so zero is valid here where it is
+  // not for the amount -- `toPaymentAmount` rejects it, and rightly, since a
+  // payment of nothing moves no money.
+  const tip = toTipAmount(tipVes);
+  if (tip === null) throw new ApiError('INVALID_AMOUNT', 'Invalid tip amount');
+
+  // What Mercantil is asked to pull. The bill only ever sees `amount`; the
+  // diner's bank sees the whole of what they agreed to hand over.
+  const charged = amount + tip;
 
   // Built before anything is written: a misconfigured rail must fail without
   // leaving a PENDING payment nobody will ever resolve.
@@ -186,6 +196,7 @@ async function createC2PPayment({
       // Credited to its share when the charge settles (directly, or on a later
       // staff resolution of an in-doubt charge).
       splitParticipantId,
+      tipVes: tip,
       reason: 'C2P charge submitted to Mercantil'
     });
 
@@ -201,7 +212,7 @@ async function createC2PPayment({
 
   let result;
   try {
-    result = await client.charge({ invoiceNumber, amountVesMinor: amount, payer });
+    result = await client.charge({ invoiceNumber, amountVesMinor: charged, payer });
   } catch (err) {
     if (err instanceof MercantilC2PError && err.code === 'BANK_INDETERMINATE') {
       // The only honest answer. Not an error to the caller: the charge exists,
@@ -275,7 +286,11 @@ async function createC2PPayment({
     details: { billId, billStatus: settlement.status }
   });
 
-  return { paymentId: payment.id, status: 'SUCCEEDED', invoiceNumber, bankReference: reference, settlement };
+  return {
+    paymentId: payment.id, status: 'SUCCEEDED', invoiceNumber, bankReference: reference,
+    tipVes: tip.toString(), totalChargedVes: charged.toString(),
+    settlement
+  };
 }
 
 /**
@@ -357,7 +372,7 @@ function moveTo(payment, restaurantId, toStatus, reason) {
  */
 async function resolveC2PPayment({ restaurantId, paymentId, actorUserId = null, bankClient = null }) {
   const { rows } = await db.query(
-    `SELECT p.id, p.status, p.bill_id, p.amount_ves, p.created_at,
+    `SELECT p.id, p.status, p.bill_id, p.amount_ves, p.tip_ves, p.created_at,
             c.invoice_number, c.payer_bank_code, c.payer_phone_last4
        FROM payments p
        JOIN c2p_charges c ON c.payment_id = p.id
@@ -381,13 +396,19 @@ async function resolveC2PPayment({ restaurantId, paymentId, actorUserId = null, 
   // back however old the charge is.
   const from = new Date(Math.max(createdMs - SEARCH_LEAD_MS, Date.now() - RESOLUTION_WINDOW_MAX_MS));
 
+  // What the bank was asked to pull, which is the share plus any tip. The
+  // movement Mercantil returns is for the whole debit, so searching on
+  // `amount_ves` alone finds nothing whenever the diner tipped -- and "nothing"
+  // on this path means NO_MATCH on a charge the diner may well have paid.
+  const chargedVes = (BigInt(payment.amount_ves) + BigInt(payment.tip_ves ?? 0)).toString();
+
   let movements;
   try {
     const bank = bankClient ?? await MercantilC2PClient.forRestaurant(restaurantId);
     movements = await bank.search({
       fromDate: from.toISOString(),
       toDate: new Date().toISOString(),
-      amountVesMinor: payment.amount_ves
+      amountVesMinor: chargedVes
     });
   } catch (err) {
     if (err instanceof ApiError) throw err;
@@ -412,7 +433,7 @@ async function resolveC2PPayment({ restaurantId, paymentId, actorUserId = null, 
       : []
   );
 
-  const match = matchInDoubtPayment(movements, payment, consumed);
+  const match = matchInDoubtPayment(movements, { ...payment, charged_ves: chargedVes }, consumed);
 
   try {
     return await db.withTransaction(async tx => {
