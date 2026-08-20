@@ -41,7 +41,7 @@ const normaliseReference = value => String(value ?? '').replace(/\D/g, '');
  * message to the restaurant, and the restaurant decides.
  */
 async function declareClaim({
-  restaurantId, billId, amountVes, reference, phoneOrigin, bankOrigin,
+  restaurantId, billId, amountVes, reference, phoneOrigin, bankOrigin, idOrigin,
   payer = { type: 'GUEST', id: null }, splitParticipantId = null, tipVes = 0, meta = {}
 }) {
   const amount = toPaymentAmount(amountVes);
@@ -95,6 +95,7 @@ async function declareClaim({
         metadata: {
           phoneOrigin: phoneOrigin ?? null,
           bankOrigin: bankOrigin ?? null,
+          idOrigin: idOrigin ?? null,
           declaredAt: new Date().toISOString()
         },
         reason: 'Declared by payer, awaiting verification'

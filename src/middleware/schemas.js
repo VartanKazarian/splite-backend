@@ -168,6 +168,50 @@ const splitPreviewSchema = Joi.object({
 });
 
 
+// Digitel, Movistar and Movilnet. The complete set, and the reason a Pago Móvil
+// phone can be validated properly rather than merely bounded.
+//
+// 422 is Digitel's second range, opened in July 2025 and missing here until a
+// live C2P checkout was seen offering it. A diner on that range could not have
+// paid us at all, and the error we gave them said their own number was not
+// Venezuelan -- the worst kind of validation failure, one that blames the
+// customer for our list being out of date.
+const MOBILE_PREFIXES = ['412', '414', '416', '422', '424', '426'];
+
+// Built from the list rather than written beside it, because the copy that
+// drifts is always the one a diner reads.
+const MOBILE_PREFIXES_HUMAN = MOBILE_PREFIXES.map((p) => `0${p}`).join(', ');
+
+/**
+ * A Venezuelan mobile line, written any way somebody writes one.
+ *
+ * Shared by the payout form, the C2P charge and the declared Pago Móvil,
+ * because all three are the same rule about the same thing: a number that
+ * cannot receive or send a mobile payment. Three copies would drift, and the
+ * copy that drifted would be the one a diner hits at the till rather than the
+ * one an owner hits at a configuration screen.
+ */
+const venezuelanMobile = Joi.string().trim().min(7).max(20).pattern(/^[+()\-.\s\d]+$/)
+  .custom((value, helpers) => {
+    const digits = String(value).replace(/\D/g, '');
+    const local = digits.startsWith('58') ? digits.slice(2) : digits.replace(/^0/, '');
+    return MOBILE_PREFIXES.includes(local.slice(0, 3)) && local.length === 10
+      ? value
+      : helpers.message(
+        `phone must be a Venezuelan mobile line (${MOBILE_PREFIXES_HUMAN}): a Pago Móvil cannot be received on a landline`
+      );
+  });
+
+/**
+ * A cédula or RIF, as the holder writes it.
+ *
+ * Mercantil's C2P form offers V, J, G, P and C and omits E; ours had E and
+ * omitted C. The union is accepted for the reason given at payoutSchema: turning
+ * away a legitimate account holder is the expensive error.
+ */
+const venezuelanId = Joi.string().trim().uppercase().pattern(/^[VEJGPC][0-9]{6,9}$/)
+  .messages({ 'string.pattern.base': 'must be a cédula or RIF, e.g. V12345678 or J123456789' });
+
 /**
  * A diner declaring a Pago Móvil they have already sent.
  *
@@ -183,11 +227,19 @@ const splitPreviewSchema = Joi.object({
 const declareClaimSchema = Joi.object({
   amountVes: positiveMinorUnits.required(),
   reference: Joi.string().trim().min(4).max(32).pattern(/^[\d\s.-]+$/).required(),
-  // Optional corroboration. Neither is proof, and neither is required, but a
-  // member of staff scanning a bank app finds a movement far faster with the
-  // originating number than without it.
-  phoneOrigin: Joi.string().trim().min(7).max(40).pattern(/^[+()\-.\s\d]+$/),
-  bankOrigin: Joi.string().trim().max(60),
+  // Optional corroboration. None of it is proof, and none of it is required,
+  // but it is what a member of staff scanning a bank app matches against, and a
+  // receiving bank shows all three beside the movement. Structured rather than
+  // free-form for that reason: "Banesco", "banesco" and "BANESCO 0134" are one
+  // bank that compares as three, and a verifier reading a screen is the one who
+  // pays for the difference.
+  phoneOrigin: venezuelanMobile,
+  bankOrigin: Joi.string().trim().pattern(/^[0-9]{4}$/).valid(...banks.CODES)
+    .messages({ 'any.only': 'bankOrigin must be a known Venezuelan bank code' }),
+  // The payer's cédula or RIF. The strongest of the three: a phone can be
+  // borrowed and a bank is shared by millions, but the receiving app prints
+  // this next to the movement and only one person on the floor holds it.
+  idOrigin: venezuelanId,
   // Optional. Attributes the declared payment to a split share, credited when a
   // staff member confirms the claim.
   splitParticipantId: uuid,
@@ -217,49 +269,6 @@ const paymentIdParamSchema = Joi.object({ id: uuid.required() });
 const webhookProviderParamSchema = Joi.object({
   provider: Joi.string().trim().min(2).max(40).pattern(/^[A-Za-z0-9_-]+$/).required()
 });
-
-// Digitel, Movistar and Movilnet. The complete set, and the reason a Pago Móvil
-// phone can be validated properly rather than merely bounded.
-//
-// 422 is Digitel's second range, opened in July 2025 and missing here until a
-// live C2P checkout was seen offering it. A diner on that range could not have
-// paid us at all, and the error we gave them said their own number was not
-// Venezuelan -- the worst kind of validation failure, one that blames the
-// customer for our list being out of date.
-const MOBILE_PREFIXES = ['412', '414', '416', '422', '424', '426'];
-
-// Built from the list rather than written beside it, because the copy that
-// drifts is always the one a diner reads.
-const MOBILE_PREFIXES_HUMAN = MOBILE_PREFIXES.map((p) => `0${p}`).join(', ');
-
-/**
- * A Venezuelan mobile line, written any way somebody writes one.
- *
- * Shared by the payout form and the C2P charge because they are the same rule
- * about the same thing: a number that cannot receive or send a mobile payment.
- * Two copies would drift, and the copy that drifted would be the one a diner
- * hits at the till rather than the one an owner hits at a configuration screen.
- */
-const venezuelanMobile = Joi.string().trim().min(7).max(20).pattern(/^[+()\-.\s\d]+$/)
-  .custom((value, helpers) => {
-    const digits = String(value).replace(/\D/g, '');
-    const local = digits.startsWith('58') ? digits.slice(2) : digits.replace(/^0/, '');
-    return MOBILE_PREFIXES.includes(local.slice(0, 3)) && local.length === 10
-      ? value
-      : helpers.message(
-        `phone must be a Venezuelan mobile line (${MOBILE_PREFIXES_HUMAN}): a Pago Móvil cannot be received on a landline`
-      );
-  });
-
-/**
- * A cédula or RIF, as the holder writes it.
- *
- * Mercantil's C2P form offers V, J, G, P and C and omits E; ours had E and
- * omitted C. The union is accepted for the reason given at payoutSchema: turning
- * away a legitimate account holder is the expensive error.
- */
-const venezuelanId = Joi.string().trim().uppercase().pattern(/^[VEJGPC][0-9]{6,9}$/)
-  .messages({ 'string.pattern.base': 'must be a cédula or RIF, e.g. V12345678 or J123456789' });
 
 /**
  * A C2P charge, raised by the diner from their own phone.

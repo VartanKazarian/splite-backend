@@ -1149,10 +1149,12 @@ Object.assign(schemas, {
       ref('PaymentClaim'),
       {
         type: 'object',
-        description: "The corroborating detail, which goes only to staff — `phoneOrigin` is a diner's personal number.",
+        description: "The corroborating detail, which goes only to staff — `phoneOrigin` is a diner's personal number and `idOrigin` their identity document. This is what a verifier matches against the movement in the bank app; none of it is proof on its own.",
         properties: {
           phoneOrigin: { type: ['string', 'null'] },
-          bankOrigin: { type: ['string', 'null'] },
+          bankOrigin: { type: ['string', 'null'], description: 'Four-digit bank code. Claims declared before this field was a code may carry free text instead.' },
+          bankOriginName: { type: ['string', 'null'], description: 'Resolved from `bankOrigin`, or null when it is not a code we know.' },
+          idOrigin: { type: ['string', 'null'], description: "The payer's cédula or RIF, as the receiving bank prints it beside the movement." },
           declaredAt: { type: ['string', 'null'], format: 'date-time' }
         }
       }
@@ -1168,8 +1170,9 @@ Object.assign(schemas, {
         type: 'string', minLength: 4, maxLength: 32,
         description: 'The reference the payer\'s bank assigned. Required — a claim without one asks staff to find an unidentified transfer among the evening\'s takings. Digits, spaces, dots and dashes; normalised to digits before storage, so one reference cannot claim two bills by being typed differently.'
       },
-      phoneOrigin: { type: 'string', description: 'Optional. Not proof, but it is how a movement is found quickly.' },
-      bankOrigin: { type: 'string', description: 'Optional.' },
+      phoneOrigin: { type: 'string', description: 'Optional. Not proof, but it is how a movement is found quickly. Must be a Venezuelan mobile line — a Pago Móvil cannot originate anywhere else.' },
+      bankOrigin: { type: 'string', pattern: '^[0-9]{4}$', description: "Optional. The payer's bank, as a four-digit code rather than a name, so that two spellings of one bank do not compare as two banks." },
+      idOrigin: { type: 'string', description: "Optional, and the strongest of the three: a phone can be borrowed and a bank is shared by millions, but the receiving app prints the payer's document beside the movement. Cédula or RIF, e.g. V12345678." },
       splitParticipantId: { type: 'string', format: 'uuid', description: 'Optional. Attribute this declared payment to a split share, credited when staff confirm it.' },
       tipVes: { ...minorUnits, description: 'Optional voluntary tip, default 0. Part of the same transfer: staff verify `amountVes + tipVes` as one figure against the bank app.' }
     }

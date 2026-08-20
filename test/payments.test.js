@@ -2,6 +2,7 @@ const test = require('node:test');
 const assert = require('node:assert/strict');
 const db = require('../src/connectors/base');
 const { processSplitPayment } = require('../src/services/locks');
+const dto = require('../src/dto');
 
 /**
  * Stubs the transaction helper with an in-memory bill so the payment rules can
@@ -230,4 +231,49 @@ test('an exact even split closes the bill with nothing left over', async () => {
     7567n,
     'the ledger sums to the bill total'
   );
+});
+
+// --- The verifier's view of a declared payment ----------------------------
+
+const claimRow = (metadata) => ({
+  id: 'c1', bill_id: 'b1', amount_ves: '2500', tip_ves: '0',
+  status: 'PENDING', payment_method: 'PAGO_MOVIL',
+  declared_reference: '123456789012', metadata
+});
+
+test('a verifier is given the bank by name, not asked to know its code', () => {
+  const out = dto.staffPaymentClaim(claimRow({
+    phoneOrigin: '04145551234', bankOrigin: '0134', idOrigin: 'V12345678'
+  }));
+  assert.equal(out.bankOrigin, '0134');
+  assert.equal(out.bankOriginName, 'Banesco');
+  assert.equal(out.idOrigin, 'V12345678');
+});
+
+test('a claim declared before the bank was a code still reads', () => {
+  // Free text is shown as it was given rather than dropped: somebody working
+  // last week's queue is better served by an imperfect answer than a blank.
+  const out = dto.staffPaymentClaim(claimRow({ bankOrigin: 'Banesco' }));
+  assert.equal(out.bankOrigin, 'Banesco');
+  assert.equal(out.bankOriginName, null, 'not a code, so there is no name to resolve');
+});
+
+test('a claim with no corroboration is nulls, never missing keys', () => {
+  // The verifier's screen renders the same shape either way.
+  const out = dto.staffPaymentClaim(claimRow(null));
+  assert.equal(out.phoneOrigin, null);
+  assert.equal(out.bankOrigin, null);
+  assert.equal(out.bankOriginName, null);
+  assert.equal(out.idOrigin, null);
+});
+
+test('the diner-facing claim never carries the payer detail', () => {
+  // phoneOrigin and idOrigin belong to a person; the guest surface is reachable
+  // by anyone who scans a sticker on a table.
+  const out = dto.paymentClaim(claimRow({
+    phoneOrigin: '04145551234', bankOrigin: '0134', idOrigin: 'V12345678'
+  }));
+  assert.equal(out.phoneOrigin, undefined);
+  assert.equal(out.idOrigin, undefined);
+  assert.equal(out.bankOrigin, undefined);
 });

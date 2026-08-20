@@ -823,6 +823,29 @@ Staff work the queue at `GET /api/v1/payments/claims` and either confirm
 (OWNER/MANAGER/CASHIER — a waiter can take an order, deciding money arrived is a
 cashier's job upwards) or reject with a reason.
 
+**What the verifier is given to match on.** The reference is required and is
+what makes a claim checkable at all. Three optional fields make it quick, and
+they are the three a receiving bank prints beside the movement:
+
+| Field | Shape | Why |
+| --- | --- | --- |
+| `phoneOrigin` | a Venezuelan mobile line | a Pago Móvil has no other origin, so a landline here is a typo in the one field that finds the movement |
+| `bankOrigin` | a four-digit bank code | "Banesco", "banesco" and "BANESCO 0134" are one bank that compares as three |
+| `idOrigin` | a cédula or RIF | the strongest of the three — a phone can be borrowed and a bank is shared by millions |
+
+All three are optional: a diner who cannot supply them is still a diner who
+paid. But they are validated as the facts they are rather than accepted as free
+text, because the person who pays for a sloppy value is the one reading it off a
+screen with a bank app open in the other hand. Staff see them through
+`staffPaymentClaim`, which also resolves `bankOriginName` — the diner-facing
+`paymentClaim` carries none of it, since the guest surface is reachable by
+anyone who scans a sticker on a table.
+
+`bankOrigin` became a code after it had been free text, so claims declared
+earlier may carry a name. Those are shown as they were given with
+`bankOriginName: null`, because somebody working last week's queue is better
+served by an imperfect answer than by a blank.
+
 **Nothing pushes.** That makes an unwatched queue the weak point of the rail
 that actually carries money today: a diner declares a payment, nobody opens the
 screen, and they leave believing they have paid. Two things make it audible
