@@ -49,6 +49,114 @@ describe('persistent bill splits against a real Postgres', { skip }, () => {
 
   const staff = { type: 'STAFF', get id() { return staffUserId; } };
 
+  it('a verified transfer still reaches the bill when its share went stale', async () => {
+    // Staff have found this money in the bank account, so its arrival is not in
+    // question -- only where to file it. Rolling the confirmation back left a
+    // verified transfer stuck PENDING with no path to the bill at all, forever,
+    // because a refusal about the *plan* cannot be argued with by retrying.
+    const { bill, product } = await itemisedBill(10000, 2);
+    const split = await splits.createSplit({
+      restaurantId: restaurant.id, bill,
+      request: { mode: 'EQUAL', participants: [{ id: 'a' }, { id: 'b' }] }, createdBy: staff
+    });
+    const share = split.participants[0];
+    const claim = await claims.declareClaim({
+      restaurantId: restaurant.id, billId: bill.id, amountVes: share.amount_ves,
+      reference: `${Date.now()}`.slice(-12), splitParticipantId: share.id,
+      payer: { type: 'GUEST', id: null }
+    });
+
+    // The round that arrives while the claim sits in the queue.
+    await billItems.addItem({
+      restaurantId: restaurant.id, billId: bill.id, productId: product, quantity: 1
+    });
+    assert.equal(
+      (await db.query('SELECT status FROM bill_splits WHERE id = $1', [split.split.id])).rows[0].status,
+      'STALE'
+    );
+
+    const out = await claims.confirmClaim({
+      restaurantId: restaurant.id, claimId: claim.id, actor: { id: staffUserId }
+    });
+
+    assert.equal(out.amountPaid, '10000', 'the money is on the bill');
+    assert.equal(out.shareDetached, 'SPLIT_STALE', 'and the client is told why the split still shows them owing');
+
+    const payment = (await db.query(
+      'SELECT status, split_participant_id FROM payments WHERE id = $1', [claim.id])).rows[0];
+    assert.equal(payment.status, 'SUCCEEDED');
+    // Cleared rather than left dangling: a settled payment still naming a share
+    // it never credited is permanent drift.
+    assert.equal(payment.split_participant_id, null);
+
+    const drift = await db.query(
+      'SELECT * FROM bill_split_share_drift WHERE split_id = $1', [split.split.id]);
+    assert.equal(drift.rows.length, 0, 'the share counter and the ledger still agree');
+  });
+
+  it('a share that can still take the money is credited as before', async () => {
+    // The detach is an exception, not the new normal: nothing changes on the
+    // ordinary path.
+    const { bill } = await itemisedBill(10000, 2);
+    const split = await splits.createSplit({
+      restaurantId: restaurant.id, bill,
+      request: { mode: 'EQUAL', participants: [{ id: 'a' }, { id: 'b' }] }, createdBy: staff
+    });
+    const share = split.participants[0];
+    const claim = await claims.declareClaim({
+      restaurantId: restaurant.id, billId: bill.id, amountVes: share.amount_ves,
+      reference: `${Date.now() + 1}`.slice(-12), splitParticipantId: share.id,
+      payer: { type: 'GUEST', id: null }
+    });
+
+    const out = await claims.confirmClaim({
+      restaurantId: restaurant.id, claimId: claim.id, actor: { id: staffUserId }
+    });
+    assert.equal(out.shareDetached, undefined);
+
+    const payment = (await db.query(
+      'SELECT split_participant_id FROM payments WHERE id = $1', [claim.id])).rows[0];
+    assert.equal(payment.split_participant_id, share.id);
+    assert.equal(
+      (await db.query('SELECT amount_paid_ves FROM bill_split_participants WHERE id = $1', [share.id]))
+        .rows[0].amount_paid_ves,
+      share.amount_ves
+    );
+  });
+
+  it('a split cannot be voided while a payment against a share is in flight', async () => {
+    // Settled money is not the only money. Voiding out from under a declared
+    // transfer strands it: the share no longer accepts anything, so confirming
+    // it later has nowhere to put money that has genuinely arrived.
+    const { bill } = await itemisedBill(10000, 2);
+    const split = await splits.createSplit({
+      restaurantId: restaurant.id, bill,
+      request: { mode: 'EQUAL', participants: [{ id: 'a' }, { id: 'b' }] }, createdBy: staff
+    });
+    const share = split.participants[0];
+    const claim = await claims.declareClaim({
+      restaurantId: restaurant.id, billId: bill.id, amountVes: share.amount_ves,
+      reference: `${Date.now() + 2}`.slice(-12), splitParticipantId: share.id,
+      payer: { type: 'GUEST', id: null }
+    });
+
+    await assert.rejects(
+      () => splits.voidSplit({
+        restaurantId: restaurant.id, billId: bill.id, splitId: split.split.id, actor: staff
+      }),
+      err => err.code === 'SPLIT_HAS_PAYMENTS' && err.details?.inFlightPayments === 1
+    );
+
+    // Rejecting the claim is the step that unblocks it, and the error says so.
+    await claims.rejectClaim({
+      restaurantId: restaurant.id, claimId: claim.id, reason: 'Not in the account', actor: { id: staffUserId }
+    });
+    const voided = await splits.voidSplit({
+      restaurantId: restaurant.id, billId: bill.id, splitId: split.split.id, actor: staff
+    });
+    assert.equal(voided.split.status, 'VOID');
+  });
+
   it('a voided bill cannot be given a split', async () => {
     // The failure this prevents is not an error message -- it is a plan the
     // table agrees to and then cannot settle. The shares compute perfectly

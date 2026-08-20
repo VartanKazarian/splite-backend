@@ -174,13 +174,23 @@ async function confirmClaim({ restaurantId, claimId, actor, meta = {} }) {
       amount: BigInt(claim.amount_ves)
     });
 
-    await transitionPayment(client, {
+    const settled = await transitionPayment(client, {
       paymentId: claim.id,
       restaurantId,
       toStatus: 'SUCCEEDED',
       reason: 'Verified against the restaurant bank account by staff',
       actorType: 'STAFF',
-      actorId: actor?.id ?? null
+      actorId: actor?.id ?? null,
+      // A member of staff has found this transfer in the bank account, so the
+      // money's arrival is not in question -- only where to file it. If the
+      // split went stale or was voided while the claim sat in the queue, the
+      // bill still gets the money and the share attribution is dropped.
+      //
+      // The alternative was what this used to do: roll the whole confirmation
+      // back, leaving a verified transfer stuck PENDING with no path to the
+      // bill at all, permanently, because a refusal about the *plan* cannot be
+      // argued with by retrying.
+      onShareRefusal: 'DETACH'
     });
 
     // The tip is reported back rather than left implicit: the figure staff just
@@ -189,6 +199,9 @@ async function confirmClaim({ restaurantId, claimId, actor, meta = {} }) {
     return {
       ...settlementView(applied.bill, applied),
       paymentId: claim.id,
+      // Present only when the share could not take it, so a client can tell the
+      // staff member why the split still shows this diner as owing.
+      ...(settled.shareDetached ? { shareDetached: settled.shareDetached } : {}),
       tipVes: String(claim.tip_ves ?? '0'),
       totalChargedVes: (BigInt(claim.amount_ves) + BigInt(claim.tip_ves ?? 0)).toString()
     };
@@ -200,7 +213,10 @@ async function confirmClaim({ restaurantId, claimId, actor, meta = {} }) {
     action: 'PAYMENT_CLAIM_CONFIRMED',
     resourceType: 'payment',
     resourceId: claimId,
-    details: { billStatus: result.status, amountPaid: result.amountPaid },
+    details: {
+      billStatus: result.status, amountPaid: result.amountPaid,
+      ...(result.shareDetached ? { shareDetached: result.shareDetached } : {})
+    },
     ...meta
   });
 

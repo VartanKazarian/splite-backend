@@ -125,6 +125,15 @@ already lost precision past 2^53 by the time it arrives. Payments accept an
 `Idempotency-Key` header (or `idempotencyKey` in the body); replaying a
 completed key returns the stored response instead of charging twice.
 
+A claim is only ever granted with a row behind it. If the key's row is deleted
+between the conflicting insert and the read that follows — a failing request's
+`abort()` racing a client's retry does exactly that — the claim is re-attempted
+rather than granted on trust. Granting it left the caller holding a claim with
+nothing to store a response in, so the next retry found no row either and
+charged again. Storing that response is loud but never fatal: it runs after the
+money has moved, and throwing would reach the route's abort and free the client
+to retry a request that already succeeded.
+
 ## When BCV cannot be reached
 
 A foreign-currency bill needs a rate to have a settleable total, so the rate is
@@ -712,6 +721,19 @@ still letting a diner who mistyped correct it after a rejection.
 A claim is **not** a reservation. Two diners may each claim the whole balance;
 only the first confirmation can succeed, and the second gets 409.
 
+**A refusal from the share is not a refusal from the bill.** When a claim names
+a split share and that share can no longer take the money — the split went stale
+or was voided while the claim sat in the queue — the bill is still credited and
+the attribution is dropped, reported as `shareDetached`. Staff have found this
+transfer in the bank account, so its arrival is not in question, only where to
+file it; rolling the whole confirmation back left verified money stuck PENDING
+with no path to the bill at all, permanently, since a refusal about the *plan*
+cannot be argued with by retrying. The payment's `split_participant_id` is
+cleared rather than left dangling, because a settled payment still naming a
+share it never credited reads as permanent drift in `bill_split_share_drift`.
+The C2P rail deliberately answers the same refusal differently: there we
+initiated the debit, so the charge is parked for a person.
+
 ### Mercantil C2P
 
 The first rail where Splite asks for money to move rather than being told it
@@ -1071,6 +1093,16 @@ index allows one `ACTIVE` split per bill — a group that changes its mind voids
 the current one (`POST /api/v1/bills/{id}/splits/{splitId}/void`, refused once a
 share has been paid into) and agrees another. `GET .../splits/active` reads the
 live one.
+
+Voiding takes the participant rows' locks rather than just summing them.
+`advanceShare` locks the participant row and reads the split's status through a
+join without locking the split, so an unlocked `SUM` could read zero while a
+share payment committed beside it — leaving a VOID split with money credited to
+one of its shares. **Settled money is also not the only money:** a declared Pago
+Móvil or an in-doubt C2P charge names a share and has not credited it yet, and
+voiding out from under one strands it. Those are refused too, naming how many
+are in flight, because rejecting or resolving them first is a real step for
+staff rather than something the system can decide.
 
 A split can only be agreed on an **OPEN** bill, checked in `createSplit` rather
 than in each route — the same reasoning that puts the payment rules inside
