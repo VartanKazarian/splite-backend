@@ -63,7 +63,11 @@ const splitPaymentSchema = Joi.object({
   idempotencyKey: Joi.string().trim().min(16).max(128).pattern(/^[A-Za-z0-9._:-]+$/).required(),
   // Optional. When present, this payment settles one participant's share of a
   // persistent split, and may not exceed what is left on that share.
-  splitParticipantId: uuid
+  splitParticipantId: uuid,
+  // A voluntary tip on top. Zero-or-more rather than positive: no tip is the
+  // ordinary case, and it is added to what the payer hands over, never to the
+  // bill. Named to match its sibling above.
+  tipMinorUnits: minorUnits.default('0')
 });
 
 const createTableSchema = Joi.object({
@@ -154,7 +158,10 @@ const declareClaimSchema = Joi.object({
   bankOrigin: Joi.string().trim().max(60),
   // Optional. Attributes the declared payment to a split share, credited when a
   // staff member confirms the claim.
-  splitParticipantId: uuid
+  splitParticipantId: uuid,
+  // Part of the same transfer the diner says they sent: staff verify
+  // amountVes + tipVes against the bank app as one figure.
+  tipVes: minorUnits.default('0')
 });
 
 const listClaimsQuerySchema = Joi.object({
@@ -236,7 +243,23 @@ const c2pChargeSchema = Joi.object({
     .messages({ 'string.pattern.base': 'clave must be the digits your bank sent you' }),
   idempotencyKey: Joi.string().trim().min(16).max(128).pattern(/^[A-Za-z0-9._:-]+$/).required(),
   // Optional. Attributes the charge to a split share, credited when it settles.
-  splitParticipantId: uuid
+  splitParticipantId: uuid,
+  // Added to what Mercantil is asked to pull: the diner's bank sees
+  // amountVes + tipVes, while the bill only ever sees amountVes.
+  tipVes: minorUnits.default('0')
+});
+
+/**
+ * The window a tips report covers.
+ *
+ * Half-open: `from` inclusive, `to` exclusive, so consecutive shifts tile
+ * without counting the boundary twice. Both required rather than defaulted --
+ * a report whose period was guessed is a number somebody will hand out money
+ * against.
+ */
+const tipsReportQuerySchema = Joi.object({
+  from: Joi.date().iso().required(),
+  to: Joi.date().iso().greater(Joi.ref('from')).required()
 });
 
 const listUnresolvedC2PQuerySchema = Joi.object({
@@ -475,6 +498,7 @@ module.exports = {
   paymentProviderParamSchema,
   declareClaimSchema,
   c2pChargeSchema,
+  tipsReportQuerySchema,
   listUnresolvedC2PQuerySchema,
   c2pBankGuideQuerySchema,
   venezuelanMobile,

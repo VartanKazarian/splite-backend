@@ -11,7 +11,7 @@ const { advanceShare } = require('./splits');
  * money would be exactly the drift this table exists to make impossible.
  */
 
-const PAYMENT_COLUMNS = `id, restaurant_id, bill_id, amount_ves, status, payment_method,
+const PAYMENT_COLUMNS = `id, restaurant_id, bill_id, amount_ves, tip_ves, status, payment_method,
                          provider, provider_payment_id, declared_reference, idempotency_key,
                          payer_type, payer_id, split_participant_id,
                          tendered_amount, tendered_currency, tendered_fx_rate,
@@ -89,6 +89,15 @@ async function recordPayment(client, {
   idempotencyKey = null,
   payerType = 'STAFF',
   payerId = null,
+  /**
+   * A voluntary tip, on top of what this payment settles.
+   *
+   * Deliberately not added to `amountVes`: that figure is the part of the bill
+   * being paid, and the bill's ceiling, its CLOSED-on-equality rule and the
+   * drift view are all defined against it. The payer handed over
+   * `amountVes + tipVes`; only the first half is the bill's business.
+   */
+  tipVes = 0,
   // When set, this payment settles one participant's share of a persistent
   // split. The share is advanced below, in this same transaction, once the
   // payment is in a settled state -- see advanceShare.
@@ -99,16 +108,17 @@ async function recordPayment(client, {
 }) {
   const { rows } = await client.query(
     `INSERT INTO payments
-       (restaurant_id, bill_id, amount_ves, status, payment_method,
+       (restaurant_id, bill_id, amount_ves, tip_ves, status, payment_method,
         provider, provider_payment_id, declared_reference, idempotency_key,
         payer_type, payer_id, split_participant_id,
         tendered_amount, tendered_currency, tendered_fx_rate, metadata)
-     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16)
+     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17)
      RETURNING ${PAYMENT_COLUMNS}`,
     [
       restaurantId,
       billId,
       String(amountVes),
+      String(tipVes ?? 0),
       status,
       paymentMethod,
       provider,

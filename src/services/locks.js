@@ -156,6 +156,8 @@ async function processSplitPayment({
   paymentMethod = 'SPLITE',
   payer = { type: 'STAFF', id: null },
   splitParticipantId = null,
+  // A tip taken at the till. Rides on the payment; never reaches the bill.
+  tipVes = 0,
   tendered = null
 }) {
   const amount = toPaymentAmount(amountPaidMinorUnits);
@@ -181,10 +183,18 @@ async function processSplitPayment({
       payerType: payer?.type ?? 'STAFF',
       payerId: payer?.id ?? null,
       splitParticipantId,
+      tipVes,
       tendered
     });
 
-    return { ...settlementView(applied.bill, applied), paymentId: payment.id };
+    return {
+      ...settlementView(applied.bill, applied),
+      paymentId: payment.id,
+      // What the payment settled and what the payer added on top. The bill
+      // figures above deliberately exclude the tip.
+      tipVes: String(payment.tip_ves ?? '0'),
+      totalChargedVes: (amount + BigInt(payment.tip_ves ?? 0)).toString()
+    };
   }, { statementTimeoutMs: config.db.paymentStatementTimeoutMs });
 }
 

@@ -1,13 +1,15 @@
 const express = require('express');
 const claims = require('../services/paymentClaims');
 const mercantilC2P = require('../services/mercantilC2P');
+const tips = require('../services/tips');
 const { authenticateToken, requireRole } = require('../middleware/auth');
 const { logAudit, auditContext } = require('../services/audit');
 const dto = require('../dto');
 const {
   validateBody, validateParams, validateQuery,
   listClaimsQuerySchema, rejectClaimSchema, paymentIdParamSchema,
-  listUnresolvedC2PQuerySchema
+  listUnresolvedC2PQuerySchema,
+  tipsReportQuerySchema
 } = require('../middleware/schemas');
 
 /**
@@ -130,5 +132,31 @@ router.post(
     } catch (err) { next(err); }
   }
 );
+
+/**
+ * Tips taken over a period, and how they arrived.
+ *
+ * Any authenticated staff role: this is the number a shift is divided by, and
+ * whoever hands the money out needs to read it.
+ *
+ * The split by arrival is the point. A cash tip is already in the till and the
+ * restaurant is only deciding how to divide it; an electronic tip landed in the
+ * restaurant's bank account and is a debt to staff until it is paid out.
+ * Reporting one figure for both would describe two different situations
+ * identically.
+ *
+ * Only SUCCEEDED payments count. A tip on a claim nobody has verified is money
+ * a diner says they sent, and handing out cash against it is the mistake the
+ * whole confirm step exists to prevent.
+ */
+router.get('/tips', validateQuery(tipsReportQuerySchema), async (req, res, next) => {
+  try {
+    res.json(await tips.tipsReport({
+      restaurantId: req.user.restaurantId,
+      from: req.query.from,
+      to: req.query.to
+    }));
+  } catch (err) { next(err); }
+});
 
 module.exports = router;

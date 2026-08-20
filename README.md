@@ -31,6 +31,8 @@ opens so a diner's total cannot move while they eat.
 - Append-only payment ledger with a database-enforced state machine
 - Payment concurrency control via `SELECT ... FOR UPDATE`
 - Idempotency keys on money-moving endpoints
+- Tips recorded on the payment, never on the bill, with a per-shift report that
+  separates what is in the till from what is owed to staff
 
 **Contract**
 
@@ -423,7 +425,8 @@ restaurant is configured deliberately, and a migration must never silently move
 an existing total.
 
 A voluntary tip is deliberately not modelled here. It is untaxed and chosen by
-the payer rather than the restaurant, so it belongs with the payment.
+the payer rather than the restaurant, so it belongs with the payment — see
+[Tips](#tips).
 
 ## Where the money goes
 
@@ -775,6 +778,94 @@ on the acquirer, since there is nothing yet to hold credentials *for*. **Card pa
 yet** — that needs an acquirer, and with one there is no matching problem at
 all: the acquirer answers authoritatively, so none of the reconciliation
 machinery above applies.
+
+## Tips
+
+A tip rides on a payment and **never touches the bill**. `payments.tip_ves` sits
+beside `amount_ves`, and the bill's own columns — `total_due_ves`,
+`amount_paid_ves` — are untouched by it. That is not tidiness; putting a tip on
+the bill breaks three things at once:
+
+- `CHECK (amount_paid_ves <= total_due_ves)` would reject it, because a diner
+  who tips has handed over more than the bill asks for. That constraint is what
+  makes overpayment impossible, and it must not be relaxed for this.
+- A bill CLOSES on **exact equality** with its total. A tip inside
+  `amount_paid_ves` would close a bill early or never, depending on which side
+  of the total it landed on.
+- `payment_ledger_drift` proves the cached balance against `SUM(amount_ves)`. A
+  tip inside that sum reads as permanent drift on every tipped bill.
+
+So `amount_ves` stays exactly what it always was — the part of the bill this
+payment settles — and the tip sits next to it. What the payer actually handed
+over is `amount_ves + tip_ves`, and that sum is what a bank is charged and what
+a till receives. Nothing else in the schema has to know.
+
+It is optional on all three diner-facing rails, defaulting to zero:
+
+| Path | Field | What the money does |
+| --- | --- | --- |
+| `POST /api/v1/bills/{id}/payments` | `tipMinorUnits` | recorded on the payment; the bill advances by `amountMinorUnits` alone |
+| `POST /api/v1/guest/bill/payment-claims` | `tipVes` | staff verify `amountVes + tipVes` against the bank app as one figure |
+| `POST /api/v1/guest/bill/c2p` | `tipVes` | **Mercantil is asked to pull `amountVes + tipVes`**; only `amountVes` is credited to the bill |
+
+The C2P row is the one to read twice. The diner's bank sees the single figure
+they authorised, the bill sees only its own share, and the two are different
+numbers on purpose.
+
+Responses report both halves rather than one merged figure: a payment result
+carries `tipVes` and `totalChargedVes`, and a claim carries `tipVes` and
+`totalPaidVes`. Staff reconciling against a bank statement need the sum; the
+ledger needs the share.
+
+**A recorded tip is immutable.** `payments_guard_transition` refuses to let
+`tip_ves` move, exactly as it already refuses `amount_ves` — a tip a restaurant
+could quietly reduce after the diner has gone is not a tip. Correcting one is a
+refund and a new payment, not an edit.
+
+There are no suggested percentages in the API. What to offer a diner — 10, 15,
+20 — is a screen decision that changes per restaurant and per campaign, and
+storing it here would make every change a deploy. Clients send an amount.
+
+### Reading tips back
+
+`GET /api/v1/payments/tips?from=…&to=…` answers the only question anybody asks
+of them: how much came in over this shift, and how did it arrive.
+
+```json
+{
+  "from": "2026-08-19T16:00:00.000Z",
+  "to": "2026-08-20T04:00:00.000Z",
+  "currency": "VES",
+  "totalTipsVes": "16000",
+  "inTillVes": "3000",
+  "owedToStaffVes": "13000",
+  "byMethod": [
+    { "paymentMethod": "C2P", "payments": 4, "tipsVes": "12000" },
+    { "paymentMethod": "CASH", "payments": 2, "tipsVes": "3000" }
+  ]
+}
+```
+
+The split between `inTillVes` and `owedToStaffVes` is the point. A cash tip is
+physically in the drawer and the restaurant is only deciding how to divide it;
+an electronic tip landed in the restaurant's *bank account* and is a debt to
+staff until it is paid out. One number for both would describe two different
+situations identically.
+
+Only **SUCCEEDED** payments count. A tip on a PENDING Pago Móvil claim is money
+a diner *says* they sent, and counting it would have a restaurant hand out cash
+against a transfer nobody has verified; `IN_DOUBT` and `AMBIGUOUS` are excluded
+more sharply still, being charges we cannot yet prove landed at all.
+
+The window is **half-open** — `from` inclusive, `to` exclusive — so two
+consecutive shifts tile without both claiming a payment on the seam. Both bounds
+are required: a report whose period was guessed is a number somebody hands out
+money against.
+
+Nothing is cached. The per-bill figure is a `SUM` over the ledger rather than a
+counter on `bills`, because a second counter is one more thing that can fall out
+of step with the money — which is precisely what `payment_ledger_drift` exists
+to catch.
 
 ## Splitting a bill
 
@@ -1421,8 +1512,6 @@ Two smaller ones, same character:
 
 From the working copy, onto the current model:
 
-- Tip. Untaxed and chosen by the payer, so it belongs on the payment rather
-  than the bill, and lands with the payment work.
 - POS settlement: HMAC request signing, timestamp and nonce replay protection,
   and an external-reference idempotency key.
 - Guest sessions bound to the current bill. The incoming version moves them from

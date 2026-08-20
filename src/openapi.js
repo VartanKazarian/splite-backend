@@ -301,6 +301,10 @@ const schemas = {
       splitParticipantId: {
         type: 'string', format: 'uuid',
         description: 'Optional. Settle one participant share of a persistent split; the payment may not exceed what is left on that share, and is refused with 409 SPLIT_STALE if the bill changed after the split was agreed.'
+      },
+      tipMinorUnits: {
+        ...minorUnits,
+        description: 'Optional voluntary tip, default 0. Added to what the payer hands over, **never to the bill** — `amountMinorUnits` alone settles it.'
       }
     }
   },
@@ -323,7 +327,9 @@ const schemas = {
         examples: ['757.54060000']
       },
       fxSource: { type: ['string', 'null'] },
-      usdReference: ref('UsdReference')
+      usdReference: ref('UsdReference'),
+      tipVes: { ...minorUnits, description: 'The tip on this payment. Excluded from every bill figure above.' },
+      totalChargedVes: { ...minorUnits, description: 'What the payer actually handed over: the settled amount plus the tip.' }
     }
   },
 
@@ -441,6 +447,31 @@ const schemas = {
       },
       createdAt: { type: 'string', format: 'date-time' },
       updatedAt: { type: 'string', format: 'date-time' }
+    }
+  },
+
+  TipsReport: {
+    type: 'object',
+    description:
+      'Tips over a period, and how they arrived. The split by arrival is the point: a cash tip is already in the till, an electronic one is a debt to staff until it is paid out.',
+    properties: {
+      from: { type: 'string', format: 'date-time', description: 'Inclusive.' },
+      to: { type: 'string', format: 'date-time', description: 'Exclusive, so consecutive shifts tile without double-counting.' },
+      currency: { type: 'string', const: 'VES' },
+      totalTipsVes: minorUnits,
+      inTillVes: { ...minorUnits, description: 'Tips taken as cash. The money is physically present; only its division is open.' },
+      owedToStaffVes: { ...minorUnits, description: 'Tips that arrived electronically, so the restaurant holds them and owes them out.' },
+      byMethod: {
+        type: 'array',
+        items: {
+          type: 'object',
+          properties: {
+            paymentMethod: { type: 'string' },
+            payments: { type: 'integer' },
+            tipsVes: minorUnits
+          }
+        }
+      }
     }
   },
 
@@ -922,6 +953,8 @@ Object.assign(schemas, {
       id: { type: 'string', format: 'uuid' },
       billId: { type: 'string', format: 'uuid' },
       amountVes: minorUnits,
+      tipVes: { ...minorUnits, description: 'The voluntary tip declared with this payment. Settles nothing on the bill.' },
+      totalPaidVes: { ...minorUnits, description: '`amountVes + tipVes` — the figure to look for in the bank app.' },
       status: { type: 'string', enum: ['PENDING', 'SUCCEEDED', 'FAILED', 'CANCELLED'] },
       paymentMethod: { type: 'string', enum: ['PAGO_MOVIL'] },
       declaredReference: {
@@ -959,7 +992,8 @@ Object.assign(schemas, {
       },
       phoneOrigin: { type: 'string', description: 'Optional. Not proof, but it is how a movement is found quickly.' },
       bankOrigin: { type: 'string', description: 'Optional.' },
-      splitParticipantId: { type: 'string', format: 'uuid', description: 'Optional. Attribute this declared payment to a split share, credited when staff confirm it.' }
+      splitParticipantId: { type: 'string', format: 'uuid', description: 'Optional. Attribute this declared payment to a split share, credited when staff confirm it.' },
+      tipVes: { ...minorUnits, description: 'Optional voluntary tip, default 0. Part of the same transfer: staff verify `amountVes + tipVes` as one figure against the bank app.' }
     }
   },
 
@@ -2496,6 +2530,35 @@ const paths = {
         429: response('TooManyRequests'),
         500: response('ServerError'),
         503: response('ServiceUnavailable')
+      }
+    }
+  },
+
+  '/api/v1/payments/tips': {
+    get: {
+      tags: ['Payments'],
+      summary: 'Tips taken over a period',
+      operationId: 'getTipsReport',
+      description: [
+        'Any authenticated staff role — this is the figure a shift is divided by, and whoever hands',
+        'the money out has to be able to read it.',
+        '',
+        '`from` is inclusive and `to` exclusive, so consecutive shifts tile without counting the',
+        'boundary twice. Both are required: a report whose period was guessed is a number somebody',
+        'hands out money against.',
+        '',
+        '**Only SUCCEEDED payments count.** A tip on an unverified Pago Móvil claim is money a diner',
+        '*says* they sent, and paying staff against it is the mistake the confirmation step exists to',
+        'prevent. IN_DOUBT and AMBIGUOUS C2P charges are excluded for the same reason.'
+      ].join('\n'),
+      security: staff,
+      parameters: [
+        { name: 'from', in: 'query', required: true, schema: { type: 'string', format: 'date-time' } },
+        { name: 'to', in: 'query', required: true, schema: { type: 'string', format: 'date-time' } }
+      ],
+      responses: {
+        200: { description: 'Tips over the period.', content: { 'application/json': { schema: ref('TipsReport') } } },
+        ...commonErrors
       }
     }
   },

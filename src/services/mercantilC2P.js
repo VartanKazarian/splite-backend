@@ -137,7 +137,7 @@ function asReferenceConflict(err, reference) {
  */
 async function createC2PPayment({
   restaurantId, billId, amountVes, payer, idempotencyKey = null, payerId = null,
-  splitParticipantId = null,
+  splitParticipantId = null, tipVes = 0,
   // The bank client is injectable so the settlement and idempotency guarantees
   // can be exercised against a real Postgres without a real Mercantil. Nothing
   // in production passes it; the default binds this restaurant's sealed
@@ -146,6 +146,16 @@ async function createC2PPayment({
 }) {
   const amount = toPaymentAmount(amountVes);
   if (amount === null) throw new ApiError('INVALID_AMOUNT', 'Invalid payment amount');
+
+  // A tip of nothing is the ordinary case, so zero is valid here where it is
+  // not for the amount -- `toPaymentAmount` rejects it, and rightly, since a
+  // payment of nothing moves no money.
+  const tip = tipVes == null || String(tipVes) === '0' ? 0n : toPaymentAmount(tipVes);
+  if (tip === null) throw new ApiError('INVALID_AMOUNT', 'Invalid tip amount');
+
+  // What Mercantil is asked to pull. The bill only ever sees `amount`; the
+  // diner's bank sees the whole of what they agreed to hand over.
+  const charged = amount + tip;
 
   // Built before anything is written: a misconfigured rail must fail without
   // leaving a PENDING payment nobody will ever resolve.
@@ -186,6 +196,7 @@ async function createC2PPayment({
       // Credited to its share when the charge settles (directly, or on a later
       // staff resolution of an in-doubt charge).
       splitParticipantId,
+      tipVes: tip,
       reason: 'C2P charge submitted to Mercantil'
     });
 
@@ -201,7 +212,7 @@ async function createC2PPayment({
 
   let result;
   try {
-    result = await client.charge({ invoiceNumber, amountVesMinor: amount, payer });
+    result = await client.charge({ invoiceNumber, amountVesMinor: charged, payer });
   } catch (err) {
     if (err instanceof MercantilC2PError && err.code === 'BANK_INDETERMINATE') {
       // The only honest answer. Not an error to the caller: the charge exists,
@@ -275,7 +286,11 @@ async function createC2PPayment({
     details: { billId, billStatus: settlement.status }
   });
 
-  return { paymentId: payment.id, status: 'SUCCEEDED', invoiceNumber, bankReference: reference, settlement };
+  return {
+    paymentId: payment.id, status: 'SUCCEEDED', invoiceNumber, bankReference: reference,
+    tipVes: tip.toString(), totalChargedVes: charged.toString(),
+    settlement
+  };
 }
 
 /**

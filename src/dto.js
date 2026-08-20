@@ -200,6 +200,11 @@ function paymentClaim(row) {
     id: row.id,
     billId: row.bill_id,
     amountVes: row.amount_ves,
+    // What the payer added on top. Kept beside the amount rather than folded
+    // into it: staff verify `amountVes + tipVes` as one figure against the bank
+    // app, but only `amountVes` settles the bill.
+    tipVes: row.tip_ves ?? '0',
+    totalPaidVes: (BigInt(row.amount_ves) + BigInt(row.tip_ves ?? 0)).toString(),
     status: row.status,
     paymentMethod: row.payment_method,
     declaredReference: row.declared_reference ?? null,

@@ -835,6 +835,14 @@
             "type": "string",
             "format": "uuid",
             "description": "Optional. Settle one participant share of a persistent split; the payment may not exceed what is left on that share, and is refused with 409 SPLIT_STALE if the bill changed after the split was agreed."
+          },
+          "tipMinorUnits": {
+            "type": "string",
+            "pattern": "^[0-9]+$",
+            "description": "Optional voluntary tip, default 0. Added to what the payer hands over, **never to the bill** — `amountMinorUnits` alone settles it.",
+            "examples": [
+              "756710"
+            ]
           }
         }
       },
@@ -912,6 +920,22 @@
           },
           "usdReference": {
             "$ref": "#/components/schemas/UsdReference"
+          },
+          "tipVes": {
+            "type": "string",
+            "pattern": "^[0-9]+$",
+            "description": "The tip on this payment. Excluded from every bill figure above.",
+            "examples": [
+              "756710"
+            ]
+          },
+          "totalChargedVes": {
+            "type": "string",
+            "pattern": "^[0-9]+$",
+            "description": "What the payer actually handed over: the settled amount plus the tip.",
+            "examples": [
+              "756710"
+            ]
           }
         }
       },
@@ -1189,6 +1213,72 @@
           "updatedAt": {
             "type": "string",
             "format": "date-time"
+          }
+        }
+      },
+      "TipsReport": {
+        "type": "object",
+        "description": "Tips over a period, and how they arrived. The split by arrival is the point: a cash tip is already in the till, an electronic one is a debt to staff until it is paid out.",
+        "properties": {
+          "from": {
+            "type": "string",
+            "format": "date-time",
+            "description": "Inclusive."
+          },
+          "to": {
+            "type": "string",
+            "format": "date-time",
+            "description": "Exclusive, so consecutive shifts tile without double-counting."
+          },
+          "currency": {
+            "type": "string",
+            "const": "VES"
+          },
+          "totalTipsVes": {
+            "type": "string",
+            "pattern": "^[0-9]+$",
+            "description": "Integer minor units (céntimos) as a string, so values beyond 2^53 survive JSON.",
+            "examples": [
+              "756710"
+            ]
+          },
+          "inTillVes": {
+            "type": "string",
+            "pattern": "^[0-9]+$",
+            "description": "Tips taken as cash. The money is physically present; only its division is open.",
+            "examples": [
+              "756710"
+            ]
+          },
+          "owedToStaffVes": {
+            "type": "string",
+            "pattern": "^[0-9]+$",
+            "description": "Tips that arrived electronically, so the restaurant holds them and owes them out.",
+            "examples": [
+              "756710"
+            ]
+          },
+          "byMethod": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "paymentMethod": {
+                  "type": "string"
+                },
+                "payments": {
+                  "type": "integer"
+                },
+                "tipsVes": {
+                  "type": "string",
+                  "pattern": "^[0-9]+$",
+                  "description": "Integer minor units (céntimos) as a string, so values beyond 2^53 survive JSON.",
+                  "examples": [
+                    "756710"
+                  ]
+                }
+              }
+            }
           }
         }
       },
@@ -2258,6 +2348,22 @@
               "756710"
             ]
           },
+          "tipVes": {
+            "type": "string",
+            "pattern": "^[0-9]+$",
+            "description": "The voluntary tip declared with this payment. Settles nothing on the bill.",
+            "examples": [
+              "756710"
+            ]
+          },
+          "totalPaidVes": {
+            "type": "string",
+            "pattern": "^[0-9]+$",
+            "description": "`amountVes + tipVes` — the figure to look for in the bank app.",
+            "examples": [
+              "756710"
+            ]
+          },
           "status": {
             "type": "string",
             "enum": [
@@ -2355,6 +2461,14 @@
             "type": "string",
             "format": "uuid",
             "description": "Optional. Attribute this declared payment to a split share, credited when staff confirm it."
+          },
+          "tipVes": {
+            "type": "string",
+            "pattern": "^[0-9]+$",
+            "description": "Optional voluntary tip, default 0. Part of the same transfer: staff verify `amountVes + tipVes` as one figure against the bank app.",
+            "examples": [
+              "756710"
+            ]
           }
         }
       },
@@ -5582,6 +5696,65 @@
           },
           "503": {
             "$ref": "#/components/responses/ServiceUnavailable"
+          }
+        }
+      }
+    },
+    "/api/v1/payments/tips": {
+      "get": {
+        "tags": [
+          "Payments"
+        ],
+        "summary": "Tips taken over a period",
+        "operationId": "getTipsReport",
+        "description": "Any authenticated staff role — this is the figure a shift is divided by, and whoever hands\nthe money out has to be able to read it.\n\n`from` is inclusive and `to` exclusive, so consecutive shifts tile without counting the\nboundary twice. Both are required: a report whose period was guessed is a number somebody\nhands out money against.\n\n**Only SUCCEEDED payments count.** A tip on an unverified Pago Móvil claim is money a diner\n*says* they sent, and paying staff against it is the mistake the confirmation step exists to\nprevent. IN_DOUBT and AMBIGUOUS C2P charges are excluded for the same reason.",
+        "security": [
+          {
+            "staffAuth": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "from",
+            "in": "query",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "date-time"
+            }
+          },
+          {
+            "name": "to",
+            "in": "query",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "date-time"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Tips over the period.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TipsReport"
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "429": {
+            "$ref": "#/components/responses/TooManyRequests"
+          },
+          "500": {
+            "$ref": "#/components/responses/ServerError"
           }
         }
       }
