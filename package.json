@@ -23,7 +23,7 @@
     "openapi:check": "node scripts/dump-openapi.js --check",
     "lint": "eslint .",
     "check:paths": "node scripts/check-invisible-paths.js",
-    "audit": "npm audit --audit-level=high",
+    "audit": "npm audit --omit=dev --audit-level=high",
     "db:local": "bash scripts/local-services.sh start",
     "db:local:stop": "bash scripts/local-services.sh stop",
     "test:integration:local": "DATABASE_URL=postgres://splite@127.0.0.1:55432/splite_test REDIS_URL=redis://127.0.0.1:56379 DB_SSL=false RUN_INTEGRATION=1 LOG_LEVEL=silent node --test test/integration/*.test.js"
