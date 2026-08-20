@@ -113,11 +113,34 @@ describe('the claims queue, made visible', { skip }, () => {
     // PENDING payment in the installation -- migration 007's pending index
     // carries no restaurant column.
     //
-    // Seq scan is disabled for the check rather than asserted against: on a
-    // test table of a dozen rows the planner rightly reads the whole thing, and
-    // a test that failed for that reason would be measuring the fixture, not
-    // the schema. What this pins is that the index *can* serve the query --
-    // which of the two is cheaper at a given size is Postgres's decision.
+    // This asserts the *schema*, not the plan. The first version checked which
+    // index EXPLAIN picked, with seq scan disabled so a small table could not
+    // sway it -- and it still could: with both indexes available the planner
+    // costed migration 007's as cheaper on a dozen rows and chose that instead.
+    // Which index wins at a given size is Postgres's decision and changes with
+    // the statistics; what this repository can promise is that the right index
+    // is there.
+    const { rows } = await db.query(
+      `SELECT indexdef FROM pg_indexes
+        WHERE tablename = 'payments' AND indexname = 'payments_pending_claims_idx'`
+    );
+    assert.equal(rows.length, 1, 'the tenant-scoped pending-claims index is missing');
+
+    const definition = rows[0].indexdef;
+    // Restaurant first, because that is the equality predicate; created_at
+    // second, so the oldest claim is the first row of the scan.
+    assert.match(definition, /\(restaurant_id, created_at\)/);
+    // Postgres normalises the predicate it stores -- `status = 'PENDING'` comes
+    // back as `((status)::text = 'PENDING'::text)` -- so these match the values
+    // rather than the spelling.
+    assert.match(definition, /WHERE/);
+    assert.match(definition, /'PENDING'/);
+    assert.match(definition, /'PAGO_MOVIL'/);
+  });
+
+  it('the badge query does not have to read the whole table', async () => {
+    // The weaker claim that is still worth making, and that does not depend on
+    // which of the two indexes the planner prefers today.
     await db.withTransaction(async tx => {
       await tx.query('SET LOCAL enable_seqscan = off');
       const { rows } = await tx.query(
@@ -127,7 +150,7 @@ describe('the claims queue, made visible', { skip }, () => {
         [restaurant.id]
       );
       const plan = rows.map(r => r['QUERY PLAN']).join('\n');
-      assert.match(plan, /payments_pending_claims_idx/, `planner chose:\n${plan}`);
+      assert.match(plan, /Index Scan|Index Only Scan|Bitmap Index Scan/, `planner chose:\n${plan}`);
     });
   });
 

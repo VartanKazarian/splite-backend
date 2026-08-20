@@ -15,6 +15,7 @@ opens so a diner's total cannot move while they eat.
 - Short-lived access JWTs plus rotating refresh sessions with reuse detection
 - Redis-backed rate limiting, fail-closed on the auth surface
 - RBAC: `OWNER`, `MANAGER`, `CASHIER`, `WAITER`
+- Optional TOTP second factor with sealed secrets and single-use recovery codes
 - Signed, expiring, rotatable QR tokens; hashed guest session tokens
 - Guest bill access scoped to the scanned table, naming no resource ids
 - Audit logging with actor, tenant, IP and request id
@@ -397,6 +398,71 @@ everywhere. So refresh is for renewing an expired access token, and nothing else
 deactivated mid-session stops working inside the access token's fifteen minutes
 rather than at the end of them. It returns the same `user` shape as login and
 refresh, so a client stores one type.
+
+## Second factor
+
+Passwords are the only thing between a stolen laptop and a restaurant's
+takings: an OWNER token reads every bill, confirms any declared payment, and
+changes where the money is paid out. Login throttling makes *guessing* slow; it
+does nothing about a password that has already leaked somewhere else, which is
+the ordinary way accounts are lost.
+
+**TOTP**, and that is not really a choice. Email codes need the mail provider
+this deployment does not have yet, and SMS in Venezuela is both a cost per login
+and a dependency on a network that is not always there. A TOTP secret works
+offline, on a phone the staff member already carries. It is implemented in
+`src/services/totp.js` rather than pulled in — forty lines of a standard that
+has not moved since 2011, and a dependency in the authentication path is a
+supply chain in the authentication path. `test/totp.test.js` runs RFC 6238's own
+published vectors, which is the only real proof that every authenticator app
+will agree with us.
+
+With a factor enabled, **a correct password is not a session.** It returns
+`{ mfaRequired: true, challenge }`, and the challenge is spent at
+`POST /api/v1/auth/login/mfa` with a code. Branch on `mfaRequired`, not on the
+absence of a token. The challenge names the account and nothing else — no role,
+no restaurant — and cannot be presented as an access token: it carries
+`type: 'mfa_challenge'`, and `authenticateToken` accepts only `type: 'access'`.
+That check is what lets it share the access secret instead of introducing a
+fifth one, and it is verified in both directions.
+
+Enrolment is two steps on purpose. `POST /auth/mfa/enrol` mints a secret and
+enables nothing; the account still signs in on its password alone until
+`POST /auth/mfa/confirm` proves the authenticator holds the same secret. A
+factor switched on by generation alone would lock out anybody whose phone failed
+to scan the QR. Disabling costs a code too — a borrowed unlocked laptop would
+otherwise strip the factor and leave the account on a password its borrower may
+already have. Nothing here touches *another* user's factor, including for an
+OWNER: a manager who can remove a colleague's second factor is a manager who can
+take over their account.
+
+**A code is spent once.** It stays valid for the whole of its thirty seconds, so
+`users.mfa_last_step` records the last step accepted and anything at or below it
+is refused — including the code that switched the factor on. One consequence
+worth knowing: enrolling and then immediately signing in on a second device
+inside the same thirty seconds will refuse the code showing on screen. It
+resolves itself at the next step, and the alternative is a replayable code.
+
+**Recovery codes are not a nicety.** There is no admin surface in this system —
+inviting a restaurant is a CLI command — so an owner who loses their phone with
+no code is locked out of their own business with nobody able to let them back
+in. Ten are issued when the factor is confirmed, readable exactly once, and each
+is spendable in place of a TOTP code. The response never says which kind
+completed a login: distinguishing them would tell somebody holding a stolen
+password whether they were guessing against six digits or eighty bits.
+
+The secret is sealed at rest with AES-256-GCM under its own key ring
+(`MFA_SECRET_KEYS`), deliberately not the payment one — a deployment with no
+bank credentials must still be able to offer MFA, and a leaked payment key must
+not also be a leaked authentication key. Both stores share one implementation in
+`src/utils/sealedBox.js`. Without a ring configured, enrolment returns 503
+rather than storing anything.
+
+It is **optional per user**, and there is no enforcement point that requires it
+of a role. That is deliberate for now rather than finished: a mandatory rollout
+with no admin surface and no mail is a way to lock people out of their own
+accounts. Requiring it of OWNER is a decision to take once there is a way to
+help somebody who gets stuck.
 
 ## Bill line items
 
@@ -1801,9 +1867,6 @@ From the working copy, onto the current model:
   `src/middleware/webhookSignature.js` is wired to it, but the only provider
   defined is `SPLITE` — our own HMAC scheme. A Venezuelan rail is an entry in
   `PROVIDERS` supplying its own verifier and parser, and nothing else changes.
-- **MFA is unstarted**, and it is the auth work that would actually matter. See
-  [Login throttling](#login-throttling) for why the per-account counter added
-  alongside it is not a substitute.
 
 ### Security and correctness
 

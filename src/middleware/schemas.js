@@ -16,6 +16,24 @@ const loginSchema = Joi.object({
   password: Joi.string().min(1).max(128).required()
 });
 
+/**
+ * A second factor, submitted as either kind.
+ *
+ * One field for a TOTP code and a recovery code both, because the server must
+ * not behave differently for the two -- a schema that rejected an
+ * eighteen-character value as "not a code" would tell an attacker which one
+ * they were up against. Wide enough for either, bounded so it cannot be used
+ * to post a novel.
+ */
+const mfaCode = Joi.string().trim().min(6).max(32).required();
+
+const mfaChallengeSchema = Joi.object({
+  challenge: Joi.string().min(20).max(4096).required(),
+  code: mfaCode
+});
+
+const mfaCodeSchema = Joi.object({ code: mfaCode });
+
 const refreshSchema = Joi.object({
   refreshToken: Joi.string().min(20).max(4096).required()
 });
@@ -529,6 +547,8 @@ const validateQuery = schema => validate(schema, 'query');
 module.exports = {
   registerSchema,
   loginSchema,
+  mfaChallengeSchema,
+  mfaCodeSchema,
   refreshSchema,
   guestSessionSchema,
   onboardingSignupSchema,

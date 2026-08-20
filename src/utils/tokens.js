@@ -35,6 +35,36 @@ function signRefreshToken(user, jti) {
   );
 }
 
+/**
+ * The token that stands between a correct password and a session.
+ *
+ * Signed with the access secret but carrying `type: 'mfa_challenge'`, which
+ * `authenticateToken` already refuses -- it checks for `type === 'access'` and
+ * rejects anything else, so a challenge cannot be presented as a session. That
+ * check is what makes reusing the secret safe, and it is the reason this does
+ * not introduce a fifth one.
+ *
+ * It names the user and nothing else useful: no role, no restaurant. A
+ * challenge is not authorisation, and the login path re-reads the user anyway
+ * before issuing anything.
+ */
+function signMfaChallenge(userId) {
+  return jwt.sign(
+    { sub: userId, type: 'mfa_challenge' },
+    config.jwt.accessSecret,
+    { ...JWT_COMMON, expiresIn: config.mfa.challengeTtlSeconds, algorithm: 'HS256' }
+  );
+}
+
+function verifyMfaChallenge(token) {
+  const claims = jwt.verify(token, config.jwt.accessSecret, { ...JWT_COMMON, algorithms: ['HS256'] });
+  // Belt and braces against the mirror of the risk above: an *access* token
+  // must not be usable as a challenge either, or a stolen one would let its
+  // holder complete somebody's half-finished login.
+  if (claims.type !== 'mfa_challenge' || !claims.sub) throw new Error('Not an MFA challenge');
+  return claims;
+}
+
 // algorithms is pinned on verify to block the "alg: none" / algorithm
 // confusion class of attacks.
 function verifyAccessToken(token) {
@@ -89,6 +119,8 @@ module.exports = {
   safeEqual,
   signAccessToken,
   signRefreshToken,
+  signMfaChallenge,
+  verifyMfaChallenge,
   verifyAccessToken,
   verifyRefreshToken,
   signQrPayload,

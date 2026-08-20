@@ -124,6 +124,25 @@ module.exports = {
     issuer: 'splite-api',
     audience: 'splite'
   },
+  /**
+   * Second-factor authentication.
+   *
+   * A key ring of its own rather than a share of the payment one: a deployment
+   * with no bank credentials must still be able to offer MFA, and a leaked
+   * payment key must not also be a leaked authentication key. Same lazy
+   * treatment -- absent means enrolment fails, not that the app refuses to boot.
+   *
+   * `challengeTtlSeconds` bounds the gap between a correct password and the
+   * code that completes it. Long enough to open an authenticator app and read
+   * six digits; short enough that a challenge captured in transit is worthless
+   * by the time it is replayed.
+   */
+  mfa: {
+    secretKeys: process.env.MFA_SECRET_KEYS || '',
+    activeKeyVersion: integer('MFA_ACTIVE_KEY_VERSION', 1),
+    challengeTtlSeconds: integer('MFA_CHALLENGE_TTL_SECONDS', 300),
+    recoveryCodeCount: integer('MFA_RECOVERY_CODE_COUNT', 10)
+  },
   get qrSigningSecret() { return secretValue('qrSigningSecret'); },
   // 0 means no expiry, which is the default: a table QR is printed onto a
   // sticker and has to keep working. Revocation is rotating the table's nonce,
