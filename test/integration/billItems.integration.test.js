@@ -192,10 +192,10 @@ describe('bill items', { skip }, () => {
     // The restaurant's rate moves; the open bill keeps the one it snapshotted.
     await db.query('UPDATE restaurants SET vat_bps = 2000 WHERE id = $1', [restaurant.id]);
     try {
-      const { bill: after } = await add(bill.id, dish.id, 1);
-      assert.equal(after.vat_bps, 1600, 'the bill keeps the rate it opened with');
-      assert.equal(after.subtotal_minor, '20000');
-      assert.equal(after.vat_minor, '3200', '16% still, not 20%');
+      const { bill: updated } = await add(bill.id, dish.id, 1);
+      assert.equal(updated.vat_bps, 1600, 'the bill keeps the rate it opened with');
+      assert.equal(updated.subtotal_minor, '20000');
+      assert.equal(updated.vat_minor, '3200', '16% still, not 20%');
     } finally {
       await db.query('UPDATE restaurants SET vat_bps = 0 WHERE id = $1', [restaurant.id]);
     }

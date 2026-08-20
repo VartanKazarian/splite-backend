@@ -22,7 +22,6 @@ const FALLBACK_CODES = {
 };
 const genericFallback = status => (status >= 500 ? 'INTERNAL_ERROR' : 'VALIDATION_FAILED');
 
-// eslint-disable-next-line no-unused-vars -- Express identifies error handlers by arity (4 args).
 function errorHandler(err, req, res, next) {
   // An ApiError was raised deliberately and its message is written for a
   // caller. Anything else is a bug, and its message is withheld: unexpected

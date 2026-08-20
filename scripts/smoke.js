@@ -48,7 +48,7 @@ async function call(method, path, { body, auth = true, headers = {} } = {}) {
     body: body ? JSON.stringify(body) : undefined
   });
   const text = await res.text();
-  let parsed = null;
+  let parsed;
   try { parsed = text ? JSON.parse(text) : null; } catch { parsed = { raw: text.slice(0, 200) }; }
   return { status: res.status, body: parsed };
 }

@@ -128,8 +128,8 @@ describe('payment provider credentials', { skip }, () => {
       restaurantId: restaurant.id, provider: 'MERCANTIL', enable: true
     });
 
-    const before = await call('GET', '/api/v1/account/payment-providers', ownerToken);
-    assert.equal(before.body.data[0].enabled, true);
+    const initial = await call('GET', '/api/v1/account/payment-providers', ownerToken);
+    assert.equal(initial.body.data[0].enabled, true);
 
     const res = await call('PUT', '/api/v1/account/payment-providers/MERCANTIL', ownerToken, {
       ...CREDS, secretKey: 'a-different-key'
@@ -170,7 +170,7 @@ describe('payment provider credentials', { skip }, () => {
     await call('PUT', '/api/v1/account/payment-providers/MERCANTIL', ownerToken, CREDS);
     assert.equal((await call('DELETE', '/api/v1/account/payment-providers/MERCANTIL', ownerToken)).status, 204);
 
-    const after = await call('GET', '/api/v1/account/payment-providers', ownerToken);
-    assert.deepEqual(after.body.data, []);
+    const updated = await call('GET', '/api/v1/account/payment-providers', ownerToken);
+    assert.deepEqual(updated.body.data, []);
   });
 });

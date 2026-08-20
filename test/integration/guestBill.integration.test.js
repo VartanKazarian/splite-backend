@@ -310,11 +310,11 @@ describe('guest bill access', { skip }, () => {
     const bill = await fixtures.createBill({ restaurantId: restaurant.id, tableId: t.id, totalDue: 4000 });
     const guest = await scan(t);
 
-    const before = await fixtures.readBill(bill.id);
+    const initial = await fixtures.readBill(bill.id);
     await request('POST', '/api/v1/guest/bill/split/preview', {
       ...guest, body: { mode: 'EQUAL', participants: [{ id: 'a' }, { id: 'b' }] }
     });
-    assert.deepEqual(await fixtures.readBill(bill.id), before);
+    assert.deepEqual(await fixtures.readBill(bill.id), initial);
   });
 
   it('ending a session revokes it', async () => {
@@ -325,9 +325,9 @@ describe('guest bill access', { skip }, () => {
     assert.equal((await request('GET', '/api/v1/guest/bill', guest)).status, 200);
     assert.equal((await request('DELETE', '/api/v1/guest/sessions', guest)).status, 204);
 
-    const after = await request('GET', '/api/v1/guest/bill', guest);
-    assert.equal(after.status, 401, 'the token stops working the moment the session ends');
-    assert.equal(after.body.error.code, 'GUEST_SESSION_INVALID');
+    const updated = await request('GET', '/api/v1/guest/bill', guest);
+    assert.equal(updated.status, 401, 'the token stops working the moment the session ends');
+    assert.equal(updated.body.error.code, 'GUEST_SESSION_INVALID');
   });
 
   it('cannot reach any staff endpoint with a guest credential', async () => {

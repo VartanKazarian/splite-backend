@@ -278,8 +278,8 @@ describe('persistent bill splits against a real Postgres', { skip }, () => {
       amountPaidMinorUnits: 10000, splitParticipantId: shareA
     });
 
-    const after = await splits.getSplit({ restaurantId: restaurant.id, splitId: split.split.id });
-    const a = after.participants.find(p => p.id === shareA);
+    const updated = await splits.getSplit({ restaurantId: restaurant.id, splitId: split.split.id });
+    const a = updated.participants.find(p => p.id === shareA);
     assert.equal(a.amount_paid_ves, '10000', 'the share is credited');
     assert.equal((await fixtures.readBill(bill.id)).amount_paid_ves, '10000', 'the bill advances too');
   });
@@ -527,8 +527,8 @@ describe('persistent bill splits against a real Postgres', { skip }, () => {
     // Another round.
     await billItems.addItem({ restaurantId: restaurant.id, billId: bill.id, productId: product, quantity: 1 });
 
-    const after = await splits.getSplit({ restaurantId: restaurant.id, splitId: split.split.id });
-    assert.equal(after.split.status, 'STALE', 'the split no longer governs the bill');
+    const updated = await splits.getSplit({ restaurantId: restaurant.id, splitId: split.split.id });
+    assert.equal(updated.split.status, 'STALE', 'the split no longer governs the bill');
     assert.equal((await fixtures.readBill(bill.id)).total_due_ves, '30000');
 
     // And the read surface says so, rather than showing nothing.
@@ -607,8 +607,8 @@ describe('persistent bill splits against a real Postgres', { skip }, () => {
     await billItems.updateQuantity({
       restaurantId: restaurant.id, billId: bill.id, itemId: item.id, quantity: 2
     });
-    const after = await splits.getSplit({ restaurantId: restaurant.id, splitId: split.split.id });
-    assert.equal(after.split.status, 'ACTIVE', 'unchanged total, unchanged agreement');
+    const updated = await splits.getSplit({ restaurantId: restaurant.id, splitId: split.split.id });
+    assert.equal(updated.split.status, 'ACTIVE', 'unchanged total, unchanged agreement');
   });
 
   it('an ITEMS split persists whole-line claims and credits across rails on confirm', async () => {
@@ -642,7 +642,7 @@ describe('persistent bill splits against a real Postgres', { skip }, () => {
       restaurantId: restaurant.id, billId: bill.id, amountVes: '12000',
       reference: '778899', payer: { type: 'GUEST', id: null }, splitParticipantId: ana.id
     });
-    let mid = await splits.getSplit({ restaurantId: restaurant.id, splitId: split.split.id });
+    const mid = await splits.getSplit({ restaurantId: restaurant.id, splitId: split.split.id });
     assert.equal(mid.participants.find(p => p.ext_ref === 'a').amount_paid_ves, '0', 'a pending claim credits nothing');
 
     // Staff confirm it: the same transition that settles the bill credits the share.

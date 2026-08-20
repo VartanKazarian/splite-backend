@@ -46,8 +46,9 @@ opens so a diner's total cannot move while they eat.
 
 - Multi-stage Docker image running as a non-root user; hardened Compose stack
 - Railway deployment config, with migrations as a pre-deploy step
-- Node 22; CI: syntax check, OpenAPI drift check, unit tests, dependency audit,
-  invisible-character guard, image build
+- Node 22; CI: ESLint, OpenAPI drift check, unit tests, integration tests
+  against real Postgres and Redis, dependency audit, invisible-character guard,
+  image build
 
 Restaurants arrive through a reviewed registration form rather than a seed
 script — see [Registering a restaurant](#registering-a-restaurant).
@@ -71,6 +72,19 @@ SEED_OWNER_EMAIL=owner@example.com SEED_OWNER_PASSWORD=a-long-dev-password npm r
 npm test
 npm start
 ```
+
+`npm run lint` is ESLint over every JavaScript file in the repository, on
+`@eslint/js` recommended plus the rules that catch what the previous
+`node --check` could not: unused variables, shadowed bindings, and assignments
+to undeclared names. Shadowing is the one that earns its place here — money
+moves through nested scopes, and an inner binding that masks an outer one is how
+the wrong figure gets written while every line still reads correctly.
+
+There is deliberately **no style layer**: no quote, semicolon, indent or
+line-length rules. Reformatting a codebase to satisfy a linter buries the commits
+that change behaviour, and the reviews here are about behaviour. A formatter, if
+it is ever wanted, should arrive as its own decision rather than as a side effect
+of switching on a linter.
 
 Without Docker, `npm run db:local` starts a user-space PostgreSQL and Redis on
 non-default ports — no daemon, no `sudo` — and `npm run test:integration:local`
@@ -1809,11 +1823,6 @@ From the working copy, onto the current model:
 ### Tooling
 
 - **`npm audit` cannot fail the build** (`continue-on-error: true`).
-- **There is still no ESLint.** `lint` now pipes through `xargs -n 1 node --check`
-  so a syntax error does fail the build — it previously used `find -exec`, which
-  returns *find's* exit code and let an unparseable test file reach CI — but
-  `node --check` only parses. No rule about unused variables, shadowing or
-  accidental globals is enforced.
 - **`scripts/` still uses `console.*`.** Only `src/` was converted to structured
   logging; the migrate and seed CLIs were left alone deliberately, but a deploy
   step arguably deserves structured output too.
