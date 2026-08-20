@@ -22,10 +22,44 @@
 --     exactly as it is -- `TX-4F2A-9` must not become `429`
 --   * leading zeros are kept, so `0900...` and `900...` stay distinct
 --
--- IF THIS MIGRATION FAILS on payments_provider_reference_idx, do not retry it.
--- A collision means two payments are already holding two spellings of one bank
--- movement, which is the double settlement all of the above exists to prevent.
--- The rows want a person, not a rerun: one of them has to be refunded.
+-- IF THIS MIGRATION FAILS, IT WILL KEEP FAILING, AND THAT IS THE POINT.
+--
+-- A collision here means two payments are already holding two spellings of one
+-- bank movement -- the double settlement all of the above exists to prevent.
+-- `scripts/migrate.js` writes the ledger row inside the same transaction as the
+-- migration, so a failure records nothing and the next deploy tries again and
+-- stops at the same place. There is no skip, and none should be added: a person
+-- has to look at the rows and refund one of them, and until they do, every
+-- later migration is correctly held back.
+--
+-- The check below runs first so the failure names the payments instead of
+-- surfacing as a bare 23505 from the UPDATE.
+
+DO $$
+DECLARE
+  collisions TEXT;
+BEGIN
+  SELECT string_agg(ids, '; ')
+    INTO collisions
+    FROM (
+      SELECT string_agg(id::text, ', ') AS ids
+        FROM payments
+       WHERE provider = 'MERCANTIL'
+         AND provider_payment_id IS NOT NULL
+         AND provider_payment_id ~ '^[0-9\s.\-/]+$'
+         AND regexp_replace(provider_payment_id, '[^0-9]', '', 'g') <> ''
+       GROUP BY regexp_replace(provider_payment_id, '[^0-9]', '', 'g')
+      HAVING count(*) > 1
+    ) AS duplicated;
+
+  IF collisions IS NOT NULL THEN
+    RAISE EXCEPTION
+      'Two payments already hold one bank movement under different spellings: %. '
+      'Refund one of them before deploying; this migration cannot decide which.',
+      collisions
+      USING ERRCODE = 'unique_violation';
+  END IF;
+END $$;
 
 UPDATE payments
    SET provider_payment_id = regexp_replace(provider_payment_id, '[^0-9]', '', 'g')

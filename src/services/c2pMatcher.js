@@ -30,9 +30,12 @@ const OUTCOME = Object.freeze({
 });
 
 /**
- * Digits only. Bank references arrive spaced, dashed and zero-padded depending
- * on which endpoint returned them, and two spellings of one reference must not
- * look like two movements.
+ * Digits only.
+ *
+ * No longer the reference normaliser -- that is `canonicalReference` below, and
+ * this survives for the phone comparison, where every input really is just
+ * digits with punctuation. Reaching for this on a reference is what produced
+ * two spellings of one movement in the first place.
  */
 const digitsOnly = value => String(value ?? '').replace(/\D/g, '');
 
@@ -68,7 +71,14 @@ function canonicalReference(value) {
   // else. Anything outside that alphabet is an identifier, not a number.
   if (/^[\d\s.\-/]+$/.test(text)) {
     const digits = digitsOnly(text);
-    return digits || null;
+    // Separators and no digits at all. Not a number after all, so it falls
+    // under the rule below rather than being destroyed: returning null here put
+    // NULL into `provider_payment_id`, whose unique index is partial
+    // (`WHERE provider_payment_id IS NOT NULL`), so the one movement this whole
+    // function exists to pin down would have been left unconstrained and free
+    // to settle a second bill. Migration 025 refuses to blank such a value for
+    // the same reason, and the two rules have to agree.
+    return digits || text;
   }
   return text;
 }
@@ -163,7 +173,7 @@ function matchInDoubtPayment(movements, payment, consumedReferences = new Set())
     // two payments that look identical in every field we hold.
     return {
       outcome: OUTCOME.AMBIGUOUS,
-      candidates: byPhone.map(m => String(m.reference)),
+      candidates: byPhone.map(m => canonicalReference(m.reference)),
       reason: 'Several movements match on both amount and payer phone'
     };
   }
@@ -174,7 +184,11 @@ function matchInDoubtPayment(movements, payment, consumedReferences = new Set())
   // cross-table error this module exists to prevent.
   return {
     outcome: OUTCOME.AMBIGUOUS,
-    candidates: candidates.map(m => String(m.reference)),
+    // Canonical, like the MATCHED path's write. These are logged to
+    // `c2p_resolution_attempts` and shown to staff, who then search for them --
+    // publishing a spelling that matches nothing stored sends them looking for
+    // a movement they cannot find.
+    candidates: candidates.map(m => canonicalReference(m.reference)),
     reason: candidates.length === 1
       ? 'The amount matches but the payer phone does not'
       : 'Several movements share the amount and none identifies the payer'

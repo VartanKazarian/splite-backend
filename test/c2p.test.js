@@ -203,9 +203,31 @@ test('leading zeros are preserved, so padded references stay distinct', () => {
 });
 
 test('a reference that carries no identity at all is null, not empty', () => {
-  for (const empty of ['', '   ', '- - -', null, undefined]) {
+  for (const empty of ['', '   ', null, undefined]) {
     assert.equal(canonicalReference(empty), null, JSON.stringify(empty));
   }
+});
+
+test('separators with no digits are kept, never turned into nothing', () => {
+  // The column's unique index is partial -- `WHERE provider_payment_id IS NOT
+  // NULL` -- so returning null here would leave the one movement this function
+  // exists to pin down unconstrained, free to settle a second bill. Migration
+  // 025 refuses to blank the same value, and the two rules have to agree.
+  for (const odd of ['- - -', '.', '/ /', '---']) {
+    assert.equal(canonicalReference(odd), odd, JSON.stringify(odd));
+  }
+});
+
+test('the references shown to staff are the ones that were stored', () => {
+  // AMBIGUOUS candidates are logged to c2p_resolution_attempts and displayed;
+  // staff then search for them. Publishing a spelling that matches nothing in
+  // provider_payment_id sends somebody looking for a movement they cannot find.
+  const r = matchInDoubtPayment([
+    movement({ reference: '111 111 111 111', phoneOrigin: '04141111234' }),
+    movement({ reference: '222-222-222-222', phoneOrigin: '04145551234' })
+  ], payment());
+  assert.equal(r.outcome, OUTCOME.AMBIGUOUS);
+  assert.deepEqual(r.candidates, ['111111111111', '222222222222']);
 });
 
 test('a movement already spent under another spelling is not a candidate', () => {

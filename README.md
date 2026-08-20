@@ -782,9 +782,19 @@ and stripping it to `429` would lose it and invite a collision with a real
 reference. Leading zeros are kept too, so `0900…` and `900…` stay distinct —
 merging references that may genuinely differ is a worse failure than leaving one
 split, and if Mercantil turns out to pad inconsistently, that is a question for
-them rather than a guess for us. Migration 025 backfills the rows written under
-the old rule; if it fails on the unique index, two payments are already holding
-one movement and the rows want a person, not a rerun.
+them rather than a guess for us. A value that is *only* separators is kept
+verbatim as well: the unique index is partial (`WHERE provider_payment_id IS NOT
+NULL`), so blanking it would leave that movement unconstrained and free to
+settle a second bill — the very thing being prevented.
+
+Migration 025 backfills the rows written under the old rule, and checks for
+collisions first so a failure names the payments rather than surfacing as a bare
+constraint violation. **That failure repeats on every deploy, deliberately.**
+The migration ledger row is written in the same transaction as the migration, so
+a failure records nothing and the next deploy stops in the same place; there is
+no skip and none should be added. Two payments holding one movement is a double
+settlement, a person has to refund one of them, and until they do, holding back
+every later migration is the correct outcome.
 
 **A matched charge the bill can no longer take is parked, not retried forever.**
 Once the bank names a movement for a charge, `IN_DOUBT` has stopped being true —

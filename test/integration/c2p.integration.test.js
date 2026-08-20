@@ -474,6 +474,28 @@ describe('Mercantil C2P against a real Postgres', { skip }, () => {
     assert.equal((await fixtures.readBill(billB.id)).amount_paid_ves, '0');
   });
 
+  it('a reference of nothing but separators is still pinned to one payment', async () => {
+    // The column's unique index is partial, so writing NULL here would leave
+    // the movement unconstrained -- and a movement that can be written twice is
+    // a movement that can settle two bills, which is the thing this whole
+    // spelling rule exists to stop.
+    const bill = await freshBill({ totalDue: 126000, totalDueVes: 126000 });
+    const result = await createC2PPayment({
+      restaurantId: restaurant.id, billId: bill.id, amountVes: '126000',
+      payer: payer(), idempotencyKey: `sep-${seq}-${Math.random().toString(36).slice(2)}`,
+      bankClient: {
+        async charge() {
+          return { status: 'SUCCEEDED', providerPaymentId: null, bankReference: '- - -' };
+        },
+        async search() { return []; }
+      }
+    });
+
+    const { rows } = await db.query(
+      'SELECT provider_payment_id FROM payments WHERE id = $1', [result.paymentId]);
+    assert.equal(rows[0].provider_payment_id, '- - -', 'kept, not blanked into NULL');
+  });
+
   it('a non-numeric provider id survives storage intact', async () => {
     // referenceFor falls back to providerPaymentId when the bank sends no
     // reference. Canonicalising by stripping digits would store `019` here.
