@@ -48,8 +48,8 @@ opens so a diner's total cannot move while they eat.
 - Multi-stage Docker image running as a non-root user; hardened Compose stack
 - Railway deployment config, with migrations as a pre-deploy step
 - Node 22; CI: ESLint, OpenAPI drift check, unit tests, integration tests
-  against real Postgres and Redis, dependency audit, invisible-character guard,
-  image build
+  against real Postgres and Redis, a blocking audit of production dependencies,
+  invisible-character guard, image build
 
 Restaurants arrive through a reviewed registration form rather than a seed
 script — see [Registering a restaurant](#registering-a-restaurant).
@@ -80,6 +80,15 @@ npm start
 to undeclared names. Shadowing is the one that earns its place here — money
 moves through nested scopes, and an inner binding that masks an outer one is how
 the wrong figure gets written while every line still reads correctly.
+
+`npm run audit` is the blocking half of CI's dependency check:
+`npm audit --omit=dev --audit-level=high`, over the dependencies that actually
+reach production, since the image is built with `npm ci --omit=dev`. A
+high-severity advisory in something a payment passes through should stop a
+deploy. CI runs a second, non-blocking audit at `moderate` over everything
+including dev dependencies — worth seeing, and deliberately not worth holding up
+a payment fix for, because a linter advisory that blocks a deploy is a rule that
+gets switched off the first week it fires.
 
 There is deliberately **no style layer**: no quote, semicolon, indent or
 line-length rules. Reformatting a codebase to satisfy a linter buries the commits
@@ -1885,7 +1894,6 @@ From the working copy, onto the current model:
 
 ### Tooling
 
-- **`npm audit` cannot fail the build** (`continue-on-error: true`).
 - **`scripts/` still uses `console.*`.** Only `src/` was converted to structured
   logging; the migrate and seed CLIs were left alone deliberately, but a deploy
   step arguably deserves structured output too.

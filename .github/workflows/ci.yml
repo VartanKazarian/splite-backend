@@ -46,8 +46,24 @@ jobs:
       - name: Unit tests
         run: npm test
 
-      - name: Dependency audit
-        run: npm audit --audit-level=high
+      # Two audits, because they answer different questions and only one of
+      # them should be able to stop a deploy.
+      #
+      # The image is built with `npm ci --omit=dev`, so production dependencies
+      # are what actually reaches a diner's payment. A high-severity advisory
+      # there is a real exposure in a service that moves money, and this fails
+      # the build for it -- which is the point, and was previously impossible:
+      # the step carried `continue-on-error: true`, so a critical advisory in
+      # `pg` was reported in a log nobody reads and the build went green.
+      - name: Dependency audit (production, blocking)
+        run: npm audit --omit=dev --audit-level=high
+
+      # Everything else -- eslint, nodemon, qrcode -- never leaves a developer's
+      # machine or the CI runner. Worth seeing, and deliberately not worth
+      # holding up a payment fix for: a moderate advisory in a linter blocking a
+      # deploy is a rule that gets switched off the first week it fires.
+      - name: Dependency audit (everything, advisory)
+        run: npm audit --audit-level=moderate
         continue-on-error: true
 
       - name: Reject invisible characters in tracked paths
