@@ -169,12 +169,26 @@ async function getActiveSplit({ restaurantId, billId, bill = null }) {
  * payments that cite its shares. Change then is void-what-is-unpaid only by
  * agreeing a fresh split on the remaining balance.
  */
-async function voidSplit({ restaurantId, splitId, actor }) {
+async function voidSplit({ restaurantId, billId, splitId, actor }) {
   const result = await db.withTransaction(async client => {
+    // Scoped to the bill as well as the tenant, and `billId` is required rather
+    // than optional so a caller cannot quietly opt out of the check.
+    //
+    // `/bills/:id/splits/:splitId/void` states a containment relationship, and
+    // until this clause existed nothing enforced it: any of the restaurant's
+    // own bill ids in the path voided any of its splits. Crossed ids in a
+    // client voided the wrong table's plan, the response came back naming a
+    // bill the caller had not asked about, and -- because voiding releases the
+    // one-ACTIVE-split-per-bill index -- the group still using that plan could
+    // have a second one created underneath them.
     const split = (await client.query(
-      `SELECT id, status FROM bill_splits WHERE id = $1 AND restaurant_id = $2 FOR UPDATE`,
-      [splitId, restaurantId]
+      `SELECT id, status FROM bill_splits
+        WHERE id = $1 AND restaurant_id = $2 AND bill_id = $3
+        FOR UPDATE`,
+      [splitId, restaurantId, billId]
     )).rows[0];
+    // Not "wrong bill": a split that is not on this bill does not exist at this
+    // address, which is the same answer a split from another tenant gets.
     if (!split) throw new ApiError('SPLIT_NOT_FOUND', 'Split not found');
     if (split.status !== 'ACTIVE') {
       throw new ApiError('SPLIT_NOT_ACTIVE', 'That split has already been voided', { status: split.status });
@@ -190,8 +204,9 @@ async function voidSplit({ restaurantId, splitId, actor }) {
     }
 
     await client.query(
-      `UPDATE bill_splits SET status = 'VOID' WHERE id = $1 AND restaurant_id = $2`,
-      [splitId, restaurantId]
+      `UPDATE bill_splits SET status = 'VOID'
+        WHERE id = $1 AND restaurant_id = $2 AND bill_id = $3`,
+      [splitId, restaurantId, billId]
     );
     return split.id;
   });

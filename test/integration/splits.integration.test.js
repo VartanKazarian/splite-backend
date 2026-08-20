@@ -149,6 +149,63 @@ describe('persistent bill splits against a real Postgres', { skip }, () => {
     );
   });
 
+  it('a split can only be voided through the bill it belongs to', async () => {
+    // `/bills/:id/splits/:splitId/void` states a containment relationship, and
+    // nothing enforced it: the bill in the path was never passed on, so any of
+    // the restaurant's own bill ids voided any of its splits. Crossed ids in a
+    // client voided the wrong table's plan and returned a split naming a bill
+    // the caller had not asked about.
+    const mine = await freshBill(10000);
+    const other = await freshBill(20000);
+    const split = await splits.createSplit({
+      restaurantId: restaurant.id, bill: other,
+      request: { mode: 'EQUAL', participants: [{ id: 'a' }, { id: 'b' }] }, createdBy: staff
+    });
+
+    await assert.rejects(
+      () => splits.voidSplit({
+        restaurantId: restaurant.id, billId: mine.id, splitId: split.split.id, actor: staff
+      }),
+      // Not "wrong bill": at that address the split does not exist, which is
+      // the same answer a split from another tenant gets.
+      err => err.code === 'SPLIT_NOT_FOUND' && err.statusCode === 404
+    );
+
+    const untouched = await splits.getSplit({ restaurantId: restaurant.id, splitId: split.split.id });
+    assert.equal(untouched.split.status, 'ACTIVE', "the other bill's plan is still live");
+
+    // And voiding it from its own bill still works, so the check is a scope and
+    // not a wall.
+    const voided = await splits.voidSplit({
+      restaurantId: restaurant.id, billId: other.id, splitId: split.split.id, actor: staff
+    });
+    assert.equal(voided.split.status, 'VOID');
+  });
+
+  it('voiding through the wrong bill leaves the one-active-split rule intact', async () => {
+    // The consequence that outlives the bad void: voiding releases the partial
+    // unique index, so a plan voided from somewhere else lets a second split be
+    // created under a group still settling against the first.
+    const decoy = await freshBill(10000);
+    const live = await freshBill(20000);
+    const split = await splits.createSplit({
+      restaurantId: restaurant.id, bill: live,
+      request: { mode: 'EQUAL', participants: [{ id: 'a' }, { id: 'b' }] }, createdBy: staff
+    });
+
+    await assert.rejects(() => splits.voidSplit({
+      restaurantId: restaurant.id, billId: decoy.id, splitId: split.split.id, actor: staff
+    }));
+
+    await assert.rejects(
+      () => splits.createSplit({
+        restaurantId: restaurant.id, bill: live,
+        request: { mode: 'FULL', participants: [{ id: 'c' }] }, createdBy: staff
+      }),
+      err => err.code === 'SPLIT_ALREADY_EXISTS' && err.statusCode === 409
+    );
+  });
+
   it('a split with payments against it cannot be voided; an untouched one can', async () => {
     const paid = await freshBill(10000);
     const paidSplit = await splits.createSplit({
@@ -160,7 +217,9 @@ describe('persistent bill splits against a real Postgres', { skip }, () => {
       amountPaidMinorUnits: 10000, splitParticipantId: paidSplit.participants[0].id
     });
     await assert.rejects(
-      () => splits.voidSplit({ restaurantId: restaurant.id, splitId: paidSplit.split.id, actor: staff }),
+      () => splits.voidSplit({
+        restaurantId: restaurant.id, billId: paid.id, splitId: paidSplit.split.id, actor: staff
+      }),
       err => err.code === 'SPLIT_HAS_PAYMENTS' && err.statusCode === 409
     );
 
@@ -169,7 +228,9 @@ describe('persistent bill splits against a real Postgres', { skip }, () => {
       restaurantId: restaurant.id, bill: clean,
       request: { mode: 'FULL', participants: [{ id: 'a' }] }, createdBy: staff
     });
-    const voided = await splits.voidSplit({ restaurantId: restaurant.id, splitId: cleanSplit.split.id, actor: staff });
+    const voided = await splits.voidSplit({
+      restaurantId: restaurant.id, billId: clean.id, splitId: cleanSplit.split.id, actor: staff
+    });
     assert.equal(voided.split.status, 'VOID');
 
     // Voiding frees the bill for a new split.

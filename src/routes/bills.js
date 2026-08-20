@@ -545,6 +545,8 @@ router.post(
     try {
       const split = await splits.voidSplit({
         restaurantId: req.user.restaurantId,
+        // The path says this split is on this bill; the service checks it.
+        billId: req.params.id,
         splitId: req.params.splitId,
         actor: { id: req.user.sub }
       });

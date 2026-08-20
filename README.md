@@ -1043,6 +1043,16 @@ the current one (`POST /api/v1/bills/{id}/splits/{splitId}/void`, refused once a
 share has been paid into) and agrees another. `GET .../splits/active` reads the
 live one.
 
+The void is **scoped to the bill in the path**, not only to the tenant. That URL
+states a containment relationship, and it has to be enforced rather than
+implied: a split that is not on that bill reads as 404, the same answer a split
+from another restaurant gets. Without the check, any of a restaurant's own bill
+ids voided any of its splits — crossed ids in a client voided the wrong table's
+plan, the response came back naming a bill the caller had never asked about,
+and, since voiding is what releases the one-`ACTIVE`-per-bill index, a group
+still settling against that plan could have a second one created underneath
+them.
+
 A payment settles a share by naming `splitParticipantId` — on the staff payment,
 a Pago Móvil claim, or a C2P charge. Whichever rail it is, the share is credited
 in the same transaction that moves the money, at the one point every settlement
