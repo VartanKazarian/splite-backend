@@ -276,6 +276,33 @@ const tipsReportQuerySchema = Joi.object({
   to: Joi.date().iso().greater(Joi.ref('from')).required()
 });
 
+/**
+ * Items a staff member has reviewed and is committing to the menu.
+ *
+ * Validated exactly like a hand-typed product, because by this point that is
+ * what they are: the OCR draft is gone, and what arrives is whatever the person
+ * confirmed on screen. Nothing here trusts the extraction -- a client could post
+ * this body having never uploaded anything, and it would be just as valid.
+ *
+ * No currency field: the menu currency is the restaurant's setting, and letting
+ * a request name one would allow a EUR product onto a VES menu.
+ */
+const menuOcrImportItemSchema = Joi.object({
+  name: Joi.string().trim().min(1).max(160).required(),
+  description: Joi.string().trim().max(500).allow('', null),
+  // A price of zero is legal on a menu -- a garnish, a refill -- so this is the
+  // non-negative form rather than the strictly positive one payments use.
+  priceMinorUnits: minorUnits.required()
+});
+
+/**
+ * 200 items is well past a real menu and bounds a single import; a restaurant
+ * with more pages imports twice.
+ */
+const menuOcrImportSchema = Joi.object({
+  items: Joi.array().min(1).max(200).items(menuOcrImportItemSchema).required()
+});
+
 const listUnresolvedC2PQuerySchema = Joi.object({
   limit: Joi.number().integer().min(1).max(100).default(50)
 });
@@ -513,6 +540,7 @@ module.exports = {
   declareClaimSchema,
   c2pChargeSchema,
   tipsReportQuerySchema,
+  menuOcrImportSchema,
   listUnresolvedC2PQuerySchema,
   c2pBankGuideQuerySchema,
   venezuelanMobile,
