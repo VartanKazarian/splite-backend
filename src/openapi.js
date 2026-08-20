@@ -2976,6 +2976,11 @@ const paths = {
         'boundary twice. Both are required: a report whose period was guessed is a number somebody',
         'hands out money against.',
         '',
+        '**The window is on settlement time**, not on when the payment row was created. Those differ',
+        'for a declared Pago Móvil, which is created when the diner says they paid and settles when',
+        'staff verify it. Windowing on settlement is what makes a past shift final: once its queue is',
+        'worked, its number never changes again.',
+        '',
         '**Only SUCCEEDED payments count.** A tip on an unverified Pago Móvil claim is money a diner',
         '*says* they sent, and paying staff against it is the mistake the confirmation step exists to',
         'prevent. IN_DOUBT and AMBIGUOUS C2P charges are excluded for the same reason.'

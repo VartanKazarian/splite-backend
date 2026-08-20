@@ -1194,11 +1194,26 @@ it electronic pays out money already in the drawer. The three always sum to
 set by the rails that own them, and naming one here would be claiming a bank
 movement nobody verified.
 
-The period is read from **when the payment was taken**, not when it was
-confirmed. A Pago Móvil claim declared at 23:50 and confirmed at 00:10 belongs
-to the shift it was declared in and appears there once it is confirmed — so a
-report run at midnight sharp will not yet show it. Re-run the report after the
-queue is worked, which is the same rule as counting a till.
+The period is read from **when the payment settled**, not when its row was
+created. For a card or a cash sale those are the same instant. For a declared
+Pago Móvil they are not: the row is created when the diner says they paid, and
+it settles when a member of staff finds the transfer in the bank app — which can
+be hours later, and can be after midnight.
+
+This reverses an earlier decision, so the argument is worth keeping. Reporting on
+creation files a tip in the shift it was *earned* in, which is the fairer answer
+to "whose tip is it". But it made a closed shift's number **retroactively
+mutable**: a claim declared at 23:50 and confirmed at 00:10 was absent from
+Friday's report at midnight and present in it on Monday. Whoever divided the cash
+on Friday night divided the smaller number, and nothing told them a later
+confirmation would change it.
+
+A figure that money is handed out against has to be final once the shift is over.
+Settlement time gives that: after the queue is worked, a past window never moves
+again. The cost is a real one — a tip earned before midnight and confirmed after
+it appears in the next shift's figures — and a restaurant that cares about which
+crew earned it should work the claims queue before closing the till, which is
+worth doing anyway for the reason the queue exists.
 
 Only **SUCCEEDED** payments count. A tip on a PENDING Pago Móvil claim is money
 a diner *says* they sent, and counting it would have a restaurant hand out cash

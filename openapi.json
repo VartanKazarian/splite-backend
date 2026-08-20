@@ -6552,7 +6552,7 @@
         ],
         "summary": "Tips taken over a period",
         "operationId": "getTipsReport",
-        "description": "Any authenticated staff role — this is the figure a shift is divided by, and whoever hands\nthe money out has to be able to read it.\n\n`from` is inclusive and `to` exclusive, so consecutive shifts tile without counting the\nboundary twice. Both are required: a report whose period was guessed is a number somebody\nhands out money against.\n\n**Only SUCCEEDED payments count.** A tip on an unverified Pago Móvil claim is money a diner\n*says* they sent, and paying staff against it is the mistake the confirmation step exists to\nprevent. IN_DOUBT and AMBIGUOUS C2P charges are excluded for the same reason.",
+        "description": "Any authenticated staff role — this is the figure a shift is divided by, and whoever hands\nthe money out has to be able to read it.\n\n`from` is inclusive and `to` exclusive, so consecutive shifts tile without counting the\nboundary twice. Both are required: a report whose period was guessed is a number somebody\nhands out money against.\n\n**The window is on settlement time**, not on when the payment row was created. Those differ\nfor a declared Pago Móvil, which is created when the diner says they paid and settles when\nstaff verify it. Windowing on settlement is what makes a past shift final: once its queue is\nworked, its number never changes again.\n\n**Only SUCCEEDED payments count.** A tip on an unverified Pago Móvil claim is money a diner\n*says* they sent, and paying staff against it is the mistake the confirmation step exists to\nprevent. IN_DOUBT and AMBIGUOUS C2P charges are excluded for the same reason.",
         "security": [
           {
             "staffAuth": []
