@@ -59,13 +59,19 @@ async function splitShareDrift({ limit = 50 } = {}) {
  * deliberately refusing to guess. Both are money in a state only a person can
  * end, though, so a queue that has stopped being worked is worth surfacing --
  * the diner has been debited and is waiting.
+ *
+ * PENDING counts too, once it is this old. It is the state a charge is in while
+ * the bank is being called, so it is normal for seconds and impossible for
+ * hours: a charge still PENDING after the reconcile threshold is one whose
+ * outcome we never managed to record, and it is the only one of the three that
+ * nothing else would ever show.
  */
 async function unresolvedC2P({ olderThanHours = config.reconcile.unresolvedC2PHours } = {}) {
   const { rows } = await db.query(
     `SELECT status, count(*)::int AS count, min(created_at) AS oldest
        FROM payments
       WHERE payment_method = 'C2P'
-        AND status IN ('IN_DOUBT', 'AMBIGUOUS')
+        AND status IN ('IN_DOUBT', 'AMBIGUOUS', 'PENDING')
         AND created_at < NOW() - ($1 || ' hours')::interval
       GROUP BY status`,
     [String(olderThanHours)]

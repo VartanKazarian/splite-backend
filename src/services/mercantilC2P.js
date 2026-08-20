@@ -217,7 +217,26 @@ async function createC2PPayment({
     if (err instanceof MercantilC2PError && err.code === 'BANK_INDETERMINATE') {
       // The only honest answer. Not an error to the caller: the charge exists,
       // it has an id, and it has a resolution path.
-      await moveTo(payment, restaurantId, 'IN_DOUBT', 'Mercantil returned no conclusive response');
+      //
+      // The transition is attempted, never awaited *for its success*. If the
+      // database refuses it, throwing here would reach the route, which aborts
+      // the idempotency key -- releasing the client to raise a second charge
+      // for a debit that may already have landed. That is the exact
+      // double-charge this rail is built around, and it would be caused by our
+      // own bookkeeping failing rather than by anything the bank did.
+      //
+      // So the failure is logged and swallowed, and the caller still hears
+      // IN_DOUBT, which is true of the charge whatever happened to the row. The
+      // row stays PENDING, and `listUnresolved` picks up a stuck PENDING C2P
+      // charge precisely so this cannot become an invisible one.
+      try {
+        await moveTo(payment, restaurantId, 'IN_DOUBT', 'Mercantil returned no conclusive response');
+      } catch (transitionErr) {
+        logger.error(
+          { event: 'C2P_IN_DOUBT_TRANSITION_FAILED', paymentId: payment.id, restaurantId, billId, err: transitionErr },
+          'Could not record an in-doubt C2P charge; the key is deliberately not released'
+        );
+      }
       logger.warn(
         { event: 'C2P_CHARGE_IN_DOUBT', paymentId: payment.id, restaurantId, billId },
         'C2P charge left in doubt'
@@ -378,15 +397,29 @@ async function parkUnappliable({
 }
 
 /**
- * The refusals that mean "the bank moved this money and the bill cannot take
- * it" -- every one of them a fact about the bill, not about our connection to
- * the database or about another payment's claim on a movement.
+ * The refusals that mean "the bank moved this money and it cannot be credited"
+ * -- every one of them a permanent fact about where the money was going, not
+ * about our connection to the database or another payment's claim on a
+ * movement.
+ *
+ * Two halves, and the second was missed the first time round. A settlement
+ * credits a bill and, when the payment names a share, that share too, so it can
+ * be refused from either side: the bill is closed or voided, or the split went
+ * stale, was voided, or the share is already paid. All of them are settled
+ * facts that asking again cannot change, and a matched charge left IN_DOUBT
+ * against one of them re-queries the bank forever while the diner stays
+ * debited.
  *
  * An allowlist on purpose. Parking a charge is a one-way door into a state only
  * a person leaves, so an error nobody has thought about must leave the charge
  * IN_DOUBT and retryable rather than silently ending up in a refund queue.
  */
-const UNAPPLIABLE_CODES = new Set(['BILL_NOT_FOUND', 'BILL_NOT_OPEN', 'PAYMENT_EXCEEDS_BALANCE']);
+const UNAPPLIABLE_CODES = new Set([
+  // The bill cannot take it.
+  'BILL_NOT_FOUND', 'BILL_NOT_OPEN', 'PAYMENT_EXCEEDS_BALANCE',
+  // The share cannot take it -- see advanceShare in src/services/splits.js.
+  'SPLIT_STALE', 'SPLIT_NOT_ACTIVE', 'SPLIT_SHARE_OVERPAID', 'SPLIT_SHARE_NOT_FOUND'
+]);
 
 /** A status move on its own transaction, for the paths that settle nothing. */
 function moveTo(payment, restaurantId, toStatus, reason) {
@@ -425,6 +458,48 @@ async function resolveC2PPayment({ restaurantId, paymentId, actorUserId = null, 
   // Bounded on both ends: never before the charge, never more than six hours
   // back however old the charge is.
   const from = new Date(Math.max(createdMs - SEARCH_LEAD_MS, Date.now() - RESOLUTION_WINDOW_MAX_MS));
+
+  // Once the charge is older than the cap, that `Math.max` stops being a bound
+  // and starts being a lie: the window no longer contains the moment the charge
+  // happened, so whatever the bank returns is not evidence about this charge.
+  //
+  // Both conclusions become unsafe at once, which is why this refuses rather
+  // than adjusting one of them. An empty answer is not "the debit never
+  // happened" -- we asked about the wrong hours -- and the FAILED path would
+  // report `safeToRetry: true` on a debit that may well have landed. A
+  // *matching* movement is no better: at this age it is far more likely to be
+  // the same payer paying the same amount again, and settling this charge with
+  // it would take a later payment to close an earlier bill.
+  //
+  // So the charge leaves automated resolution. AMBIGUOUS is what that state
+  // means -- money may exist that we cannot attribute -- and the queue that
+  // reads it is the queue a person already works.
+  if (createdMs < Date.now() - RESOLUTION_WINDOW_MAX_MS) {
+    const reason = 'Charge is older than the bank search window; it cannot be resolved automatically';
+    await db.withTransaction(async tx => {
+      await tx.query('UPDATE c2p_charges SET last_resolution_at = NOW() WHERE payment_id = $1', [paymentId]);
+      await transitionPayment(tx, {
+        paymentId, restaurantId, toStatus: 'AMBIGUOUS', reason,
+        actorType: actorUserId ? 'STAFF' : 'SYSTEM', actorId: actorUserId
+      });
+      await logAttempt(tx, {
+        paymentId, restaurantId, outcome: 'WINDOW_EXPIRED', reason, actorUserId
+      });
+    }, { statementTimeoutMs: config.db.paymentStatementTimeoutMs });
+
+    logger.warn(
+      { event: 'C2P_RESOLUTION_WINDOW_EXPIRED', paymentId, restaurantId, ageMinutes },
+      'C2P charge outlived the resolution window'
+    );
+
+    return {
+      paymentId, status: 'AMBIGUOUS', reason,
+      requiresStaffReview: true,
+      // Said explicitly because its absence is the whole point: nothing here
+      // establishes that the diner was not debited.
+      safeToRetry: false
+    };
+  }
 
   // What the bank was asked to pull, which is the share plus any tip. The
   // movement Mercantil returns is for the whole debit, so searching on
@@ -611,10 +686,20 @@ async function listUnresolved({ restaurantId, limit = 50 }) {
               WHERE a.payment_id = p.id ORDER BY a.attempted_at DESC LIMIT 1) AS last_reason
        FROM payments p
        JOIN c2p_charges c ON c.payment_id = p.id
-      WHERE p.restaurant_id = $1 AND p.status IN ('IN_DOUBT', 'AMBIGUOUS')
+      WHERE p.restaurant_id = $1
+        AND (
+          p.status IN ('IN_DOUBT', 'AMBIGUOUS')
+          -- A PENDING charge is one we raised and never heard the end of. For
+          -- the first few minutes that is just a call in flight, but past the
+          -- settlement window it is stuck: the process died mid-charge, or the
+          -- in-doubt transition could not be written. Either way a real debit
+          -- may be sitting behind it, and a queue that only reads the states we
+          -- managed to record cannot show the ones we failed to.
+          OR (p.status = 'PENDING' AND p.created_at < NOW() - make_interval(mins => $3))
+        )
       ORDER BY p.created_at ASC
       LIMIT $2`,
-    [restaurantId, limit]
+    [restaurantId, limit, SETTLEMENT_WINDOW_MINUTES]
   );
   return rows;
 }

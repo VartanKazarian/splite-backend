@@ -1200,7 +1200,11 @@ Object.assign(schemas, {
       },
       retryAfterMinutes: { type: 'integer', description: 'How long until asking again is worthwhile.' },
       alreadyResolved: { type: 'boolean', description: 'Something else resolved it first. Not an error.' },
-      safeToRetry: { type: 'boolean', description: 'On FAILED: no debit landed, so a fresh charge is safe.' },
+      safeToRetry: {
+        type: 'boolean',
+        description:
+          'Whether raising a fresh charge is safe. True only on FAILED, where the bank was asked about the right period and no debit landed. Explicitly **false** when a charge outlives the six-hour search window: nothing there establishes that the diner was not debited, so it goes to AMBIGUOUS for a person rather than being reported as retryable. Absent means no claim either way — never read absence as true.'
+      },
       settlement: ref('PaymentResult')
     }
   },

@@ -5,8 +5,10 @@ const { skip } = require('./helpers/env');
 const db = require('../../src/connectors/base');
 const fixtures = require('./helpers/fixtures');
 const {
-  createC2PPayment, resolveC2PPayment, listUnresolved
+  createC2PPayment, resolveC2PPayment, listUnresolved, buildInvoiceNumber
 } = require('../../src/services/mercantilC2P');
+const splits = require('../../src/services/splits');
+const billItems = require('../../src/services/billItems');
 const { MercantilC2PError } = require('../../src/payments/providers/mercantil/c2p');
 
 /**
@@ -433,5 +435,187 @@ describe('Mercantil C2P against a real Postgres', { skip }, () => {
     const out = await resolveC2PPayment({ restaurantId: restaurant.id, paymentId, bankClient: shared });
     assert.equal(out.status, 'SUCCEEDED');
     assert.equal((await fixtures.readBill(bill.id)).amount_paid_ves, '126000');
+  });
+  it('refuses to conclude anything about a charge older than the search window', async () => {
+    // `from` is floored at now-6h, so past that age the window no longer
+    // contains the moment the charge happened. Both conclusions become unsafe
+    // at once: an empty answer is about the wrong hours, and a matching
+    // movement at this remove is more likely the same payer paying again than
+    // this charge finally showing up.
+    const bill = await freshBill({ totalDue: 126000, totalDueVes: 126000 });
+    const { paymentId } = await inDoubtCharge(bill);
+    await db.query("UPDATE payments SET created_at = NOW() - INTERVAL '9 hours' WHERE id = $1", [paymentId]);
+
+    let asked = false;
+    const watchfulBank = {
+      async charge() { throw new MercantilC2PError('BANK_INDETERMINATE', 'no response'); },
+      async search() { asked = true; return []; }
+    };
+
+    const out = await resolveC2PPayment({
+      restaurantId: restaurant.id, paymentId, bankClient: watchfulBank
+    });
+
+    assert.equal(asked, false, 'no point spending a bank call on an unanswerable question');
+    assert.equal(out.status, 'AMBIGUOUS');
+    assert.equal(out.requiresStaffReview, true);
+    // The old behaviour: FAILED with safeToRetry true, on a debit that may well
+    // have landed. That is the sentence this test exists to prevent.
+    assert.equal(out.safeToRetry, false);
+
+    const { rows } = await db.query('SELECT status FROM payments WHERE id = $1', [paymentId]);
+    assert.equal(rows[0].status, 'AMBIGUOUS');
+    assert.notEqual(rows[0].status, 'FAILED');
+
+    const attempts = await db.query(
+      'SELECT outcome FROM c2p_resolution_attempts WHERE payment_id = $1', [paymentId]);
+    assert.equal(attempts.rows[0].outcome, 'WINDOW_EXPIRED');
+
+    assert.equal((await fixtures.readBill(bill.id)).amount_paid_ves, '0');
+  });
+
+  it('a charge inside the window is still resolved normally', async () => {
+    // The guard above must be an edge, not a ceiling: five hours is inside six.
+    const bill = await freshBill({ totalDue: 126000, totalDueVes: 126000 });
+    const { paymentId } = await inDoubtCharge(bill);
+    await db.query("UPDATE payments SET created_at = NOW() - INTERVAL '5 hours' WHERE id = $1", [paymentId]);
+
+    const out = await resolveC2PPayment({
+      restaurantId: restaurant.id, paymentId,
+      bankClient: bank([movement({ reference: '900000000901' })])
+    });
+
+    assert.equal(out.status, 'SUCCEEDED');
+    assert.equal((await fixtures.readBill(bill.id)).amount_paid_ves, '126000');
+  });
+
+  it('a matched charge whose split went stale is parked, not retried forever', async () => {
+    // A settlement credits the bill *and* the share, so it can be refused from
+    // either side. The bill-side refusals were handled; these were not, and a
+    // debited charge on a staled split re-queried the bank on every resolve
+    // while the diner stayed debited.
+    const bill = await fixtures.createBill({
+      restaurantId: restaurant.id,
+      tableId: (await fixtures.createTable(restaurant.id, { name: `SP${++seq}` })).id,
+      totalDue: 0, totalDueVes: 0
+    });
+    const product = (await db.query(
+      `INSERT INTO menu_products (restaurant_id, name, price_minor_units, currency)
+       VALUES ($1, 'Ron', 63000, 'VES') RETURNING id`, [restaurant.id])).rows[0];
+    await billItems.addItem({
+      restaurantId: restaurant.id, billId: bill.id, productId: product.id, quantity: 2
+    });
+
+    const billRow = (await db.query(
+      `SELECT id, status, total_due_ves, amount_paid_ves, fx_rate_ves_per_unit
+         FROM bills WHERE id = $1`, [bill.id])).rows[0];
+    const split = await splits.createSplit({
+      restaurantId: restaurant.id, bill: billRow,
+      request: { mode: 'EQUAL', participants: [{ id: 'a' }, { id: 'b' }] },
+      createdBy: { type: 'STAFF', id: null }
+    });
+    const share = split.participants[0];
+
+    const charge = await createC2PPayment({
+      restaurantId: restaurant.id, billId: bill.id, amountVes: share.amount_ves,
+      payer: payer(), idempotencyKey: `stale-${seq}-${Math.random().toString(36).slice(2)}`,
+      splitParticipantId: share.id, bankClient: bank()
+    });
+    assert.equal(charge.status, 'IN_DOUBT');
+    await db.query("UPDATE payments SET created_at = NOW() - INTERVAL '30 minutes' WHERE id = $1", [charge.paymentId]);
+
+    // The table orders another round while the charge is in doubt.
+    await billItems.addItem({
+      restaurantId: restaurant.id, billId: bill.id, productId: product.id, quantity: 1
+    });
+    assert.equal(
+      (await db.query('SELECT status FROM bill_splits WHERE id = $1', [split.split.id])).rows[0].status,
+      'STALE'
+    );
+
+    const shared = bank([movement({ reference: '900000000902', amountMinor: share.amount_ves })]);
+    const out = await resolveC2PPayment({
+      restaurantId: restaurant.id, paymentId: charge.paymentId, bankClient: shared
+    });
+
+    assert.equal(out.status, 'AMBIGUOUS', 'parked for a person, not thrown back at one');
+    assert.equal(
+      (await db.query('SELECT status FROM payments WHERE id = $1', [charge.paymentId])).rows[0].status,
+      'AMBIGUOUS'
+    );
+
+    // And asking again does not restart the loop.
+    const again = await resolveC2PPayment({
+      restaurantId: restaurant.id, paymentId: charge.paymentId, bankClient: shared
+    });
+    assert.equal(again.alreadyResolved, true);
+  });
+
+  it('a failed in-doubt transition never releases the charge back to the caller', async () => {
+    // The route aborts the idempotency key on a throw, which would let the
+    // client raise a second charge for a debit that may already have landed.
+    // Our own bookkeeping failing must not cause the one thing this rail exists
+    // to prevent.
+    const bill = await freshBill({ totalDue: 126000, totalDueVes: 126000 });
+
+    const realTransaction = db.withTransaction;
+    let calls = 0;
+    db.withTransaction = async (...args) => {
+      calls += 1;
+      if (calls === 2) {                       // 1 = the PENDING insert, 2 = the IN_DOUBT move
+        const timeout = new Error('canceling statement due to statement timeout');
+        timeout.code = '57014';
+        throw timeout;
+      }
+      return realTransaction.apply(db, args);
+    };
+
+    let result;
+    try {
+      result = await createC2PPayment({
+        restaurantId: restaurant.id, billId: bill.id, amountVes: '126000',
+        payer: payer(), idempotencyKey: `guard-${seq}-${Math.random().toString(36).slice(2)}`,
+        bankClient: bank()
+      });
+    } finally {
+      db.withTransaction = realTransaction;
+    }
+
+    // IN_DOUBT is true of the charge whatever happened to the row.
+    assert.equal(result.status, 'IN_DOUBT');
+    assert.equal(result.requiresResolution, true);
+
+    const { rows } = await db.query('SELECT status FROM payments WHERE id = $1', [result.paymentId]);
+    assert.equal(rows[0].status, 'PENDING', 'the transition genuinely did not land');
+
+    // ...which is exactly why the queue has to read PENDING too, or this charge
+    // would be the one kind nothing ever shows.
+    await db.query("UPDATE payments SET created_at = NOW() - INTERVAL '2 hours' WHERE id = $1", [result.paymentId]);
+    const queued = (await listUnresolved({ restaurantId: restaurant.id }))
+      .find(row => row.id === result.paymentId);
+    assert.ok(queued, 'a stuck PENDING charge is visible to staff');
+    assert.equal(queued.status, 'PENDING');
+  });
+
+  it('a charge still in flight is not paraded as stuck', async () => {
+    // PENDING is normal for the seconds the bank call takes. The queue reads it
+    // only past the settlement window, or every live charge would look broken.
+    const bill = await freshBill({ totalDue: 126000, totalDueVes: 126000 });
+    const { rows } = await db.query(
+      `INSERT INTO payments (restaurant_id, bill_id, amount_ves, status, payment_method, provider, payer_type)
+       VALUES ($1, $2, 126000, 'PENDING', 'C2P', 'MERCANTIL', 'GUEST') RETURNING id`,
+      [restaurant.id, bill.id]
+    );
+    await db.query(
+      `INSERT INTO c2p_charges (payment_id, restaurant_id, invoice_number, payer_bank_code, payer_phone_last4)
+       VALUES ($1, $2, $3, '0105', '1234')`,
+      // Built by the same helper the charge path uses: the invoice format is a
+      // database CHECK, not a convention.
+      [rows[0].id, restaurant.id, buildInvoiceNumber({ restaurantId: restaurant.id, paymentId: rows[0].id })]
+    );
+
+    const queued = (await listUnresolved({ restaurantId: restaurant.id }))
+      .find(row => row.id === rows[0].id);
+    assert.equal(queued, undefined);
   });
 });
