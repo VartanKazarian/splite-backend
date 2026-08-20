@@ -46,6 +46,15 @@ async function run() {
     );
   }
 
+  if (result.attention.unworkedClaims) {
+    const { count, oldest } = result.attention.unworkedClaims;
+    console.log(
+      `\nAttention: ${count} declared payment(s) still unconfirmed, oldest ${new Date(oldest).toISOString()}.` +
+      '\n  Not drift — but the diners who declared them believe they have paid.' +
+      '\n  Work the queue at GET /api/v1/payments/claims.'
+    );
+  }
+
   if (result.ok) {
     console.log('\nLedger and split shares agree. No drift.');
     return;

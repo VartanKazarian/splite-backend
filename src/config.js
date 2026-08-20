@@ -345,7 +345,18 @@ module.exports = {
      * diner has been debited and is waiting on a person, so a queue that has
      * stopped being worked should not stay quiet. Six hours is one service.
      */
-    unresolvedC2PHours: integer('RECONCILE_UNRESOLVED_C2P_HOURS', 6)
+    unresolvedC2PHours: integer('RECONCILE_UNRESOLVED_C2P_HOURS', 6),
+    /**
+     * How long a declared Pago Movil may sit unconfirmed before the reconciler
+     * mentions it.
+     *
+     * Two hours, which is well past any plausible service window for one table:
+     * a claim this old is not "busy tonight", it is a queue nobody is working,
+     * and the diner who declared it has almost certainly gone home believing
+     * they paid. Short enough to catch a whole neglected evening, long enough
+     * not to report every claim that took a few minutes to verify.
+     */
+    unworkedClaimsHours: integer('RECONCILE_UNWORKED_CLAIMS_HOURS', 2)
   },
   purge: {
     // Retention is set by what still reads the row, not by what feels tidy.

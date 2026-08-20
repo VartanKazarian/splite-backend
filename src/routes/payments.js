@@ -37,6 +37,24 @@ router.get('/claims', validateQuery(listClaimsQuerySchema), async (req, res, nex
   } catch (err) { next(err); }
 });
 
+/**
+ * The badge behind the queue.
+ *
+ * Any authenticated role, unlike confirming: a waiter cannot decide that money
+ * arrived, but they are the person standing in the room and should be able to
+ * see that somebody is waiting on the till.
+ *
+ * Registered before `/claims/:id/...` so the literal path is never read as an
+ * id, and deliberately separate from `GET /claims` -- a badge polled from every
+ * screen in the room must not pull full claim rows, phone numbers included,
+ * just to render a number.
+ */
+router.get('/claims/summary', async (req, res, next) => {
+  try {
+    res.json(await claims.claimsSummary({ restaurantId: req.user.restaurantId }));
+  } catch (err) { next(err); }
+});
+
 router.post(
   '/claims/:id/confirm',
   requireRole('OWNER', 'MANAGER', 'CASHIER'),
