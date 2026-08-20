@@ -216,13 +216,46 @@ async function voidSplit({ restaurantId, billId, splitId, actor }) {
       throw new ApiError('SPLIT_NOT_ACTIVE', 'That split has already been voided', { status: split.status });
     }
 
-    const { rows } = await client.query(
-      `SELECT COALESCE(SUM(amount_paid_ves), 0)::BIGINT AS paid
-         FROM bill_split_participants WHERE split_id = $1`,
-      [splitId]
-    );
-    if (BigInt(rows[0].paid) > 0n) {
+    // Locked, not just summed. `advanceShare` locks the participant row and
+    // reads the split's status through a join without locking the split, so an
+    // unlocked SUM here could read zero while a share payment was committing
+    // beside it -- and both would succeed, leaving a VOID split with money
+    // credited to one of its shares. Taking the participant locks is what makes
+    // the two serialise, whichever arrives first.
+    const shares = (await client.query(
+      `SELECT id, amount_paid_ves FROM bill_split_participants
+        WHERE split_id = $1 AND restaurant_id = $2
+        FOR UPDATE`,
+      [splitId, restaurantId]
+    )).rows;
+
+    const paid = shares.reduce((total, share) => total + BigInt(share.amount_paid_ves), 0n);
+    if (paid > 0n) {
       throw new ApiError('SPLIT_HAS_PAYMENTS', 'A split with payments against it cannot be voided');
+    }
+
+    // Settled money is not the only money. A declared Pago Movil or an
+    // in-doubt C2P charge names a share and has not credited it yet, and
+    // voiding out from under one strands it: the share it was going to pay no
+    // longer accepts anything, so confirming it later has nowhere to put money
+    // that has genuinely arrived. Rejecting or resolving those first is a real
+    // step for staff, so the error says which.
+    if (shares.length) {
+      const inFlight = (await client.query(
+        `SELECT count(*)::int AS count FROM payments
+          WHERE restaurant_id = $1
+            AND split_participant_id = ANY($2::uuid[])
+            AND status IN ('PENDING', 'IN_DOUBT', 'AMBIGUOUS')`,
+        [restaurantId, shares.map(share => share.id)]
+      )).rows[0];
+
+      if (inFlight.count > 0) {
+        throw new ApiError(
+          'SPLIT_HAS_PAYMENTS',
+          'A payment against one of these shares is still being resolved; settle or reject it before voiding',
+          { inFlightPayments: inFlight.count }
+        );
+      }
     }
 
     await client.query(

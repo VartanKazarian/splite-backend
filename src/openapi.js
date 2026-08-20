@@ -336,7 +336,13 @@ const schemas = {
       fxSource: { type: ['string', 'null'] },
       usdReference: ref('UsdReference'),
       tipVes: { ...minorUnits, description: 'The tip on this payment. Excluded from every bill figure above.' },
-      totalChargedVes: { ...minorUnits, description: 'What the payer actually handed over: the settled amount plus the tip.' }
+      totalChargedVes: { ...minorUnits, description: 'What the payer actually handed over: the settled amount plus the tip.' },
+      shareDetached: {
+        type: 'string',
+        enum: ['SPLIT_STALE', 'SPLIT_NOT_ACTIVE', 'SPLIT_SHARE_OVERPAID', 'SPLIT_SHARE_NOT_FOUND'],
+        description:
+          'Present only when a confirmed claim reached the bill but could not be credited to the share it named — the split went stale or was voided while the claim sat in the queue. The money is settled; the split will still show that diner as owing, and this says why.'
+      }
     }
   },
 

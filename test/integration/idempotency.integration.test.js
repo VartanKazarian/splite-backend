@@ -115,6 +115,57 @@ describe('idempotency keys against a real Postgres', { skip }, () => {
     assert.equal(retry.owner, true, 'an abandoned key does not block its own retry forever');
   });
 
+  it('re-claims rather than pretending to own a key that vanished', async () => {
+    // The INSERT conflicts, and the row is gone by the time the SELECT reads it
+    // -- a failing request's abort() racing a client's retry does exactly this.
+    // Returning owner:true left the caller holding a claim with nothing behind
+    // it: complete() updated no rows, no response was stored, and the next
+    // retry of the same key charged again.
+    const key = `vanishing-${crypto.randomUUID()}`;
+    const requestHash = hash('payload');
+
+    await begin({ restaurantId: restaurant.id, userId: null, key, hash: requestHash });
+
+    const realQuery = db.query.bind(db);
+    let armed = true;
+    db.query = async (text, params) => {
+      if (armed && /SELECT request_hash/.test(text)) {
+        armed = false;
+        await realQuery('DELETE FROM idempotency_keys WHERE restaurant_id = $1 AND key = $2', [restaurant.id, key]);
+      }
+      return realQuery(text, params);
+    };
+
+    let claim;
+    try {
+      claim = await begin({ restaurantId: restaurant.id, userId: null, key, hash: requestHash });
+    } finally {
+      db.query = realQuery;
+    }
+
+    assert.equal(claim.owner, true);
+    const { rows } = await db.query(
+      'SELECT id FROM idempotency_keys WHERE restaurant_id = $1 AND key = $2', [restaurant.id, key]);
+    assert.equal(rows.length, 1, 'a claim has to have a row behind it');
+
+    // ...and that row is what makes the response storable, which is the whole
+    // point of holding the key.
+    await complete({ restaurantId: restaurant.id, key, status: 201, body: { ok: true } });
+    const replayed = await begin({ restaurantId: restaurant.id, userId: null, key, hash: requestHash });
+    assert.equal(replayed.owner, false);
+    assert.equal(replayed.response.status, 201);
+  });
+
+  it('completing a key that is no longer there is loud, not fatal', async () => {
+    // complete() runs after the money has moved. Throwing would reach the
+    // route's catch, which aborts the key and frees the client to retry a
+    // request that already succeeded -- so this must not throw.
+    const key = `gone-${crypto.randomUUID()}`;
+    await assert.doesNotReject(
+      () => complete({ restaurantId: restaurant.id, key, status: 200, body: { ok: true } })
+    );
+  });
+
   it('purges expired keys and leaves live ones alone', async () => {
     const staleKey = `stale-${crypto.randomUUID()}`;
     const liveKey = `live-${crypto.randomUUID()}`;

@@ -1,6 +1,7 @@
 const crypto = require('crypto');
 const { ApiError } = require('../errors');
 const db = require('../connectors/base');
+const { logger } = require('../connectors/logger');
 
 /**
  * Idempotency keys for money-moving endpoints.
@@ -19,7 +20,16 @@ function requestHash(req) {
 
 
 
-async function begin({ restaurantId, userId, key, hash }) {
+/**
+ * How many times `begin` will re-attempt a claim it lost to a vanishing row.
+ *
+ * One is enough for the race that exists -- the row is already gone by the time
+ * we look, so the next INSERT wins outright -- and a bound rather than a loop
+ * means a pathological key cannot spin here.
+ */
+const MAX_CLAIM_ATTEMPTS = 2;
+
+async function begin({ restaurantId, userId, key, hash }, attempt = 1) {
   // Expired claims are cleared first, otherwise an abandoned in-flight key
   // would block the same key forever.
   await db.query(
@@ -41,7 +51,21 @@ async function begin({ restaurantId, userId, key, hash }) {
     [restaurantId, key]
   );
   const row = existing.rows[0];
-  if (!row) return { owner: true };
+  if (!row) {
+    // The INSERT conflicted, so a row existed a moment ago -- and by this read
+    // it is gone. A failing request's `abort()` racing a client's retry does
+    // exactly this, as does the expiry purge.
+    //
+    // Returning `owner: true` here was the bug: the caller held a claim with
+    // nothing behind it, so `complete()` updated no rows, no response was
+    // stored, and the *next* retry of the same key found no row either and
+    // charged again. The claim is simply re-attempted -- the row is gone, so
+    // the INSERT that failed above will now succeed.
+    if (attempt >= MAX_CLAIM_ATTEMPTS) {
+      throw new ApiError('IDEMPOTENCY_IN_FLIGHT', 'A request with this idempotency key is already in progress');
+    }
+    return begin({ restaurantId, userId, key, hash }, attempt + 1);
+  }
 
   if (row.request_hash !== hash) {
     throw new ApiError('IDEMPOTENCY_KEY_REUSED', 'Idempotency key reused with a different request payload');
@@ -51,10 +75,22 @@ async function begin({ restaurantId, userId, key, hash }) {
 }
 
 async function complete({ restaurantId, key, status, body }) {
-  await db.query(
+  const { rowCount } = await db.query(
     'UPDATE idempotency_keys SET response_status = $1, response_body = $2 WHERE restaurant_id = $3 AND key = $4',
     [status, JSON.stringify(body), restaurantId, key]
   );
+
+  // Deliberately loud and deliberately not fatal. This runs after the money has
+  // moved, and throwing would reach the route's catch, which aborts the key --
+  // releasing the client to retry a request that already succeeded. So the
+  // failure is reported and the response is still returned; what is lost is the
+  // replay, not the payment.
+  if (rowCount === 0) {
+    logger.error(
+      { event: 'IDEMPOTENCY_RESPONSE_NOT_STORED', restaurantId, key },
+      'Idempotency key vanished before its response could be stored; a retry will not replay'
+    );
+  }
 }
 
 async function abort({ restaurantId, key }) {
