@@ -315,6 +315,29 @@ module.exports = {
       debug: boolean('MERCANTIL_C2P_DEBUG', false)
     }
   },
+  menuOcr: {
+    /**
+     * Reading a menu off a photo with a vision model.
+     *
+     * Empty by default: a deployment without a key simply cannot use the
+     * feature, and says so with 503 rather than failing oddly at upload time.
+     * The endpoint is opt-in per deployment for the same reason the C2P rail
+     * is -- it costs money per call and reaches a third party.
+     *
+     * `baseUrl` selects the provider. The request is the OpenAI-compatible
+     * chat-completions shape that several vendors serve, so switching is
+     * configuration rather than code.
+     */
+    apiKey: process.env.MENU_OCR_API_KEY || '',
+    baseUrl: process.env.MENU_OCR_BASE_URL || 'https://api.openai.com',
+    model: process.env.MENU_OCR_MODEL || 'gpt-4o',
+    timeoutMs: integer('MENU_OCR_TIMEOUT_MS', 60000),
+    maxTokens: integer('MENU_OCR_MAX_TOKENS', 4000),
+    // A menu upload is bounded on every axis a stranger controls.
+    maxUploadBytes: integer('MENU_OCR_MAX_UPLOAD_BYTES', 8 * 1024 * 1024),
+    maxPdfPages: integer('MENU_OCR_MAX_PDF_PAGES', 6),
+    pdfTimeoutMs: integer('MENU_OCR_PDF_TIMEOUT_MS', 20000)
+  },
   reconcile: {
     /**
      * How long a C2P charge may sit unresolved before the reconciler mentions

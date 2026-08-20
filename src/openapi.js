@@ -444,6 +444,88 @@ const schemas = {
     }
   },
 
+  MenuOcrDraft: {
+    type: 'object',
+    description:
+      'What a vision model read off an uploaded menu. A **draft**: nothing has been written. Every row carries the price as printed alongside the parsed value, because the reviewer is checking one against the other.',
+    properties: {
+      items: {
+        type: 'array',
+        items: {
+          type: 'object',
+          properties: {
+            name: { type: 'string', maxLength: 160 },
+            description: { type: ['string', 'null'], maxLength: 500 },
+            section: { type: ['string', 'null'], description: 'The heading it appeared under, e.g. "Entradas".' },
+            priceText: { type: ['string', 'null'], description: 'Exactly as printed on the menu — "12,50", "Bs. 8,00".' },
+            priceMinorUnits: {
+              type: ['string', 'null'], pattern: '^[0-9]+$',
+              description: 'The parsed price, or null when it could not be read. Null is a result, not an error: that row needs a human.'
+            },
+            needsPrice: { type: 'boolean', description: 'True when priceMinorUnits is null. Block import until it is fixed or the row is removed.' },
+            duplicateName: {
+              type: 'boolean',
+              description: 'True when another drafted row shares this name. The menu is unique on (restaurant, name), so one must be renamed before import.'
+            },
+            currency: { type: 'string', enum: ['VES', 'USD', 'EUR'], description: "The restaurant's menu currency, not the model's guess." }
+          }
+        }
+      },
+      pages: { type: 'integer', description: 'Pages read. Always 1 for an image; up to MENU_OCR_MAX_PDF_PAGES for a PDF.' },
+      currency: { type: 'string', enum: ['VES', 'USD', 'EUR'], description: "The restaurant's configured menu currency. Prices import in this." },
+      currencyGuess: {
+        type: ['string', 'null'],
+        description: 'What the model thought the menu was priced in. **Reported, never applied** — a menu printed in dollars does not change what this restaurant charges in. A mismatch is for the reviewer to notice.'
+      },
+      notes: { type: ['string', 'null'], description: 'Anything the model could not read.' },
+      needsReview: { type: 'integer', description: 'Rows flagged with needsPrice or duplicateName.' }
+    }
+  },
+
+  MenuOcrImportRequest: {
+    type: 'object',
+    required: ['items'],
+    description:
+      'The items a staff member confirmed. Validated exactly like hand-typed products — the extraction carries no authority here, and this body is equally valid having uploaded nothing.',
+    properties: {
+      items: {
+        type: 'array', minItems: 1, maxItems: 200,
+        items: {
+          type: 'object',
+          required: ['name', 'priceMinorUnits'],
+          properties: {
+            name: { type: 'string', minLength: 1, maxLength: 160 },
+            description: { type: ['string', 'null'], maxLength: 500 },
+            priceMinorUnits: { ...minorUnits, description: 'Zero is allowed: a garnish or a refill can be free.' }
+          }
+        }
+      }
+    }
+  },
+
+  MenuOcrImportResult: {
+    type: 'object',
+    description:
+      'Partial success is normal. Each row is inserted in its own savepoint, so a duplicate name rejects that row and keeps the rest.',
+    properties: {
+      importedCount: { type: 'integer' },
+      items: { type: 'array', items: ref('Product') },
+      errors: {
+        type: 'array',
+        description: 'Rows that were not imported, by their index in the request.',
+        items: {
+          type: 'object',
+          properties: {
+            index: { type: 'integer' },
+            name: { type: 'string' },
+            code: { type: 'string', enum: ['PRODUCT_NAME_TAKEN'] },
+            message: { type: 'string' }
+          }
+        }
+      }
+    }
+  },
+
   GuestBill: {
     type: 'object',
     description:
@@ -2206,6 +2288,88 @@ const paths = {
       requestBody: { required: true, content: { 'application/json': { schema: ref('MenuCurrencyRequest') } } },
       responses: {
         200: { description: 'Changed.', content: { 'application/json': { schema: ref('MenuSettings') } } },
+        ...commonErrors,
+        403: response('Forbidden'),
+        404: response('NotFound'),
+        409: response('Conflict')
+      }
+    }
+  },
+
+  '/api/v1/menu/ocr-extract': {
+    post: {
+      tags: ['Menu'],
+      summary: 'Read a menu from a photo or PDF',
+      operationId: 'extractMenuFromUpload',
+      'x-required-roles': ['OWNER', 'MANAGER'],
+      description: [
+        'Roles: OWNER, MANAGER.',
+        '',
+        'Upload one menu file as `multipart/form-data` in the field **`file`** — JPEG, PNG, WebP or',
+        'PDF. A PDF is rasterised page by page, up to the configured page cap.',
+        '',
+        '**This writes nothing.** It returns a draft for a person to check, then',
+        '`POST /api/v1/menu/ocr-import` commits what they confirmed. The division is deliberate and',
+        'is the same one a declared Pago Móvil uses: OCR misreads prices, and a wrong price is',
+        'charged to every diner who orders that dish until somebody notices.',
+        '',
+        'Rows the reader could not price arrive with `priceMinorUnits: null` and `needsPrice: true`',
+        'rather than being dropped — the item is real, and hiding it sends staff hunting for what was',
+        'missed. Rows sharing a name are flagged `duplicateName`, since the menu is unique on',
+        '(restaurant, name).',
+        '',
+        'Rate limited to 10 per minute: each call costs money at a third party.',
+        '',
+        '503 `MENU_OCR_NOT_CONFIGURED` when the deployment has no vision provider configured.'
+      ].join('\n'),
+      security: staff,
+      requestBody: {
+        required: true,
+        content: {
+          'multipart/form-data': {
+            schema: {
+              type: 'object',
+              required: ['file'],
+              properties: {
+                file: { type: 'string', format: 'binary', description: 'JPEG, PNG, WebP or PDF. Bounded by MENU_OCR_MAX_UPLOAD_BYTES (8 MB default).' }
+              }
+            }
+          }
+        }
+      },
+      responses: {
+        200: { description: 'The draft. Nothing was written.', content: { 'application/json': { schema: ref('MenuOcrDraft') } } },
+        ...commonErrors,
+        403: response('Forbidden'),
+        404: response('NotFound'),
+        503: response('ServiceUnavailable')
+      }
+    }
+  },
+
+  '/api/v1/menu/ocr-import': {
+    post: {
+      tags: ['Menu'],
+      summary: 'Commit reviewed menu items',
+      operationId: 'importMenuItems',
+      'x-required-roles': ['OWNER', 'MANAGER'],
+      description: [
+        'Roles: OWNER, MANAGER.',
+        '',
+        'Writes the items a staff member confirmed. The extraction has no authority here — this body',
+        'is equally valid having uploaded nothing, and is validated exactly like a hand-typed product.',
+        '',
+        'Products are created active, in the **restaurant\'s** menu currency; the request cannot name',
+        'one, since that would allow a EUR product onto a VES menu.',
+        '',
+        '**Partial success is normal.** Each row is inserted inside its own savepoint, so one',
+        'duplicate name rejects that row and keeps the rest — look at `errors` as well as',
+        '`importedCount`.'
+      ].join('\n'),
+      security: staff,
+      requestBody: { required: true, content: { 'application/json': { schema: ref('MenuOcrImportRequest') } } },
+      responses: {
+        201: { description: 'What was imported, and what was not.', content: { 'application/json': { schema: ref('MenuOcrImportResult') } } },
         ...commonErrors,
         403: response('Forbidden'),
         404: response('NotFound'),
