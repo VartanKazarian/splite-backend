@@ -843,6 +843,18 @@
             "examples": [
               "756710"
             ]
+          },
+          "paymentMethod": {
+            "type": "string",
+            "enum": [
+              "CASH",
+              "CARD",
+              "TRANSFER",
+              "SPLITE",
+              "OTHER"
+            ],
+            "default": "SPLITE",
+            "description": "Optional. How the money arrived at the till. Send it when a tip is involved: it is what separates a cash tip already in the drawer from an electronic one the restaurant owes its staff, and an unset method is reported as unclassified rather than guessed. `C2P` and `PAGO_MOVIL` are not accepted here — those are set by the rails that own them."
           }
         }
       },
@@ -1253,7 +1265,15 @@
           "owedToStaffVes": {
             "type": "string",
             "pattern": "^[0-9]+$",
-            "description": "Tips that arrived electronically, so the restaurant holds them and owes them out.",
+            "description": "Tips that arrived electronically (CARD, TRANSFER, PAGO_MOVIL, C2P), so the restaurant holds them and owes them out.",
+            "examples": [
+              "756710"
+            ]
+          },
+          "unclassifiedVes": {
+            "type": "string",
+            "pattern": "^[0-9]+$",
+            "description": "Tips on payments whose method was not recorded (SPLITE, OTHER). Reported separately rather than folded into either figure above: calling them cash cancels a real debt to staff, and calling them electronic pays out money already in the drawer. The three always sum to `totalTipsVes`.",
             "examples": [
               "756710"
             ]

@@ -90,8 +90,11 @@ const movement = (over = {}) => ({
   phoneOrigin: '04145551234', bankOrigin: '0105',
   date: new Date().toISOString(), status: 'COMPLETED', ...over
 });
+// `charged_ves` rather than `amount_ves`: the matcher compares against what the
+// bank was asked to pull, which is the share plus any tip.
 const payment = (over = {}) => ({
-  amount_ves: '1260000', payer_bank_code: '0105', payer_phone_last4: '1234', ...over
+  amount_ves: '1260000', charged_ves: '1260000',
+  payer_bank_code: '0105', payer_phone_last4: '1234', ...over
 });
 
 test('amount alone never settles a payment', () => {
@@ -144,6 +147,32 @@ test('a single amount-only candidate is ambiguous, never matched', () => {
   const r = matchInDoubtPayment([movement({ phoneOrigin: '04148887777' })], payment());
   assert.equal(r.outcome, OUTCOME.AMBIGUOUS);
   assert.deepEqual(r.candidates, ['847291056738']);
+});
+
+test('a tipped charge matches on what the bank was asked to pull', () => {
+  // The bank moved share + tip in one debit, so that is the figure its movement
+  // carries. Matching on `amount_ves` found nothing, and NO_MATCH here ends with
+  // the charge marked FAILED while the diner stands debited.
+  const tipped = payment({ amount_ves: '1260000', charged_ves: '1300000' });
+
+  assert.equal(
+    matchInDoubtPayment([movement({ amountMinor: '1300000' })], tipped).outcome,
+    OUTCOME.MATCHED
+  );
+  // And the share on its own is not this payment: some other table paid that.
+  assert.equal(
+    matchInDoubtPayment([movement({ amountMinor: '1260000' })], tipped).outcome,
+    OUTCOME.NO_MATCH
+  );
+});
+
+test('the matcher refuses to guess which figure it should compare', () => {
+  // Defaulting to `amount_ves` would silently match on the wrong number for
+  // every tipped charge, which is precisely the bug above. Loud instead.
+  assert.throws(
+    () => matchInDoubtPayment([movement()], { amount_ves: '1260000', payer_phone_last4: '1234' }),
+    /charged_ves/
+  );
 });
 
 test('phone comparison uses the stored last four digits', () => {

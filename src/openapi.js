@@ -305,6 +305,13 @@ const schemas = {
       tipMinorUnits: {
         ...minorUnits,
         description: 'Optional voluntary tip, default 0. Added to what the payer hands over, **never to the bill** — `amountMinorUnits` alone settles it.'
+      },
+      paymentMethod: {
+        type: 'string',
+        enum: ['CASH', 'CARD', 'TRANSFER', 'SPLITE', 'OTHER'],
+        default: 'SPLITE',
+        description:
+          'Optional. How the money arrived at the till. Send it when a tip is involved: it is what separates a cash tip already in the drawer from an electronic one the restaurant owes its staff, and an unset method is reported as unclassified rather than guessed. `C2P` and `PAGO_MOVIL` are not accepted here — those are set by the rails that own them.'
       }
     }
   },
@@ -460,7 +467,12 @@ const schemas = {
       currency: { type: 'string', const: 'VES' },
       totalTipsVes: minorUnits,
       inTillVes: { ...minorUnits, description: 'Tips taken as cash. The money is physically present; only its division is open.' },
-      owedToStaffVes: { ...minorUnits, description: 'Tips that arrived electronically, so the restaurant holds them and owes them out.' },
+      owedToStaffVes: { ...minorUnits, description: 'Tips that arrived electronically (CARD, TRANSFER, PAGO_MOVIL, C2P), so the restaurant holds them and owes them out.' },
+      unclassifiedVes: {
+        ...minorUnits,
+        description:
+          'Tips on payments whose method was not recorded (SPLITE, OTHER). Reported separately rather than folded into either figure above: calling them cash cancels a real debt to staff, and calling them electronic pays out money already in the drawer. The three always sum to `totalTipsVes`.'
+      },
       byMethod: {
         type: 'array',
         items: {

@@ -67,7 +67,21 @@ const splitPaymentSchema = Joi.object({
   // A voluntary tip on top. Zero-or-more rather than positive: no tip is the
   // ordinary case, and it is added to what the payer hands over, never to the
   // bill. Named to match its sibling above.
-  tipMinorUnits: minorUnits.default('0')
+  tipMinorUnits: minorUnits.default('0'),
+  /**
+   * How the money arrived at the till.
+   *
+   * Optional, defaulting to the value this endpoint has always recorded, so an
+   * existing client is unaffected. It exists because the tips report has to
+   * separate a tip that is physically in the drawer from one that landed in the
+   * restaurant's bank account and is owed to staff -- and that distinction is
+   * unanswerable if every till payment is recorded as the same thing.
+   *
+   * C2P and PAGO_MOVIL are deliberately absent: those are set by the rails that
+   * own them, and a client naming one here would be claiming a bank movement
+   * nobody verified.
+   */
+  paymentMethod: Joi.string().valid('CASH', 'CARD', 'TRANSFER', 'SPLITE', 'OTHER').default('SPLITE')
 });
 
 const createTableSchema = Joi.object({

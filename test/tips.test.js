@@ -138,6 +138,40 @@ function stubReport(rows) {
   return calls;
 }
 
+test('an unrecorded method is reported as unclassified, not guessed', async () => {
+  stubReport([
+    { payment_method: 'CASH', payments: 1, tips_ves: '1000' },
+    { payment_method: 'CARD', payments: 1, tips_ves: '2000' },
+    // What the till records when the client does not say how the money came in.
+    { payment_method: 'SPLITE', payments: 3, tips_ves: '4000' },
+    { payment_method: 'OTHER', payments: 1, tips_ves: '500' }
+  ]);
+
+  const out = await tipsReport({
+    restaurantId: 'r1', from: '2026-08-01T00:00:00Z', to: '2026-08-02T00:00:00Z'
+  });
+
+  // Calling these cash would cancel a real debt to staff; calling them
+  // electronic would pay out money already sitting in the drawer.
+  assert.equal(out.inTillVes, '1000');
+  assert.equal(out.owedToStaffVes, '2000');
+  assert.equal(out.unclassifiedVes, '4500');
+});
+
+test('the three buckets always sum to the total', async () => {
+  stubReport([
+    { payment_method: 'CASH', payments: 1, tips_ves: '1000' },
+    { payment_method: 'C2P', payments: 1, tips_ves: '2000' },
+    { payment_method: 'SPLITE', payments: 1, tips_ves: '3000' }
+  ]);
+  const out = await tipsReport({
+    restaurantId: 'r1', from: '2026-08-01T00:00:00Z', to: '2026-08-02T00:00:00Z'
+  });
+
+  const parts = BigInt(out.inTillVes) + BigInt(out.owedToStaffVes) + BigInt(out.unclassifiedVes);
+  assert.equal(parts.toString(), out.totalTipsVes, 'a tip cannot fall between the buckets');
+});
+
 test('cash tips are in the till; electronic tips are owed to staff', async () => {
   stubReport([
     { payment_method: 'C2P', payments: 4, tips_ves: '12000' },
@@ -225,6 +259,42 @@ test('a tip is optional on every rail and defaults to zero', () => {
   const charge = c2pChargeSchema.validate(c2pCharge());
   assert.equal(charge.error, undefined);
   assert.equal(charge.value.tipVes, '0');
+});
+
+test('a zero-padded tip is a tip of nothing, not an invalid amount', async () => {
+  // `minorUnits` accepts "00", and the first version compared the string to
+  // '0', so a client sending a padded zero had its entire payment rejected as
+  // INVALID_AMOUNT over a tip it never meant to leave.
+  const payments = stubBill(openBill());
+  const result = await processSplitPayment({
+    restaurantId: 'r1', billId: 'bill-1', amountPaidMinorUnits: 2500, tipVes: '00'
+  });
+  assert.equal(payments[0].tip_ves, '0');
+  assert.equal(result.totalChargedVes, '2500');
+});
+
+test('a tip that is not a number is refused before anything is written', async () => {
+  const payments = stubBill(openBill());
+  await assert.rejects(
+    processSplitPayment({
+      restaurantId: 'r1', billId: 'bill-1', amountPaidMinorUnits: 2500, tipVes: 'abc'
+    }),
+    err => err.statusCode === 400
+  );
+  assert.equal(payments.length, 0, 'a bad tip must not reach the ledger as a Postgres error');
+});
+
+test('the till can say how the money arrived, and defaults to not saying', () => {
+  assert.equal(splitPaymentSchema.validate(splitPayment()).value.paymentMethod, 'SPLITE');
+  assert.equal(
+    splitPaymentSchema.validate(splitPayment({ paymentMethod: 'CASH' })).value.paymentMethod,
+    'CASH'
+  );
+  // Set by the rails that own them; a client naming one here would be claiming
+  // a bank movement nobody verified.
+  for (const method of ['C2P', 'PAGO_MOVIL', 'BITCOIN']) {
+    assert.ok(splitPaymentSchema.validate(splitPayment({ paymentMethod: method })).error, method);
+  }
 });
 
 test('a tip that is present is carried through as a digit string', () => {

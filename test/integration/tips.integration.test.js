@@ -5,7 +5,8 @@ const { skip } = require('./helpers/env');
 const db = require('../../src/connectors/base');
 const fixtures = require('./helpers/fixtures');
 const { processSplitPayment } = require('../../src/services/locks');
-const { createC2PPayment } = require('../../src/services/mercantilC2P');
+const { createC2PPayment, resolveC2PPayment } = require('../../src/services/mercantilC2P');
+const { MercantilC2PError } = require('../../src/payments/providers/mercantil/c2p');
 const { tipsReport, tipsForBill } = require('../../src/services/tips');
 
 /**
@@ -161,15 +162,19 @@ describe('tips against a real Postgres', { skip }, () => {
 
     const bill = await freshBill({ totalDue: 20000, totalDueVes: 20000 });
     // Cash: already in the drawer.
-    const cash = await processSplitPayment({
-      restaurantId: restaurant.id, billId: bill.id, amountPaidMinorUnits: 5000, tipVes: '1000'
+    await processSplitPayment({
+      restaurantId: restaurant.id, billId: bill.id,
+      amountPaidMinorUnits: 5000, tipVes: '1000', paymentMethod: 'CASH'
     });
-    await db.query("UPDATE payments SET payment_method = 'CASH' WHERE id = $1", [cash.paymentId]);
     // Electronic: landed in the restaurant's account, owed to staff.
-    const card = await processSplitPayment({
-      restaurantId: restaurant.id, billId: bill.id, amountPaidMinorUnits: 5000, tipVes: '2500'
+    await processSplitPayment({
+      restaurantId: restaurant.id, billId: bill.id,
+      amountPaidMinorUnits: 5000, tipVes: '2500', paymentMethod: 'CARD'
     });
-    await db.query("UPDATE payments SET payment_method = 'CARD' WHERE id = $1", [card.paymentId]);
+    // The method left unsaid, which is what the till records by default.
+    await processSplitPayment({
+      restaurantId: restaurant.id, billId: bill.id, amountPaidMinorUnits: 5000, tipVes: '400'
+    });
     // A tipless payment must not appear as a zero row.
     await processSplitPayment({
       restaurantId: restaurant.id, billId: bill.id, amountPaidMinorUnits: 5000
@@ -178,13 +183,57 @@ describe('tips against a real Postgres', { skip }, () => {
     const to = new Date(Date.now() + 60_000);
     const report = await tipsReport({ restaurantId: restaurant.id, from, to });
 
-    assert.equal(report.totalTipsVes, '3500');
+    assert.equal(report.totalTipsVes, '3900');
     assert.equal(report.inTillVes, '1000');
     assert.equal(report.owedToStaffVes, '2500');
+    // Not silently filed as either: paying it out twice and cancelling a real
+    // debt are both worse than saying the method was never recorded.
+    assert.equal(report.unclassifiedVes, '400');
     assert.deepEqual(
       report.byMethod.map(m => [m.paymentMethod, m.tipsVes]),
-      [['CARD', '2500'], ['CASH', '1000']]
+      [['CARD', '2500'], ['CASH', '1000'], ['SPLITE', '400']]
     );
+  });
+
+  it('resolves a tipped in-doubt charge against the movement the bank actually made', async () => {
+    const bill = await freshBill({ totalDue: 126000, totalDueVes: 126000 });
+
+    // The bank never answers the charge, so it lands IN_DOUBT with the diner
+    // possibly already debited for share + tip.
+    const indeterminate = {
+      async charge() { throw new MercantilC2PError('BANK_INDETERMINATE', 'no response'); },
+      async search({ amountVesMinor }) {
+        searched.push(String(amountVesMinor));
+        // The movement the bank holds is the whole debit, not the share.
+        return [{
+          reference: '900000000123', amountMinor: '130000',
+          phoneOrigin: '04145551234', bankOrigin: '0105',
+          date: new Date().toISOString(), status: 'COMPLETED'
+        }];
+      }
+    };
+    const searched = [];
+
+    const charge = await createC2PPayment({
+      restaurantId: restaurant.id, billId: bill.id, amountVes: '126000', tipVes: '4000',
+      payer: { bankCode: '0105', idNumber: 'V12345678', phone: '04145551234', clave: '123456' },
+      idempotencyKey: `c2p-doubt-tip-${bill.id}`,
+      bankClient: indeterminate
+    });
+    assert.equal(charge.status, 'IN_DOUBT');
+
+    const out = await resolveC2PPayment({
+      restaurantId: restaurant.id, paymentId: charge.paymentId, bankClient: indeterminate
+    });
+
+    // Searching on the share alone found nothing, and NO_MATCH on this path
+    // ends with the charge written off while the diner stands debited.
+    assert.deepEqual(searched, ['130000']);
+    assert.equal(out.status, 'SUCCEEDED');
+
+    const stored = await fixtures.readBill(bill.id);
+    assert.equal(stored.amount_paid_ves, '126000', 'the bill is still credited only its share');
+    assert.equal(stored.status, 'CLOSED');
   });
 
   it('leaves an unconfirmed tip out of the report until the money is real', async () => {

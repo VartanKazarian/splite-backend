@@ -28,6 +28,29 @@ function toPaymentAmount(value) {
   return amount > 0n ? amount : null;
 }
 
+/**
+ * The same, for a tip, where zero is a valid answer.
+ *
+ * `toPaymentAmount` refuses zero -- a payment of nothing moves no money -- and
+ * a tip has the opposite default: most payments carry none. Written as its own
+ * function rather than as `String(value) === '0' ? 0n : toPaymentAmount(value)`,
+ * which was the first version and was wrong: `minorUnits` accepts a zero-padded
+ * digit string, so a client sending `"00"` failed the string comparison, fell
+ * through to `toPaymentAmount`, and had its entire payment rejected as an
+ * invalid amount over a tip of nothing.
+ */
+function toTipAmount(value) {
+  if (value == null) return 0n;
+  if (typeof value === 'number' && !Number.isSafeInteger(value)) return null;
+  let amount;
+  try {
+    amount = BigInt(value);
+  } catch {
+    return null;
+  }
+  return amount >= 0n ? amount : null;
+}
+
 function formatRate(value) {
   if (value === null || value === undefined) return null;
 
@@ -165,6 +188,9 @@ async function processSplitPayment({
     throw new ApiError('INVALID_AMOUNT', 'Invalid payment amount');
   }
 
+  const tip = toTipAmount(tipVes);
+  if (tip === null) throw new ApiError('INVALID_AMOUNT', 'Invalid tip amount');
+
   // The payment path runs on its own statement budget: several diners paying the
   // same bill serialise on FOR UPDATE, and lock waiting counts toward
   // statement_timeout exactly like execution.
@@ -183,7 +209,7 @@ async function processSplitPayment({
       payerType: payer?.type ?? 'STAFF',
       payerId: payer?.id ?? null,
       splitParticipantId,
-      tipVes,
+      tipVes: tip,
       tendered
     });
 
@@ -198,4 +224,4 @@ async function processSplitPayment({
   }, { statementTimeoutMs: config.db.paymentStatementTimeoutMs });
 }
 
-module.exports = { processSplitPayment, applyToBill, settlementView, toPaymentAmount };
+module.exports = { processSplitPayment, applyToBill, settlementView, toPaymentAmount, toTipAmount };

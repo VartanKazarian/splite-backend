@@ -1,7 +1,7 @@
 const db = require('../connectors/base');
 const config = require('../config');
 const { ApiError } = require('../errors');
-const { applyToBill, settlementView, toPaymentAmount } = require('./locks');
+const { applyToBill, settlementView, toPaymentAmount, toTipAmount } = require('./locks');
 const { recordPayment, transitionPayment } = require('./payments');
 const { MercantilC2PClient, MercantilC2PError } = require('../payments/providers/mercantil/c2p');
 const { matchInDoubtPayment, OUTCOME, digitsOnly } = require('./c2pMatcher');
@@ -150,7 +150,7 @@ async function createC2PPayment({
   // A tip of nothing is the ordinary case, so zero is valid here where it is
   // not for the amount -- `toPaymentAmount` rejects it, and rightly, since a
   // payment of nothing moves no money.
-  const tip = tipVes == null || String(tipVes) === '0' ? 0n : toPaymentAmount(tipVes);
+  const tip = toTipAmount(tipVes);
   if (tip === null) throw new ApiError('INVALID_AMOUNT', 'Invalid tip amount');
 
   // What Mercantil is asked to pull. The bill only ever sees `amount`; the
@@ -372,7 +372,7 @@ function moveTo(payment, restaurantId, toStatus, reason) {
  */
 async function resolveC2PPayment({ restaurantId, paymentId, actorUserId = null, bankClient = null }) {
   const { rows } = await db.query(
-    `SELECT p.id, p.status, p.bill_id, p.amount_ves, p.created_at,
+    `SELECT p.id, p.status, p.bill_id, p.amount_ves, p.tip_ves, p.created_at,
             c.invoice_number, c.payer_bank_code, c.payer_phone_last4
        FROM payments p
        JOIN c2p_charges c ON c.payment_id = p.id
@@ -396,13 +396,19 @@ async function resolveC2PPayment({ restaurantId, paymentId, actorUserId = null, 
   // back however old the charge is.
   const from = new Date(Math.max(createdMs - SEARCH_LEAD_MS, Date.now() - RESOLUTION_WINDOW_MAX_MS));
 
+  // What the bank was asked to pull, which is the share plus any tip. The
+  // movement Mercantil returns is for the whole debit, so searching on
+  // `amount_ves` alone finds nothing whenever the diner tipped -- and "nothing"
+  // on this path means NO_MATCH on a charge the diner may well have paid.
+  const chargedVes = (BigInt(payment.amount_ves) + BigInt(payment.tip_ves ?? 0)).toString();
+
   let movements;
   try {
     const bank = bankClient ?? await MercantilC2PClient.forRestaurant(restaurantId);
     movements = await bank.search({
       fromDate: from.toISOString(),
       toDate: new Date().toISOString(),
-      amountVesMinor: payment.amount_ves
+      amountVesMinor: chargedVes
     });
   } catch (err) {
     if (err instanceof ApiError) throw err;
@@ -427,7 +433,7 @@ async function resolveC2PPayment({ restaurantId, paymentId, actorUserId = null, 
       : []
   );
 
-  const match = matchInDoubtPayment(movements, payment, consumed);
+  const match = matchInDoubtPayment(movements, { ...payment, charged_ves: chargedVes }, consumed);
 
   try {
     return await db.withTransaction(async tx => {

@@ -631,7 +631,10 @@ router.post(
         // Optional: settle one participant's share of a persistent split.
         splitParticipantId: req.body.splitParticipantId ?? null,
         // A tip taken at the till, on top of what settles the bill.
-        tipVes: req.body.tipMinorUnits ?? '0'
+        tipVes: req.body.tipMinorUnits ?? '0',
+        // How it arrived, which is what tells a cash tip already in the drawer
+        // from an electronic one the restaurant still owes its staff.
+        paymentMethod: req.body.paymentMethod ?? 'SPLITE'
       });
 
       // Store the response before replying, so a client retry that races the

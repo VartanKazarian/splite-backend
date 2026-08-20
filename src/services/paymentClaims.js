@@ -152,7 +152,7 @@ async function listClaims({ restaurantId, billId = null, status = 'PENDING', lim
 async function confirmClaim({ restaurantId, claimId, actor, meta = {} }) {
   const result = await db.withTransaction(async client => {
     const { rows } = await client.query(
-      `SELECT id, bill_id, amount_ves, status, payment_method
+      `SELECT id, bill_id, amount_ves, tip_ves, status, payment_method
          FROM payments
         WHERE id = $1 AND restaurant_id = $2
         FOR UPDATE`,
@@ -183,7 +183,15 @@ async function confirmClaim({ restaurantId, claimId, actor, meta = {} }) {
       actorId: actor?.id ?? null
     });
 
-    return { ...settlementView(applied.bill, applied), paymentId: claim.id };
+    // The tip is reported back rather than left implicit: the figure staff just
+    // verified against the bank app is `amount_ves + tip_ves`, and only the
+    // first half appears in the settlement figures above.
+    return {
+      ...settlementView(applied.bill, applied),
+      paymentId: claim.id,
+      tipVes: String(claim.tip_ves ?? '0'),
+      totalChargedVes: (BigInt(claim.amount_ves) + BigInt(claim.tip_ves ?? 0)).toString()
+    };
   }, { statementTimeoutMs: config.db.paymentStatementTimeoutMs });
 
   await logAudit({

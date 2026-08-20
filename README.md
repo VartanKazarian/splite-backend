@@ -810,7 +810,11 @@ It is optional on all three diner-facing rails, defaulting to zero:
 
 The C2P row is the one to read twice. The diner's bank sees the single figure
 they authorised, the bill sees only its own share, and the two are different
-numbers on purpose.
+numbers on purpose — and that carries into resolution: an in-doubt charge is
+matched against `amount + tip`, because that is the debit the bank actually
+holds a movement for. Matching a tipped charge on the share alone finds nothing,
+and "nothing" on that path means a charge written off while the diner stands
+debited.
 
 Responses report both halves rather than one merged figure: a payment result
 carries `tipVes` and `totalChargedVes`, and a claim carries `tipVes` and
@@ -836,12 +840,14 @@ of them: how much came in over this shift, and how did it arrive.
   "from": "2026-08-19T16:00:00.000Z",
   "to": "2026-08-20T04:00:00.000Z",
   "currency": "VES",
-  "totalTipsVes": "16000",
+  "totalTipsVes": "16400",
   "inTillVes": "3000",
   "owedToStaffVes": "13000",
+  "unclassifiedVes": "400",
   "byMethod": [
     { "paymentMethod": "C2P", "payments": 4, "tipsVes": "12000" },
-    { "paymentMethod": "CASH", "payments": 2, "tipsVes": "3000" }
+    { "paymentMethod": "CASH", "payments": 2, "tipsVes": "3000" },
+    { "paymentMethod": "SPLITE", "payments": 1, "tipsVes": "400" }
   ]
 }
 ```
@@ -851,6 +857,23 @@ physically in the drawer and the restaurant is only deciding how to divide it;
 an electronic tip landed in the restaurant's *bank account* and is a debt to
 staff until it is paid out. One number for both would describe two different
 situations identically.
+
+**Which bucket a tip lands in comes from `payment_method`**, so the till
+endpoint accepts an optional `paymentMethod` (`CASH`, `CARD`, `TRANSFER`,
+`SPLITE`, `OTHER`) alongside the amount. Send it whenever a tip is involved.
+Without it the payment records the default `SPLITE`, and the tip is reported as
+`unclassifiedVes` — deliberately its own figure rather than folded into either
+of the others, because calling it cash cancels a real debt to staff and calling
+it electronic pays out money already in the drawer. The three always sum to
+`totalTipsVes`. `C2P` and `PAGO_MOVIL` are not accepted from a client: those are
+set by the rails that own them, and naming one here would be claiming a bank
+movement nobody verified.
+
+The period is read from **when the payment was taken**, not when it was
+confirmed. A Pago Móvil claim declared at 23:50 and confirmed at 00:10 belongs
+to the shift it was declared in and appears there once it is confirmed — so a
+report run at midnight sharp will not yet show it. Re-run the report after the
+queue is worked, which is the same rule as counting a till.
 
 Only **SUCCEEDED** payments count. A tip on a PENDING Pago Móvil claim is money
 a diner *says* they sent, and counting it would have a restaurant hand out cash

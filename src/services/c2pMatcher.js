@@ -75,7 +75,9 @@ function amountsEqual(a, b) {
  * Decide whether any of the bank's movements is this payment.
  *
  * @param {Array<object>} movements  as returned by MercantilC2PClient.search()
- * @param {object} payment           { amount_ves, payer_phone_last4 }
+ * @param {object} payment           { charged_ves, payer_phone_last4 }, where
+ *        `charged_ves` is what the bank was asked to pull -- the share plus any
+ *        tip, not `amount_ves`.
  * @param {Set<string>} consumedReferences  normalised references that have
  *        already settled something. Passing them in rather than filtering
  *        afterwards keeps a spent movement out of the *candidate* count, so a
@@ -85,7 +87,18 @@ function amountsEqual(a, b) {
  *            candidates?: string[], reason?: string}}
  */
 function matchInDoubtPayment(movements, payment, consumedReferences = new Set()) {
-  const expected = payment.amount_ves;
+  // The whole debit, not the part of it that settles the bill. A tipped charge
+  // asks the bank for `amount_ves + tip_ves`, so the movement that comes back is
+  // for that sum; comparing it against `amount_ves` matched nothing and reported
+  // NO_MATCH on a charge the diner had actually paid.
+  //
+  // Required rather than defaulted to `amount_ves`: a caller that forgets it
+  // would silently match on the wrong figure, and this function decides whether
+  // money moves.
+  const expected = payment.charged_ves;
+  if (expected == null) {
+    throw new TypeError('matchInDoubtPayment needs payment.charged_ves (amount_ves + tip_ves)');
+  }
 
   const candidates = (movements ?? []).filter(movement => {
     // amountMinor is null when the bank sent a shape `toMinorUnits` could not
