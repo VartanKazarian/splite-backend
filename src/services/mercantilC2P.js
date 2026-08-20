@@ -4,7 +4,7 @@ const { ApiError } = require('../errors');
 const { applyToBill, settlementView, toPaymentAmount, toTipAmount } = require('./locks');
 const { recordPayment, transitionPayment } = require('./payments');
 const { MercantilC2PClient, MercantilC2PError } = require('../payments/providers/mercantil/c2p');
-const { matchInDoubtPayment, OUTCOME, digitsOnly } = require('./c2pMatcher');
+const { matchInDoubtPayment, OUTCOME, digitsOnly, canonicalReference } = require('./c2pMatcher');
 const { logAudit } = require('./audit');
 const { logger } = require('../connectors/logger');
 
@@ -99,7 +99,8 @@ const lastFour = phone => digitsOnly(phone).slice(-4).padStart(4, '0');
  * a dispute. Falling back to the payment id keeps the uniqueness guarantee
  * rather than writing null and losing it.
  */
-const referenceFor = result => result.bankReference || result.providerPaymentId || null;
+const referenceFor = result =>
+  canonicalReference(result.bankReference) || canonicalReference(result.providerPaymentId) || null;
 
 /** Evidence of an attempt, including the ones that deliberately settle nothing. */
 async function logAttempt(client, { paymentId, restaurantId, outcome, candidates = [], reason = null, actorUserId = null }) {
@@ -452,14 +453,14 @@ async function resolveC2PPayment({ restaurantId, paymentId, actorUserId = null, 
   // Which of those movements have already settled something. Looked up by the
   // references actually returned, so this is an index probe rather than a scan
   // of the ledger.
-  const references = movements.map(m => digitsOnly(m.reference)).filter(Boolean);
+  const references = movements.map(m => canonicalReference(m.reference)).filter(Boolean);
   const consumed = new Set(
     references.length
       ? (await db.query(
         `SELECT provider_payment_id FROM payments
           WHERE provider = $1 AND provider_payment_id = ANY($2::text[])`,
         [PROVIDER, references]
-      )).rows.map(r => digitsOnly(r.provider_payment_id))
+      )).rows.map(r => canonicalReference(r.provider_payment_id))
       : []
   );
 
@@ -487,7 +488,7 @@ async function resolveC2PPayment({ restaurantId, paymentId, actorUserId = null, 
       await tx.query('UPDATE c2p_charges SET last_resolution_at = NOW() WHERE payment_id = $1', [paymentId]);
 
       if (match.outcome === OUTCOME.MATCHED) {
-        const reference = digitsOnly(match.movement.reference);
+        const reference = canonicalReference(match.movement.reference);
 
         // Claimed first: on conflict the settlement below never happens.
         await tx.query(
@@ -556,7 +557,9 @@ async function resolveC2PPayment({ restaurantId, paymentId, actorUserId = null, 
       return { paymentId, status: 'FAILED', safeToRetry: true };
     }, { statementTimeoutMs: config.db.paymentStatementTimeoutMs });
   } catch (err) {
-    const reference = match.movement ? digitsOnly(match.movement.reference) : null;
+    // Same spelling as the write above: this reference is reported to the
+    // caller and handed to parkUnappliable, which stores it.
+    const reference = match.movement ? canonicalReference(match.movement.reference) : null;
     const converted = asReferenceConflict(err, reference);
 
     // A charge the bank has shown us a movement for, which we could not apply.

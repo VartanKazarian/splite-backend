@@ -37,6 +37,43 @@ const OUTCOME = Object.freeze({
 const digitsOnly = value => String(value ?? '').replace(/\D/g, '');
 
 /**
+ * The one spelling a reference is stored and compared under.
+ *
+ * `provider_payment_id` is what makes "one bank movement settles exactly one
+ * payment" true: a unique index enforces it, and the resolver probes it to skip
+ * movements already spent. Both of those are string comparisons, so a movement
+ * written as `9000 0000 0999` by one path and `900000000999` by another is two
+ * movements as far as the database is concerned -- the index does not collide,
+ * the probe does not match, and one debit can settle two bills.
+ *
+ * Digits only, but *only* for a value that is already just a number in some
+ * spelling. A bank reference arrives spaced, dashed or zero-padded depending on
+ * which endpoint returned it, and those are the same reference. A
+ * `providerPaymentId` like `TX-4F2A-9` is not a number at all, and stripping it
+ * to `429` would both lose the identifier and risk colliding with somebody's
+ * genuine reference, so anything carrying a letter is kept verbatim.
+ *
+ * Leading zeros are deliberately kept, so `0900000000999` and `900000000999`
+ * remain different references. That is what `digitsOnly` has always done and
+ * what the amount/phone comparisons already assume; changing it here would
+ * merge two references that may genuinely be distinct, which is a worse failure
+ * than leaving one split. If Mercantil turns out to zero-pad the same reference
+ * inconsistently between endpoints, this is the line to revisit -- with their
+ * answer in hand, not a guess.
+ */
+function canonicalReference(value) {
+  const text = String(value ?? '').trim();
+  if (!text) return null;
+  // Digits with the separators a bank might print between them, and nothing
+  // else. Anything outside that alphabet is an identifier, not a number.
+  if (/^[\d\s.\-/]+$/.test(text)) {
+    const digits = digitsOnly(text);
+    return digits || null;
+  }
+  return text;
+}
+
+/**
  * Compare phones by their last four digits, which is all we store.
  *
  * A movement carries the payer's full number and we keep four digits of it, so
@@ -105,7 +142,7 @@ function matchInDoubtPayment(movements, payment, consumedReferences = new Set())
     // read. Dropped rather than guessed at: a movement we cannot price is not
     // evidence of anything.
     if (!movement?.reference || movement.amountMinor == null) return false;
-    if (consumedReferences.has(digitsOnly(movement.reference))) return false;
+    if (consumedReferences.has(canonicalReference(movement.reference))) return false;
     return amountsEqual(movement.amountMinor, expected);
   });
 
@@ -144,4 +181,6 @@ function matchInDoubtPayment(movements, payment, consumedReferences = new Set())
   };
 }
 
-module.exports = { matchInDoubtPayment, OUTCOME, phoneMatchesLast4, amountsEqual, digitsOnly };
+module.exports = {
+  matchInDoubtPayment, OUTCOME, phoneMatchesLast4, amountsEqual, digitsOnly, canonicalReference
+};
