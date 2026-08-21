@@ -102,14 +102,31 @@ describe('metrics', { skip }, () => {
     assert.ok(Number(age[1]) >= 90 * 60, `expected at least 90 minutes, got ${age[1]}s`);
   });
 
-  it('reports both unresolved C2P states, including the one at zero', async () => {
-    // A series that vanishes at zero is a gap on a dashboard, which reads as
-    // "no data" rather than "nothing waiting".
+  it('reports both unresolved C2P states, whatever their counts', async () => {
+    // These gauges are deliberately cross-tenant -- this endpoint answers to
+    // whoever runs the service -- which makes their values shared state that
+    // other suites move under this one. So the assertions are the ones that
+    // hold regardless of what else is running: a row this test created is
+    // counted, and both series are present.
+    //
+    // The first version asserted AMBIGUOUS was exactly zero and passed alone.
+    // Run beside the C2P suite, which creates ambiguous charges, it failed --
+    // on main, because it was merged while the check was still in flight.
+    //
+    // Only additions and deletions of a suite's *own* rows happen concurrently,
+    // so "at least the ones I made" is sound where an absolute count is not.
     await claim('IN_DOUBT', 'C2P');
 
     const { text } = await scrape();
-    assert.match(text, /splite_unresolved_c2p\{status="IN_DOUBT"\} [1-9]/);
-    assert.match(text, /splite_unresolved_c2p\{status="AMBIGUOUS"\} 0/);
+    const inDoubt = /splite_unresolved_c2p\{status="IN_DOUBT"\} (\d+)/.exec(text);
+    assert.ok(inDoubt, `IN_DOUBT series missing from:\n${text}`);
+    assert.ok(Number(inDoubt[1]) >= 1, 'the charge this test created is counted');
+
+    // Presence is the property that matters for the other one: a series which
+    // vanishes at zero is a gap on a dashboard, and a gap reads as "no data"
+    // rather than "nothing waiting". That it is emitted *at* zero is proved in
+    // the unit suite, where the registry is not shared with anything.
+    assert.match(text, /splite_unresolved_c2p\{status="AMBIGUOUS"\} \d+/);
   });
 
   it('counts a failure that was logged and swallowed', async () => {
