@@ -6,7 +6,7 @@ const { skip } = require('./helpers/env');
 const db = require('../../src/connectors/base');
 const fixtures = require('./helpers/fixtures');
 const staff = require('../../src/services/staff');
-const { hashPassword } = require('../../src/services/auth');
+const { hashPassword, changeOwnPassword } = require('../../src/services/auth');
 const { ApiError } = require('../../src/errors');
 
 /**
@@ -228,6 +228,55 @@ describe('staff administration', { skip }, () => {
     } finally {
       await fixtures.destroyRestaurant(other.id);
     }
+  });
+
+  it('lets somebody change their own password, and signs their other devices out', async () => {
+    // The gap the administrator reset created: without this, the only way to
+    // change a password you already know is to ask somebody senior to set one
+    // and tell it to you, which puts it through a second person.
+    const cashier = await makeUser('CASHIER');
+    for (let i = 0; i < 2; i++) {
+      await db.query(
+        `INSERT INTO refresh_sessions (id, user_id, restaurant_id, token_hash, expires_at)
+         VALUES ($1, $2, $3, $4, NOW() + INTERVAL '30 days')`,
+        [crypto.randomUUID(), cashier.id, restaurant.id, crypto.randomBytes(32).toString('hex')]
+      );
+    }
+
+    const result = await changeOwnPassword(cashier.id, PASSWORD, 'a-brand-new-long-password');
+
+    assert.equal(result.sessionsRevoked, 2, 'the other devices are signed out');
+    assert.ok(result.accessToken, 'and this one is not: a fresh session comes back');
+    assert.ok(result.refreshToken);
+
+    // The returned session is not one of the ones just killed.
+    const live = await db.query(
+      'SELECT count(*)::int AS n FROM refresh_sessions WHERE user_id = $1 AND revoked_at IS NULL',
+      [cashier.id]
+    );
+    assert.equal(live.rows[0].n, 1);
+  });
+
+  it('refuses a password change without the current password', async () => {
+    // The whole guard. An access token in somebody else's hands must not be
+    // enough to take the account permanently.
+    const cashier = await makeUser('CASHIER');
+    await rejects(
+      () => changeOwnPassword(cashier.id, 'not-the-current-one', 'a-brand-new-long-password'),
+      'INVALID_CREDENTIALS'
+    );
+
+    // And the password is unchanged, so the real owner still gets in.
+    const stillTheirs = await changeOwnPassword(cashier.id, PASSWORD, 'a-brand-new-long-password');
+    assert.ok(stillTheirs.accessToken);
+  });
+
+  it('refuses a change that changes nothing', async () => {
+    // Somebody doing this has a reason -- usually that the current one is known
+    // to somebody else. Quietly succeeding without changing it is the worst
+    // possible answer.
+    const cashier = await makeUser('CASHIER');
+    await rejects(() => changeOwnPassword(cashier.id, PASSWORD, PASSWORD), 'PASSWORD_UNCHANGED');
   });
 
   it('lists the deactivated too, and last', async () => {

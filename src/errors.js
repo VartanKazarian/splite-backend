@@ -93,6 +93,7 @@ const CODES = {
   // 409 -- valid request, incompatible with current state.
   OPEN_BILL_EXISTS: 409,
   STAFF_EMAIL_TAKEN: 409,
+  PASSWORD_UNCHANGED: 409,
   STAFF_LAST_OWNER: 409,
   // Enrolment state, all of them "the account is not in the state this asks
   // for" rather than an authentication failure.

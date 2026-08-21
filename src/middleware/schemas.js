@@ -37,6 +37,18 @@ const updateStaffSchema = Joi.object({
   active: Joi.boolean()
 }).min(1);
 
+/**
+ * Changing your own password.
+ *
+ * The current one is required and is bounded only at the top: it was set under
+ * whatever rule was in force when it was chosen, and refusing to *read* a short
+ * legacy password would leave its owner unable to replace it.
+ */
+const changePasswordSchema = Joi.object({
+  currentPassword: Joi.string().min(1).max(128).required(),
+  newPassword: Joi.string().min(12).max(128).required()
+});
+
 const resetStaffPasswordSchema = Joi.object({
   password: Joi.string().min(12).max(128).required()
 });
@@ -602,6 +614,7 @@ module.exports = {
   createStaffSchema,
   updateStaffSchema,
   resetStaffPasswordSchema,
+  changePasswordSchema,
   userIdParamSchema,
   mfaChallengeSchema,
   mfaCodeSchema,

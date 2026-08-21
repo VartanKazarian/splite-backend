@@ -316,6 +316,74 @@ async function refresh(refreshToken, meta = {}) {
   });
 }
 
+/**
+ * Changing your own password.
+ *
+ * The current one is required, and that is the whole guard: an access token in
+ * somebody else's hands should not be enough to take an account permanently.
+ *
+ * Deliberately *not* counted against the login throttle. That throttle locks an
+ * account after enough failures, and wiring this into it would hand anyone
+ * holding a stolen token a way to lock the real owner out -- turning a
+ * containable compromise into a denial of service against the person best
+ * placed to fix it. The auth router's rate limiter bounds the attempts instead.
+ *
+ * Every other session is revoked, because a password change that leaves the old
+ * sessions running has not taken anything back. A fresh session is returned so
+ * the device doing the changing stays signed in: forcing somebody to log in
+ * again on the phone they just used is how a security action gets postponed.
+ */
+async function changeOwnPassword(userId, currentPassword, newPassword, meta = {}) {
+  const { rows } = await db.query(
+    'SELECT id, restaurant_id, email, password_hash, role, active FROM users WHERE id = $1',
+    [userId]
+  );
+  const user = rows[0];
+  if (!user || !user.active) throw unauthorized('User inactive');
+
+  const ok = await argon2.verify(user.password_hash, currentPassword).catch(() => false);
+  if (!ok) {
+    await logAudit({
+      action: 'AUTH_PASSWORD_CHANGE_REFUSED',
+      restaurantId: user.restaurant_id,
+      actorId: user.id,
+      ip: meta.ip,
+      userAgent: meta.userAgent,
+      requestId: meta.requestId,
+      details: { reason: 'bad_current_password' }
+    });
+    throw unauthorized('Current password is incorrect');
+  }
+
+  // Refused rather than accepted as a no-op: somebody doing this has a reason,
+  // usually that the current one is known to somebody else, and quietly
+  // succeeding without changing anything is the worst possible answer.
+  if (currentPassword === newPassword) {
+    throw new ApiError('PASSWORD_UNCHANGED', 'The new password must differ from the current one');
+  }
+
+  await db.query(
+    'UPDATE users SET password_hash = $2 WHERE id = $1',
+    [userId, await hashPassword(newPassword)]
+  );
+
+  const revoked = await revokeAllSessionsForUser(userId);
+
+  await logAudit({
+    action: 'AUTH_PASSWORD_CHANGED',
+    restaurantId: user.restaurant_id,
+    actorId: user.id,
+    ip: meta.ip,
+    userAgent: meta.userAgent,
+    requestId: meta.requestId,
+    details: { sessionsRevoked: revoked }
+  });
+
+  // Issued after the revocation, so it is not one of the sessions just killed.
+  const session = await issueSession(user, meta);
+  return { ...session, sessionsRevoked: revoked };
+}
+
 async function revokeSession(jti) {
   await db.query('UPDATE refresh_sessions SET revoked_at = NOW() WHERE id = $1 AND revoked_at IS NULL', [jti]);
 }
@@ -333,4 +401,5 @@ module.exports = {
   // the same transaction that creates them -- so the refresh session it writes
   // rolls back with the tenant if anything later in that transaction fails.
   currentUser, login, completeMfaLogin, refresh, revokeSession, revokeAllSessionsForUser, hashPassword, issueSession,
+  changeOwnPassword,
   ARGON2_OPTIONS };

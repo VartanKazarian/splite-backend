@@ -551,10 +551,30 @@ person after an argument needs to know the door is not shut this second rather
 than discovering it later.
 
 A password reset revokes sessions for the same reason: a reset that leaves the
-old sessions running has not locked anybody out. It is also how a forgotten
-password is recovered, because **there is no self-service password change yet**
-— an administrator sets a new one and tells the person. That is the next gap in
-this surface, and it is named here rather than left to be discovered.
+old sessions running has not locked anybody out. It is how a **forgotten**
+password is recovered — an administrator sets a new one and tells the person.
+
+A password somebody still knows is changed by them, at
+`POST /api/v1/auth/password`, without going through anybody senior. There is no
+user id in that path: the only account it changes is the one you are signed in
+as. The current password is required, and that is the guard — an access token in
+somebody else's hands should not be enough to take an account permanently.
+
+It is deliberately **not** counted against the login throttle. That throttle
+locks an *account* after enough failures, so wiring this into it would hand
+anyone holding a stolen token a way to lock the real owner out — turning a
+containable compromise into a denial of service against the person best placed
+to fix it. The auth router's rate limit bounds the attempts instead.
+
+It **answers like a login**, because that is what the caller now holds: every
+refresh session is revoked and the returned pair are the replacements. The
+device doing the changing stays signed in and every other one is signed out,
+with `sessionsRevoked` counting them. Forcing somebody to sign in again on the
+phone they just used is how a security action gets postponed.
+
+What is still missing here is a **forgotten-password flow that does not need
+another person** — that needs mail, which is optional in this deployment, so it
+waits on the same decision self-service onboarding does.
 
 ## Bill line items
 

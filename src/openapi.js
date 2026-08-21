@@ -1784,6 +1784,70 @@ const paths = {
     }
   },
 
+  '/api/v1/auth/password': {
+    post: {
+      tags: ['Auth'],
+      summary: 'Change your own password',
+      operationId: 'changePassword',
+      description: [
+        'Any authenticated staff role, for their own account only — there is no user id in the path,',
+        'because the only account you may change here is the one you are signed in as. An',
+        'administrator changing somebody else\'s uses `POST /api/v1/account/users/{userId}/password`.',
+        '',
+        'The current password is required, and that is the guard: an access token in somebody else\'s',
+        'hands should not be enough to take an account permanently. It is deliberately **not** counted',
+        'against the login throttle — that throttle locks an account, so wiring this into it would let',
+        'anyone holding a stolen token lock the real owner out, turning a containable compromise into',
+        'a denial of service against the person best placed to fix it. The auth rate limit bounds it.',
+        '',
+        '**Answers like a login**, because that is what you now hold: every refresh session is revoked',
+        'and these are the replacements, so the device doing the changing stays signed in and every',
+        'other one is signed out. `sessionsRevoked` counts them.'
+      ].join('\n'),
+      security: staff,
+      requestBody: {
+        required: true,
+        content: {
+          'application/json': {
+            schema: {
+              type: 'object',
+              required: ['currentPassword', 'newPassword'],
+              properties: {
+                currentPassword: {
+                  type: 'string', minLength: 1, maxLength: 128,
+                  description: 'Bounded only at the top: it was set under whatever rule was in force when it was chosen, and refusing to read a short legacy password would leave its owner unable to replace it.'
+                },
+                newPassword: { type: 'string', minLength: 12, maxLength: 128 }
+              }
+            }
+          }
+        }
+      },
+      responses: {
+        200: {
+          description: 'Changed, with a fresh session.',
+          content: {
+            'application/json': {
+              schema: {
+                allOf: [
+                  ref('Session'),
+                  {
+                    type: 'object',
+                    properties: {
+                      sessionsRevoked: { type: 'integer', description: 'Other devices signed out.' }
+                    }
+                  }
+                ]
+              }
+            }
+          }
+        },
+        409: response('Conflict'),
+        ...commonErrors
+      }
+    }
+  },
+
   '/api/v1/auth/me': {
     get: {
       tags: ['Auth'],
