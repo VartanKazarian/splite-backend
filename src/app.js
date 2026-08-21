@@ -196,6 +196,16 @@ app.use('/api/v1/webhooks', webhookRoutes);
 // Its limiters live in the router, keyed per source address and per recipient.
 if (config.onboarding.enabled) {
   app.use('/api/v1/onboarding', onboardingRoutes);
+} else {
+  // Off, and saying so. The router -- with its two fail-closed limiters and the
+  // only public write surface that creates tenants -- is still not mounted;
+  // this is a leaf that reads nothing and throws. It exists because the
+  // alternative was the catch-all 404 below, which a client cannot tell from a
+  // mistyped path: the first frontend to meet it rendered an invented support
+  // address, because there was nothing truthful left to say.
+  app.use('/api/v1/onboarding', (req, res, next) => {
+    next(new ApiError('ONBOARDING_NOT_CONFIGURED', 'Registration is not enabled on this deployment'));
+  });
 }
 
 app.use((req, res, next) => next(new ApiError('NOT_FOUND', 'Not found')));

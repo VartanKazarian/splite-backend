@@ -392,6 +392,7 @@
                   "MENU_OCR_NOT_CONFIGURED",
                   "MENU_OCR_UNAVAILABLE",
                   "MENU_OCR_UNREADABLE_RESPONSE",
+                  "ONBOARDING_NOT_CONFIGURED",
                   "INTERNAL_ERROR"
                 ],
                 "description": "Stable identifier for what went wrong. Branch on this, never on `message`. A code always carries the same HTTP status."

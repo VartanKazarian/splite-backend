@@ -143,3 +143,89 @@ test('every "this deployment cannot do that" code is in the configuration table'
   const undocumented = gated.filter(code => !section.includes(code));
   assert.deepEqual(undocumented, [], `gated capabilities missing from the table: ${undocumented.join(', ')}`);
 });
+
+/**
+ * Mail, which is only mandatory once onboarding is on.
+ *
+ * The guards here exist because `mailer.send` deliberately never throws: a
+ * misconfigured sender does not fail the request that triggered it, it fails
+ * silently and forever. Every one of these is a boot failure precisely so that
+ * it cannot be a silent one.
+ */
+test('onboarding cannot be turned on without a way to send mail', () => {
+  const secrets = {
+    JWT_ACCESS_SECRET: 'a'.repeat(64), JWT_REFRESH_SECRET: 'b'.repeat(64),
+    QR_SIGNING_SECRET: 'c'.repeat(64), WEBHOOK_SECRET: 'd'.repeat(64)
+  };
+  const base = {
+    NODE_ENV: 'production', DATABASE_URL: 'postgres://x/y',
+    CORS_ORIGINS: 'https://x.example.com', ONBOARDING_ENABLED: 'true', ...secrets
+  };
+  const assertConfig = `require(${JSON.stringify(CONFIG)}).assertProductionConfig();`;
+
+  // The default transport writes the verification link to a log file, which is
+  // a registration flow nobody can finish.
+  const logging = runNode(assertConfig, base);
+  assert.ok(!logging.ok);
+  assert.match(logging.out, /MAIL_TRANSPORT=log cannot be used in production/);
+
+  const smtpBase = {
+    ...base,
+    MAIL_TRANSPORT: 'smtp',
+    MAIL_FROM: 'Splite <splite.ve@gmail.com>',
+    APP_BASE_URL: 'https://app.example.com',
+    ONBOARDING_TEAM_EMAIL: 'splite.ve@gmail.com'
+  };
+
+  for (const missing of ['MAIL_SMTP_HOST', 'MAIL_SMTP_USER', 'MAIL_SMTP_PASSWORD']) {
+    const env = {
+      ...smtpBase,
+      MAIL_SMTP_HOST: 'smtp.gmail.com',
+      MAIL_SMTP_USER: 'splite.ve@gmail.com',
+      MAIL_SMTP_PASSWORD: 'app-password'
+    };
+    delete env[missing];
+    const result = runNode(assertConfig, env);
+    assert.ok(!result.ok, `${missing} must be required for MAIL_TRANSPORT=smtp`);
+    assert.match(result.out, new RegExp(`${missing} is required`));
+  }
+
+  const complete = runNode(`${assertConfig} console.log('started');`, {
+    ...smtpBase,
+    MAIL_SMTP_HOST: 'smtp.gmail.com',
+    MAIL_SMTP_USER: 'splite.ve@gmail.com',
+    MAIL_SMTP_PASSWORD: 'app-password'
+  });
+  assert.ok(complete.ok, `a fully configured mailbox must boot:\n${complete.out}`);
+});
+
+test('a mailbox address is refused as the sender for an API transport', () => {
+  // Resend, SES and Postmark all sign the From domain with DKIM records you
+  // publish yourself, so gmail.com is a domain you can never verify. Sending
+  // would fail at the provider, and nothing downstream would notice.
+  const secrets = {
+    JWT_ACCESS_SECRET: 'a'.repeat(64), JWT_REFRESH_SECRET: 'b'.repeat(64),
+    QR_SIGNING_SECRET: 'c'.repeat(64), WEBHOOK_SECRET: 'd'.repeat(64)
+  };
+  const base = {
+    NODE_ENV: 'production', DATABASE_URL: 'postgres://x/y',
+    CORS_ORIGINS: 'https://x.example.com', ONBOARDING_ENABLED: 'true',
+    MAIL_TRANSPORT: 'resend', MAIL_API_KEY: 're_test',
+    APP_BASE_URL: 'https://app.example.com',
+    ONBOARDING_TEAM_EMAIL: 'splite.ve@gmail.com', ...secrets
+  };
+  const assertConfig = `require(${JSON.stringify(CONFIG)}).assertProductionConfig();`;
+
+  // Both spellings of MAIL_FROM, because only one of them is parsed for a domain.
+  for (const from of ['splite.ve@gmail.com', 'Splite <splite.ve@gmail.com>']) {
+    const result = runNode(assertConfig, { ...base, MAIL_FROM: from });
+    assert.ok(!result.ok, `${from} must not be accepted as a resend sender`);
+    assert.match(result.out, /MAIL_TRANSPORT=smtp/);
+  }
+
+  // The same address is fine as the team inbox, and fine as an SMTP sender.
+  const owned = runNode(`${assertConfig} console.log('started');`, {
+    ...base, MAIL_FROM: 'Splite <hola@splite.example>'
+  });
+  assert.ok(owned.ok, `a domain sender must still boot:\n${owned.out}`);
+});
