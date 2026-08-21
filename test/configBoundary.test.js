@@ -122,3 +122,24 @@ test('every environment variable the config reads is written down somewhere', ()
   const undocumented = [...referenced].filter(name => !new RegExp(`\\b${name}\\b`).test(docs)).sort();
   assert.deepEqual(undocumented, [], `undocumented settings: ${undocumented.join(', ')}`);
 });
+
+test('every "this deployment cannot do that" code is in the configuration table', () => {
+  // The codes that mean "stop offering the feature here" rather than "try
+  // later". A client that treats one as transient retries forever; a deployer
+  // who cannot find out what to set never sets it. Both are what the README
+  // section exists to prevent, so a new gated feature has to land in it.
+  const fs = require('node:fs');
+  const root = path.join(__dirname, '..');
+  const errors = fs.readFileSync(path.join(root, 'src', 'errors.js'), 'utf8');
+
+  const gated = [...errors.matchAll(/^\s{2}([A-Z_]*(?:NOT_CONFIGURED|KEY_MISSING|MISCONFIGURED)):/gm)]
+    .map(m => m[1]);
+  assert.ok(gated.length >= 4, `expected several gated codes, found ${gated.join(', ')}`);
+
+  const readme = fs.readFileSync(path.join(root, 'README.md'), 'utf8');
+  const section = readme.slice(readme.indexOf('## What has to be configured'));
+  assert.ok(section.length > 0, 'the configuration section must exist');
+
+  const undocumented = gated.filter(code => !section.includes(code));
+  assert.deepEqual(undocumented, [], `gated capabilities missing from the table: ${undocumented.join(', ')}`);
+});

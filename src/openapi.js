@@ -2593,10 +2593,39 @@ const paths = {
     get: {
       tags: ['Menu'],
       summary: 'Restaurant menu settings',
-      description: 'Any authenticated staff role.',
+      operationId: 'getMenuSettings',
+      description: [
+        'Any authenticated staff role.',
+        '',
+        '**Read `menuOcrAvailable` before offering the photo import.** Reading a menu from a photo is',
+        'opt-in per deployment — it costs money per call and reaches a third party — so a server',
+        'without a key configured answers `503 MENU_OCR_NOT_CONFIGURED`. Without this flag a client',
+        'has no way to know that until after the user has chosen a file and waited for several',
+        'megabytes to upload. Asking is free and the answer does not change between requests.'
+      ].join('\n'),
       security: staff,
       responses: {
-        200: { description: 'Settings, including charge rates.', content: { 'application/json': { schema: ref('MenuCharges') } } },
+        200: {
+          description: 'Settings, including charge rates and what this deployment can do.',
+          content: {
+            'application/json': {
+              schema: {
+                allOf: [
+                  ref('MenuCharges'),
+                  {
+                    type: 'object',
+                    properties: {
+                      menuOcrAvailable: {
+                        type: 'boolean',
+                        description: 'Whether this server can read a menu from a photo or PDF. False means hide the import, not retry it: it is a fact about the deployment, not a transient failure.'
+                      }
+                    }
+                  }
+                ]
+              }
+            }
+          }
+        },
         ...commonErrors,
         404: response('NotFound')
       }
@@ -2675,7 +2704,10 @@ const paths = {
         '',
         'Rate limited to 10 per minute: each call costs money at a third party.',
         '',
-        '503 `MENU_OCR_NOT_CONFIGURED` when the deployment has no vision provider configured.'
+        '503 `MENU_OCR_NOT_CONFIGURED` when the deployment has no vision provider configured. That is',
+        'not a transient failure and retrying will not help — check `menuOcrAvailable` on',
+        '`GET /api/v1/menu/settings` and hide the import instead. The server needs `MENU_OCR_API_KEY`;',
+        '`MENU_OCR_BASE_URL` defaults to OpenAI and selects the vendor.'
       ].join('\n'),
       security: staff,
       requestBody: {
@@ -3024,7 +3056,15 @@ const paths = {
         'consumes the restaurant\'s quota with Mercantil.',
         '',
         '`Idempotency-Key` is mandatory. A client that never saw the response replays the original',
-        'outcome instead of raising a second charge.'
+        'outcome instead of raising a second charge.',
+        '',
+        '**This rail is off on a deployment that has not been wired to a bank.** It needs three',
+        'things, not one: `MERCANTIL_C2P_URL` on the server, credentials stored for the restaurant,',
+        'and those credentials proven by a real call — `enabled` is only ever set by a successful',
+        'one, so a mistyped key cannot leave the rail switched on and quietly broken. Missing any of',
+        'them answers 503 `PAYMENT_PROVIDER_MISCONFIGURED`, which is configuration rather than a',
+        'transient fault. Read `chargeable` on `GET /api/v1/account/banks` before offering this, and',
+        'fall back to a declared Pago Móvil — that rail needs no configuration at all.'
       ].join('\n'),
       security: [{ guestAuth: [] }],
       parameters: [{ $ref: '#/components/parameters/IdempotencyKey' }],
@@ -3625,7 +3665,31 @@ const document = {
       'the same representation — no `757.5406` from one route and `"757.54060000"` from another.',
       '',
       'Every query is scoped to the caller\'s restaurant. A resource belonging to another tenant',
-      'is reported as 404 rather than 403, so an endpoint never confirms that it exists.'
+      'is reported as 404 rather than 403, so an endpoint never confirms that it exists.',
+      '',
+      '## Features that are off until configured',
+      '',
+      'Several capabilities cost money per call or reach a third party, so they are **opt-in per',
+      'deployment**. A server without the setting refuses with a distinct 503 rather than failing',
+      'oddly — but a 503 normally means "try later", and these do not. **`NOT_CONFIGURED` and',
+      '`KEY_MISSING` mean stop offering the feature on this server**, not retry it. Nothing the',
+      'caller does will change the answer.',
+      '',
+      '| Capability | Setting the server needs | Without it | Ask first |',
+      '|---|---|---|---|',
+      '| Read a menu from a photo or PDF | `MENU_OCR_API_KEY` | 503 `MENU_OCR_NOT_CONFIGURED` | `menuOcrAvailable` on `GET /api/v1/menu/settings` |',
+      '| Enrol a second factor | `MFA_SECRET_KEYS` | 503 `MFA_KEY_MISSING`. Existing accounts keep signing in on passwords | `GET /api/v1/auth/mfa` |',
+      '| Store bank API credentials | `PAYMENT_CREDENTIALS_KEYS` | 503 `PAYMENT_CREDENTIALS_KEY_MISSING` | — |',
+      '| Charge a diner through Mercantil C2P | `MERCANTIL_C2P_URL`, **plus** credentials stored and proven per restaurant | 503 `PAYMENT_PROVIDER_MISCONFIGURED` | `chargeable` on `GET /api/v1/account/banks` |',
+      '| Self-service restaurant signup | `ONBOARDING_ENABLED` and a mail provider | The routes are **not mounted at all**, so 404 | — |',
+      '| Foreign-currency menu prices | `FX_ENABLED` (on by default) and a reachable BCV | 503 `FX_UNAVAILABLE`, after the stored-rate fallback is exhausted | `GET /api/v1/exchange-rate` |',
+      '',
+      'Declared Pago Móvil needs none of this and is the rail that works on a bare deployment: a',
+      'diner declares a transfer, a member of staff confirms it against the bank app.',
+      '',
+      'Where a column above names something to ask, ask it — those endpoints answer from',
+      'configuration and the answer does not change between requests. It is the difference between',
+      'hiding a button and offering one that fails after the user has done the work.'
     ].join('\n'),
     'x-error-details': DETAILS,
     'x-wire-format': {

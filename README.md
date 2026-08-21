@@ -63,6 +63,10 @@ that needs an acquirer.
 Not yet built: card payments, and automatic bank reconciliation. See
 [Open points](#open-points).
 
+Several features are **off until a deployment configures them** — see
+[What has to be configured](#what-has-to-be-configured) for the whole list in
+one place, and for what each one does when it is not.
+
 ## Local development
 
 ```bash
@@ -117,7 +121,63 @@ npm run secrets
 ```
 
 It prints four 512-bit values and writes nothing to disk. The app refuses to
-start in production with missing, short, duplicated or placeholder secrets.
+start in production with missing, short, duplicated or placeholder secrets. It
+does **not** print the two key rings — `PAYMENT_CREDENTIALS_KEYS` and
+`MFA_SECRET_KEYS` are a different format, `version:material`, and `.env.example`
+carries the one-liner that generates one.
+
+## What has to be configured
+
+Two lists. The first stops the process from starting; the second only stops one
+feature from working, and does it quietly enough that somebody will hit it in
+front of a restaurant.
+
+### Required, or the server will not start
+
+`assertProductionConfig` in `src/config.js` runs at boot in production, so these
+fail loudly at deploy time rather than at the first request:
+
+| Setting | Rule |
+| --- | --- |
+| `JWT_ACCESS_SECRET`, `JWT_REFRESH_SECRET`, `QR_SIGNING_SECRET`, `WEBHOOK_SECRET` | All four. Long, not the placeholder, and **all different** — reusing one secret for two purposes means a token minted for one is valid for the other |
+| `DATABASE_URL` (or `DB_PASSWORD` with the discrete `DB_*` set) | One or the other |
+| `CORS_ORIGINS` | Required, and `*` is refused |
+| `MAIL_*`, `APP_BASE_URL`, `ONBOARDING_TEAM_EMAIL` | Only when `ONBOARDING_ENABLED=true`. Scoped to the flag so turning onboarding on is what makes them mandatory |
+
+Redis is not asserted, because the app degrades rather than fails without it:
+guest sessions fall back to Postgres, and rate limiting fails open everywhere
+except `/auth`. It is still expected in production — the degraded mode is for an
+outage, not a deployment choice.
+
+### Off until configured, and quiet about it
+
+These cost money per call or reach a third party, so they are opt-in per
+deployment. Each refuses with its own 503. **A 503 normally means "try later" and
+these do not** — they mean stop offering the feature on this server.
+
+| Capability | Needs | Without it | How a client can tell in advance |
+| --- | --- | --- | --- |
+| **Read a menu from a photo** | `MENU_OCR_API_KEY`. `MENU_OCR_BASE_URL` defaults to OpenAI and selects the vendor | 503 `MENU_OCR_NOT_CONFIGURED` | `menuOcrAvailable` on `GET /api/v1/menu/settings` |
+| **Second factor** | `MFA_SECRET_KEYS` | 503 `MFA_KEY_MISSING` on enrolment. Existing accounts keep signing in on passwords | `GET /api/v1/auth/mfa` |
+| **Store bank credentials** | `PAYMENT_CREDENTIALS_KEYS` | 503 `PAYMENT_CREDENTIALS_KEY_MISSING` | — |
+| **Charge through Mercantil C2P** | `MERCANTIL_C2P_URL`, **and** credentials stored per restaurant, **and** those credentials proven by a real call | 503 `PAYMENT_PROVIDER_MISCONFIGURED` | `chargeable` on `GET /api/v1/account/banks` |
+| **Self-service signup** | `ONBOARDING_ENABLED=true` and a mail provider | The routes are **not mounted at all** — 404, not 503 | — |
+| **Foreign-currency menus** | `FX_ENABLED` (on by default) and a reachable BCV | 503 `FX_UNAVAILABLE`, but only after the stored-rate fallback is exhausted | `GET /api/v1/exchange-rate` |
+| **Browsable contract at `/docs`** | `DOCS_ENABLED` (on by default) | Not served | — |
+
+**Declared Pago Móvil needs none of this.** A diner declares a transfer and a
+member of staff confirms it against the bank app, which is why it is the rail
+that works on a bare deployment and the right fallback when C2P is not wired up.
+
+Where the last column names something to ask, ask it. Those endpoints answer
+from configuration and the answer does not change between requests — it is the
+difference between hiding a button and offering one that fails after somebody
+has chosen a file and waited for it to upload.
+
+The failure that prompted this: a live deployment offered the menu photo import
+to every restaurant, because the client had no way to know the server had no
+vision key. Somebody picked a photo of their carta, waited for it to upload over
+LTE, and got told the feature was never available there.
 
 The seed's email is validated against the same rule `/auth/login` uses, because
 they used to disagree: Joi checks the TLD against the IANA list, so a plausible
@@ -682,6 +742,14 @@ Off unless configured: without `MENU_OCR_API_KEY` the endpoint answers 503
 `MENU_OCR_NOT_CONFIGURED` rather than failing oddly at upload. `MENU_OCR_BASE_URL`
 selects the provider — the request is the OpenAI-compatible chat-completions
 shape several vendors serve, so switching is configuration rather than code.
+
+**Ask before offering it.** `GET /api/v1/menu/settings` carries
+`menuOcrAvailable`, and a client should hide the photo import when it is false
+rather than discovering the answer the hard way. Without it the only way to find
+out was to offer the upload, let somebody choose a file, wait for several
+megabytes to go up, and then answer 503 -- which is what a deployment with no key
+did to every restaurant that tried. It is a fact about the server rather than a
+transient failure, so `false` means hide it, not retry it.
 
 Rate limited to 10 uploads a minute per staff member: each call costs money at a
 third party. Uploads are bounded (8 MB, 6 PDF pages) and held in memory only —
