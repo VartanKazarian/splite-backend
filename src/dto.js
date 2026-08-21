@@ -279,6 +279,17 @@ function floorTable(row) {
         (BigInt(row.total_due_ves) - BigInt(row.amount_paid_ves)).toString(), rate
       ),
       itemCount: row.item_count ?? 0,
+      // How long this table has been sitting. A number a manager reads as
+      // "they are ready for the bill" or "something has gone wrong", and one
+      // the client should not compute -- a browser doing it uses the visitor's
+      // clock, which is how a table reads as opened in the future.
+      openedAt: isoTimestamp(row.bill_opened_at),
+      openMinutes: row.bill_opened_at
+        ? Math.max(0, Math.floor((Date.now() - new Date(row.bill_opened_at).getTime()) / 60000))
+        : null,
+      // Diners at this table who say they have paid and nobody has verified.
+      pendingClaims: row.pending_claims ?? 0,
+      tipVes: row.tip_ves ?? '0',
       updatedAt: isoTimestamp(row.bill_updated_at)
     }
     : null;

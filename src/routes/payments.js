@@ -2,6 +2,7 @@ const express = require('express');
 const claims = require('../services/paymentClaims');
 const mercantilC2P = require('../services/mercantilC2P');
 const tips = require('../services/tips');
+const dashboard = require('../services/dashboard');
 const { authenticateToken, requireRole } = require('../middleware/auth');
 const { logAudit, auditContext } = require('../services/audit');
 const dto = require('../dto');
@@ -9,7 +10,8 @@ const {
   validateBody, validateParams, validateQuery,
   listClaimsQuerySchema, rejectClaimSchema, paymentIdParamSchema,
   listUnresolvedC2PQuerySchema,
-  tipsReportQuerySchema
+  tipsReportQuerySchema,
+  dashboardQuerySchema, activityQuerySchema
 } = require('../middleware/schemas');
 
 /**
@@ -49,6 +51,39 @@ router.get('/claims', validateQuery(listClaimsQuerySchema), async (req, res, nex
  * screen in the room must not pull full claim rows, phone numbers included,
  * just to render a number.
  */
+/**
+ * The whole floor in one call.
+ *
+ * Any authenticated role: a waiter needs to know which of their tables still
+ * owes money as much as an owner does.
+ */
+router.get('/dashboard', validateQuery(dashboardQuerySchema), async (req, res, next) => {
+  try {
+    res.json(await dashboard.serviceSnapshot({
+      restaurantId: req.user.restaurantId,
+      from: req.query.from ?? null
+    }));
+  } catch (err) { next(err); }
+});
+
+/**
+ * What has happened since the client last looked.
+ *
+ * Poll this with the `asOf` from the previous response. It is deliberately not
+ * a push: a real notification needs a service worker, a subscription store and
+ * a sender, none of which exist, and a cursor is what makes polling cheap
+ * enough that the absence does not matter for a screen somebody is watching.
+ */
+router.get('/activity', validateQuery(activityQuerySchema), async (req, res, next) => {
+  try {
+    res.json(await dashboard.activitySince({
+      restaurantId: req.user.restaurantId,
+      since: req.query.since ?? null,
+      limit: req.query.limit
+    }));
+  } catch (err) { next(err); }
+});
+
 router.get('/claims/summary', async (req, res, next) => {
   try {
     res.json(await claims.claimsSummary({ restaurantId: req.user.restaurantId }));

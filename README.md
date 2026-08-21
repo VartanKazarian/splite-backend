@@ -1311,6 +1311,66 @@ yet** — that needs an acquirer, and with one there is no matching problem at
 all: the acquirer answers authoritatively, so none of the reconciliation
 machinery above applies.
 
+## The service dashboard
+
+```
+GET /api/v1/payments/dashboard          the room, the queues and the takings
+GET /api/v1/payments/activity?since=…   what has happened since you last looked
+GET /api/v1/tables/floor                per table, with its open bill
+```
+
+Every one of these figures could be assembled by a client from endpoints that
+already existed. That is exactly why they are here: **assembling them meant
+adding up money in a browser**, and amounts cross this wire as strings precisely
+because `Number` loses precision past 2^53. A total a client summed is the one
+figure nobody checked. They are summed in Postgres instead, in one call.
+
+`outstandingVes` is the number a manager looks at first — what the room still
+owes, due minus paid, and not something a client should compute by subtracting
+two strings.
+
+**A declared Pago Móvil is not takings.** It appears under `claims.pending` and
+leaves `outstandingVes` alone, because a diner saying they paid is not money
+until somebody has found it in the bank app. The takings figure reads settlement
+from the transition to SUCCEEDED rather than from when the row was created, for
+the same reason the tips report does.
+
+### On "today"
+
+There is no timezone on a restaurant, and this product is Venezuela-only, so an
+unset `from` means the start of the current day **in America/Caracas**. In UTC a
+service ending at 23:00 local lands in tomorrow, which would make the takings
+wrong for the last four hours of every evening. A service that crosses midnight
+should pass `from` explicitly — the same rule the tips report teaches.
+
+### Knowing a payment landed
+
+`GET /api/v1/payments/activity` is a cursor, not a push. Poll it with the `asOf`
+from the previous response; entries come oldest first, so the last one is the
+next cursor, and `asOf` is returned even when nothing happened so a poll
+advances instead of re-scanning the same window forever.
+
+Two kinds, because they call for different reactions: **`SETTLED`** is money
+that became real, and **`DECLARED`** is a diner who says they paid and needs
+somebody to open the bank app. Each carries the **table name**, because nobody
+recognises a uuid across a dining room.
+
+A real push notification needs a service worker, a subscription store and a
+sender, none of which are built. This is what makes polling cheap enough that
+the absence does not matter for a screen somebody is already watching.
+
+### The floor, per table
+
+`GET /api/v1/tables/floor` gains `openedAt` and `openMinutes` — how long the
+table has been sitting, which a manager reads as either "they are ready for the
+bill" or "something has gone wrong" — plus `pendingClaims`, the diners at that
+table who say they have paid and nobody has checked, and `tipVes` so a table
+that tipped well is visible while its diners are still there.
+
+`openMinutes` is computed server-side on purpose: a browser subtracting dates
+does it against the visitor's clock, which is how a table comes to read as
+opened in the future.
+
 ## Tips
 
 A tip rides on a payment and **never touches the bill**. `payments.tip_ves` sits
@@ -2255,8 +2315,11 @@ From the working copy, onto the current model:
 - **`scripts/` still uses `console.*`.** Only `src/` was converted to structured
   logging; the migrate and seed CLIs were left alone deliberately, but a deploy
   step arguably deserves structured output too.
-- **Dead code:** `requireTenant`, `revokeAllSessionsForUser` and
-  `registerSchema` are exported and never used.
+- **Dead code:** none known. `requireTenant` and `registerSchema` were exported
+  and never called, and have been deleted — an unused export is a thing a
+  reviewer has to reason about and a thing a future caller may reach for
+  believing it is load-bearing. `revokeAllSessionsForUser` was on that list too
+  and is now genuinely used, by staff deactivation and by a password change.
 
 ### Numbers that are guesses
 

@@ -89,7 +89,19 @@ router.get('/floor', async (req, res, next) => {
               b.service_charge_bps, b.service_charge_minor,
               b.total_due_ves, b.amount_paid_ves, b.fx_rate_ves_per_unit,
               b.updated_at AS bill_updated_at,
-              (SELECT count(*)::int FROM bill_items i WHERE i.bill_id = b.id) AS item_count
+              b.created_at AS bill_opened_at,
+              (SELECT count(*)::int FROM bill_items i WHERE i.bill_id = b.id) AS item_count,
+              -- Somebody at this table says they have paid and nobody has
+              -- checked yet. It is the one per-table fact a floor view cannot
+              -- derive from the bill, and the one that has a diner waiting.
+              (SELECT count(*)::int FROM payments pc
+                WHERE pc.bill_id = b.id AND pc.restaurant_id = b.restaurant_id
+                  AND pc.status = 'PENDING' AND pc.payment_method = 'PAGO_MOVIL') AS pending_claims,
+              -- Tips already settled on this bill, so a table that tipped well
+              -- is visible while the diners are still sitting at it.
+              (SELECT COALESCE(SUM(pt.tip_ves), 0)::BIGINT FROM payments pt
+                WHERE pt.bill_id = b.id AND pt.restaurant_id = b.restaurant_id
+                  AND pt.status = 'SUCCEEDED') AS tip_ves
          FROM tables t
          LEFT JOIN bills b
            ON b.table_id = t.id AND b.restaurant_id = t.restaurant_id AND b.status = 'OPEN'

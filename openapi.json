@@ -1825,6 +1825,32 @@
                   "itemCount": {
                     "type": "integer"
                   },
+                  "openedAt": {
+                    "type": [
+                      "string",
+                      "null"
+                    ],
+                    "format": "date-time"
+                  },
+                  "openMinutes": {
+                    "type": [
+                      "integer",
+                      "null"
+                    ],
+                    "description": "How long this table has been sitting. Computed here rather than by the client: a browser subtracting dates uses the visitor's clock, which is how a table reads as opened in the future."
+                  },
+                  "pendingClaims": {
+                    "type": "integer",
+                    "description": "Diners at this table who say they have paid and nobody has verified. The one per-table fact a floor view cannot derive from the bill, and the one with somebody waiting."
+                  },
+                  "tipVes": {
+                    "type": "string",
+                    "pattern": "^[0-9]+$",
+                    "description": "Tips already settled on this bill, so a table that tipped well is visible while its diners are still sitting there.",
+                    "examples": [
+                      "756710"
+                    ]
+                  },
                   "updatedAt": {
                     "type": "string",
                     "format": "date-time"
@@ -2772,6 +2798,214 @@
           "updatedAt": {
             "type": "string",
             "format": "date-time"
+          }
+        }
+      },
+      "ServiceSnapshot": {
+        "type": "object",
+        "description": "The room right now, plus what has been taken over a window. Every money figure is summed server-side.",
+        "properties": {
+          "asOf": {
+            "type": "string",
+            "format": "date-time",
+            "description": "Pass this back as `since` to /activity."
+          },
+          "since": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "date-time",
+            "description": "The window the `taken` figures cover. Null means the default — today in America/Caracas."
+          },
+          "tables": {
+            "type": "object",
+            "properties": {
+              "total": {
+                "type": "integer"
+              },
+              "occupied": {
+                "type": "integer"
+              },
+              "free": {
+                "type": "integer"
+              }
+            }
+          },
+          "openBills": {
+            "type": "object",
+            "properties": {
+              "count": {
+                "type": "integer"
+              },
+              "totalDueVes": {
+                "type": "string",
+                "pattern": "^[0-9]+$",
+                "description": "Integer minor units (céntimos) as a string, so values beyond 2^53 survive JSON.",
+                "examples": [
+                  "756710"
+                ]
+              },
+              "amountPaidVes": {
+                "type": "string",
+                "pattern": "^[0-9]+$",
+                "description": "Integer minor units (céntimos) as a string, so values beyond 2^53 survive JSON.",
+                "examples": [
+                  "756710"
+                ]
+              },
+              "outstandingVes": {
+                "type": "string",
+                "pattern": "^[0-9]+$",
+                "description": "What the room still owes. Due minus paid, computed here so no client subtracts two strings.",
+                "examples": [
+                  "756710"
+                ]
+              },
+              "oldestOpenedAt": {
+                "type": [
+                  "string",
+                  "null"
+                ],
+                "format": "date-time"
+              }
+            }
+          },
+          "taken": {
+            "type": "object",
+            "description": "Settled money in the window, read from the transition to SUCCEEDED rather than from when the row was created — a declared payment settles when staff verify it, not when the diner says so.",
+            "properties": {
+              "paymentsVes": {
+                "type": "string",
+                "pattern": "^[0-9]+$",
+                "description": "Integer minor units (céntimos) as a string, so values beyond 2^53 survive JSON.",
+                "examples": [
+                  "756710"
+                ]
+              },
+              "tipsVes": {
+                "type": "string",
+                "pattern": "^[0-9]+$",
+                "description": "Integer minor units (céntimos) as a string, so values beyond 2^53 survive JSON.",
+                "examples": [
+                  "756710"
+                ]
+              },
+              "payments": {
+                "type": "integer"
+              }
+            }
+          },
+          "claims": {
+            "type": "object",
+            "description": "Declared Pago Móvil waiting for a person. The age is the half that matters: a count cannot tell a quiet queue from an ignored one.",
+            "properties": {
+              "pending": {
+                "type": "integer"
+              },
+              "oldestPendingAt": {
+                "type": [
+                  "string",
+                  "null"
+                ],
+                "format": "date-time"
+              },
+              "oldestPendingAgeSeconds": {
+                "type": [
+                  "integer",
+                  "null"
+                ]
+              }
+            }
+          },
+          "unresolvedC2P": {
+            "type": "object",
+            "description": "Charges where the diner has been debited and only a person can end it.",
+            "properties": {
+              "inDoubt": {
+                "type": "integer"
+              },
+              "ambiguous": {
+                "type": "integer"
+              }
+            }
+          }
+        }
+      },
+      "PaymentActivity": {
+        "type": "object",
+        "properties": {
+          "asOf": {
+            "type": "string",
+            "format": "date-time",
+            "description": "The next cursor. Returned even when nothing happened, so a poll advances instead of re-scanning the same window forever."
+          },
+          "since": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "date-time"
+          },
+          "data": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "kind": {
+                  "type": "string",
+                  "enum": [
+                    "SETTLED",
+                    "DECLARED"
+                  ]
+                },
+                "at": {
+                  "type": "string",
+                  "format": "date-time"
+                },
+                "paymentId": {
+                  "type": "string",
+                  "format": "uuid"
+                },
+                "billId": {
+                  "type": "string",
+                  "format": "uuid"
+                },
+                "tableId": {
+                  "type": [
+                    "string",
+                    "null"
+                  ],
+                  "format": "uuid"
+                },
+                "tableName": {
+                  "type": [
+                    "string",
+                    "null"
+                  ],
+                  "description": "What a person reads. Nobody recognises a uuid across a dining room."
+                },
+                "amountVes": {
+                  "type": "string",
+                  "pattern": "^[0-9]+$",
+                  "description": "Integer minor units (céntimos) as a string, so values beyond 2^53 survive JSON.",
+                  "examples": [
+                    "756710"
+                  ]
+                },
+                "tipVes": {
+                  "type": "string",
+                  "pattern": "^[0-9]+$",
+                  "description": "Integer minor units (céntimos) as a string, so values beyond 2^53 survive JSON.",
+                  "examples": [
+                    "756710"
+                  ]
+                },
+                "paymentMethod": {
+                  "type": "string"
+                }
+              }
+            }
           }
         }
       },
@@ -6295,6 +6529,117 @@
           },
           "409": {
             "$ref": "#/components/responses/Conflict"
+          },
+          "429": {
+            "$ref": "#/components/responses/TooManyRequests"
+          },
+          "500": {
+            "$ref": "#/components/responses/ServerError"
+          }
+        }
+      }
+    },
+    "/api/v1/payments/dashboard": {
+      "get": {
+        "tags": [
+          "Payments"
+        ],
+        "summary": "The whole floor in one call",
+        "operationId": "getServiceSnapshot",
+        "description": "Any authenticated staff role — a waiter needs to know which tables still owe money as much\nas an owner does.\n\n**The totals are summed in Postgres, not by the client.** Amounts cross the wire as strings\nbecause a browser's `Number` loses precision past 2^53, so a total a client assembled by\nadding them up is the one figure nobody checked.\n\n`from` bounds only the *since* figures — takings, tips, payment count. The floor and the\nqueues are always **now**: an open bill is open whatever window somebody asked about.\n\nUnset, `from` means the start of the current day **in America/Caracas**, not UTC. There is\nno timezone on a restaurant and this product is Venezuela-only; in UTC a service ending at\n23:00 local lands in tomorrow, which would make the takings wrong for the last four hours of\nevery evening. A service that crosses midnight should send `from` explicitly.\n\n**A declared Pago Móvil is not takings.** It appears under `claims.pending` and leaves\n`openBills.outstandingVes` untouched, because a diner saying they paid is not money until a\nmember of staff has found it in the bank app.",
+        "security": [
+          {
+            "staffAuth": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "from",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string",
+              "format": "date-time"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The room, the queues and the takings.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ServiceSnapshot"
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "429": {
+            "$ref": "#/components/responses/TooManyRequests"
+          },
+          "500": {
+            "$ref": "#/components/responses/ServerError"
+          }
+        }
+      }
+    },
+    "/api/v1/payments/activity": {
+      "get": {
+        "tags": [
+          "Payments"
+        ],
+        "summary": "What has happened since the client last looked",
+        "operationId": "getPaymentActivity",
+        "description": "Any authenticated staff role. Poll this with the `asOf` from the previous response as\n`since`, and render `data` in order — it is oldest first, so the last entry is the next\ncursor.\n\nTwo kinds, because they call for different reactions:\n\n- `SETTLED` — money became real. Table 6 has paid.\n- `DECLARED` — a diner *says* they paid. Somebody has to open the bank app.\n\n**This is deliberately not a push.** A real notification needs a service worker, a\nsubscription store and a sender, none of which are built; a cursor is what makes polling\ncheap enough that the absence does not matter for a screen somebody is watching.\n\nUse `asOf` rather than a time the client made up — a clock running fast would otherwise skip\nevents, and a skipped settlement is a table nobody knows has paid.",
+        "security": [
+          {
+            "staffAuth": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "since",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string",
+              "format": "date-time"
+            }
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 200,
+              "default": 50
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Events since the cursor, oldest first.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PaymentActivity"
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
           },
           "429": {
             "$ref": "#/components/responses/TooManyRequests"

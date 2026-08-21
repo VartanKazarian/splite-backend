@@ -5,12 +5,6 @@ const { normaliseRif, hasRifShape } = require('../utils/rif');
 
 const uuid = Joi.string().uuid({ version: 'uuidv4' });
 
-const registerSchema = Joi.object({
-  restaurantName: Joi.string().trim().min(2).max(120).required(),
-  email: Joi.string().email({ minDomainSegments: 2 }).max(254).lowercase().required(),
-  password: Joi.string().min(12).max(128).required()
-});
-
 const ROLES = ['OWNER', 'MANAGER', 'CASHIER', 'WAITER'];
 
 /**
@@ -290,6 +284,30 @@ const declareClaimSchema = Joi.object({
   // Part of the same transfer the diner says they sent: staff verify
   // amountVes + tipVes against the bank app as one figure.
   tipVes: minorUnits.default('0')
+});
+
+/**
+ * The window a dashboard header covers.
+ *
+ * `from` is optional, unlike the tips report's, because this is a glance rather
+ * than a figure money is handed out against -- and a glance with no default is
+ * a screen nobody can render without asking a question first. Unset means the
+ * current day in Venezuela; see src/services/dashboard.js for why that and not
+ * UTC.
+ */
+const dashboardQuerySchema = Joi.object({
+  from: Joi.date().iso()
+});
+
+/**
+ * A poll for what has happened since the client last looked.
+ *
+ * `since` is the `asOf` from the previous response rather than a time the
+ * client made up, so a clock that runs fast cannot skip events.
+ */
+const activityQuerySchema = Joi.object({
+  since: Joi.date().iso(),
+  limit: Joi.number().integer().min(1).max(200).default(50)
 });
 
 const listClaimsQuerySchema = Joi.object({
@@ -608,7 +626,6 @@ const validateParams = schema => validate(schema, 'params');
 const validateQuery = schema => validate(schema, 'query');
 
 module.exports = {
-  registerSchema,
   loginSchema,
   ROLES,
   createStaffSchema,
@@ -634,6 +651,8 @@ module.exports = {
   c2pBankGuideQuerySchema,
   venezuelanMobile,
   listClaimsQuerySchema,
+  dashboardQuerySchema,
+  activityQuerySchema,
   rejectClaimSchema,
   paymentIdParamSchema,
   webhookProviderParamSchema,
