@@ -1712,6 +1712,44 @@ that already holds data.
 columns. It rewrites any non-VES bill currency to `VES`, so check that no live
 bill is mid-payment when you apply it.
 
+### Going backwards
+
+**There are no down migrations, and that is the design rather than the gap it
+looks like.** Writing thirty reverse scripts is the obvious answer and the wrong
+one: most of them are not honestly reversible — dropping a column back does not
+return the data that was in it — and a set of scripts nobody has ever run is a
+set of scripts that does not work, discovered at the worst possible moment.
+
+What makes a rollback possible instead is a property every migration has to
+hold:
+
+> A migration must leave a schema the **previous release's code** can still run
+> against.
+
+Hold that and rolling back is redeploying the previous image and nothing else —
+no schema step, no window where the two disagree. It also means a deploy is safe
+in the other direction: the migration runs before the new code is serving, and
+the old code is still serving while it runs.
+
+In practice that means **expand, then contract, a release apart**. Add the new
+column, backfill it, and let both live for a release; drop the old one only once
+nothing running reads it. `payments.tip_ves` and `guest_sessions` are both
+shaped that way.
+
+Three migrations break the rule — `006`, `008` and `009` — and each says so at
+the top of the file, in the words `NOT-BACKWARD-COMPATIBLE` and the reason. All
+three predate the first deployment, when there was no previous release to
+strand. Rolling back past one of those means restoring a backup, not redeploying.
+
+A test enforces all of this: it fails on a migration that drops a table or
+column, changes a column type, adds `NOT NULL` to an existing column, renames,
+truncates or deletes rows — unless the file carries that marker. It also pins
+the list of marked files at exactly those three, so a fourth is a decision
+somebody takes deliberately and defends in review rather than discovers in an
+incident. And it checks that every `CREATE TABLE`/`CREATE INDEX` carries
+`IF NOT EXISTS`, so replaying against a restored database is not an error
+somebody has to reason about while the service is down.
+
 ## Process lifecycle
 
 An unhandled rejection and an uncaught exception are both **fatal**: log at

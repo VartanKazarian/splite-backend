@@ -1,3 +1,10 @@
+-- NOT-BACKWARD-COMPATIBLE: Widens three rate columns to NUMERIC(20,8). Widening loses nothing, but the type change is not reversible in place. Predates the first deployment.
+--
+-- Code from the previous release cannot run against the schema this leaves, so
+-- rolling back past it means restoring a backup rather than redeploying an
+-- image. Every migration from 010 onward is additive precisely so that this is
+-- not the normal case; see "Migrations" in the README.
+
 -- 009_fx_rate_precision.sql
 --
 -- Store rates at the precision BCV publishes them.
