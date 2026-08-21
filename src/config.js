@@ -56,6 +56,31 @@ const corsOrigins = (process.env.CORS_ORIGINS || 'http://localhost:5173')
 const onboardingEnabled = boolean('ONBOARDING_ENABLED', false);
 const logLevel = process.env.LOG_LEVEL || (isProduction ? 'info' : 'debug');
 const mailTransport = process.env.MAIL_TRANSPORT || 'log';
+const mailFrom = process.env.MAIL_FROM || 'Splite <onboarding@localhost>';
+const mailFromAddress = addressOf(mailFrom);
+
+/**
+ * The address inside a MAIL_FROM, which may be bare or in "Name <addr>" form.
+ */
+function addressOf(from) {
+  const angled = /<([^>]+)>/.exec(from || '');
+  return (angled ? angled[1] : from || '').trim().toLowerCase();
+}
+
+/**
+ * Whether a sender address belongs to a mailbox provider rather than to a
+ * domain somebody could publish DKIM records for. Not an exhaustive list and
+ * does not need to be: it exists to catch the address a small team actually
+ * reaches for first, which is their own Gmail.
+ */
+const PUBLIC_MAILBOX_DOMAINS = new Set([
+  'gmail.com', 'googlemail.com', 'outlook.com', 'hotmail.com', 'live.com',
+  'yahoo.com', 'yahoo.es', 'icloud.com', 'me.com', 'proton.me', 'protonmail.com'
+]);
+
+function isPublicMailbox(address) {
+  return PUBLIC_MAILBOX_DOMAINS.has(address.split('@')[1] || '');
+}
 
 /**
  * Everything a process that *serves traffic* must have before it accepts any.
@@ -119,6 +144,25 @@ function assertProductionConfig() {
   if (mailTransport === 'resend' && !process.env.MAIL_API_KEY) {
     throw new Error('MAIL_API_KEY is required for MAIL_TRANSPORT=resend');
   }
+  // Resend -- like SES, Postmark and every other API sender -- will only send
+  // from a domain whose DNS you control and have signed with DKIM. A gmail.com
+  // sender is rejected at the provider, and `mailer.send` deliberately never
+  // throws, so the symptom would be: registrations return 202, the log fills
+  // with MAIL_SEND_FAILED, and nobody ever receives a verification link. That
+  // is a silent failure in the one flow that cannot tolerate one, so it is a
+  // boot failure with the remedy in the message instead.
+  if (mailTransport === 'resend' && isPublicMailbox(mailFromAddress)) {
+    throw new Error(
+      `MAIL_FROM=${mailFromAddress} cannot be used with MAIL_TRANSPORT=resend: ` +
+      'API senders only accept a domain you have verified by DNS. ' +
+      'Use MAIL_TRANSPORT=smtp to send through that mailbox, or set MAIL_FROM to a verified domain.'
+    );
+  }
+  if (mailTransport === 'smtp') {
+    for (const name of ['MAIL_SMTP_HOST', 'MAIL_SMTP_USER', 'MAIL_SMTP_PASSWORD']) {
+      if (!process.env[name]) throw new Error(`${name} is required for MAIL_TRANSPORT=smtp`);
+    }
+  }
 }
 
 module.exports = {
@@ -172,13 +216,33 @@ module.exports = {
   },
   mail: {
     transport: mailTransport,
-    from: process.env.MAIL_FROM || 'Splite <onboarding@localhost>',
+    from: mailFrom,
+    // The bare address, parsed once. SMTP needs an envelope sender without the
+    // display name, and the start-up guard needs the domain.
+    fromAddress: mailFromAddress,
     // Not in SECRET_ENV: that set is the signing secrets, which are required in
     // production, must be 32+ characters and must all differ from each other.
     // A provider's API key satisfies none of those rules and would fail the
     // start-up guard for a service that may not use mail at all.
     apiKey: process.env.MAIL_API_KEY || null,
-    timeoutMs: integer('MAIL_TIMEOUT_MS', 10000)
+    timeoutMs: integer('MAIL_TIMEOUT_MS', 10000),
+    // Sending through an ordinary mailbox -- a Gmail account with an app
+    // password, a provider's relay -- rather than through an API. The whole
+    // block is optional; `assertProductionConfig` requires the parts that
+    // matter only when MAIL_TRANSPORT=smtp.
+    smtp: {
+      host: process.env.MAIL_SMTP_HOST || null,
+      // 465 is implicit TLS, which is what Gmail's relay wants and what avoids
+      // a plaintext hop that STARTTLS can in principle be stripped from.
+      port: integer('MAIL_SMTP_PORT', 465),
+      // Derived from the port rather than defaulted to a constant, so 587 does
+      // the right thing (STARTTLS) without anybody having to know to set this.
+      secure: boolean('MAIL_SMTP_SECURE', integer('MAIL_SMTP_PORT', 465) === 465),
+      user: process.env.MAIL_SMTP_USER || null,
+      // Not in SECRET_ENV for the same reason MAIL_API_KEY is not: that set is
+      // the signing secrets, with rules a provider credential cannot meet.
+      password: process.env.MAIL_SMTP_PASSWORD || null
+    }
   },
   onboarding: {
     // Off by default. The routes are only mounted when this is on, so the

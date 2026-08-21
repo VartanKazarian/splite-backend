@@ -4,6 +4,7 @@ const db = require('./connectors/base');
 const { connectRedis, closeRedis } = require('./connectors/redis');
 const { logger } = require('./connectors/logger');
 const { beginShutdown } = require('./lifecycle');
+const mailer = require('./services/mailer');
 
 const SHUTDOWN_TIMEOUT_MS = 10000;
 
@@ -36,7 +37,10 @@ function createShutdown({ server, exit = process.exit, timeoutMs = SHUTDOWN_TIME
 
     server.close(async () => {
       try {
-        await Promise.allSettled([db.close(), closeRedis()]);
+        // The mail transport is in here because a pooled SMTP connection is an
+        // open socket: left behind, it holds the event loop past the last
+        // request and turns a graceful shutdown into the forced one above.
+        await Promise.allSettled([db.close(), closeRedis(), mailer.closeTransport()]);
       } finally {
         clearTimeout(force);
         exit(exitCode);

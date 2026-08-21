@@ -142,7 +142,7 @@ fail loudly at deploy time rather than at the first request:
 | `JWT_ACCESS_SECRET`, `JWT_REFRESH_SECRET`, `QR_SIGNING_SECRET`, `WEBHOOK_SECRET` | All four. Long, not the placeholder, and **all different** — reusing one secret for two purposes means a token minted for one is valid for the other |
 | `DATABASE_URL` (or `DB_PASSWORD` with the discrete `DB_*` set) | One or the other |
 | `CORS_ORIGINS` | Required, and `*` is refused |
-| `MAIL_*`, `APP_BASE_URL`, `ONBOARDING_TEAM_EMAIL` | Only when `ONBOARDING_ENABLED=true`. Scoped to the flag so turning onboarding on is what makes them mandatory |
+| `MAIL_*`, `APP_BASE_URL`, `ONBOARDING_TEAM_EMAIL` | Only when `ONBOARDING_ENABLED=true`. Scoped to the flag so turning onboarding on is what makes them mandatory. `MAIL_TRANSPORT=smtp` additionally requires `MAIL_SMTP_HOST`, `MAIL_SMTP_USER` and `MAIL_SMTP_PASSWORD`; `resend` requires `MAIL_API_KEY` and refuses a `MAIL_FROM` at a mailbox provider |
 
 `LOG_LEVEL` is refused above `warn` in production. Metrics are counted where
 failures are logged, and pino skips its hook for a line below the configured
@@ -471,6 +471,60 @@ POST /api/v1/onboarding/verify        -> 201   creates everything, signs them in
 submission and emails the onboarding team the name, RIF, address, phone and the
 qualifying answers, so somebody can read it and pick up the phone. The applicant
 gets an acknowledgement saying a person will call, and no link.
+
+### How the mail actually leaves
+
+Three transports, chosen by `MAIL_TRANSPORT`, behind one `mailer.send`:
+
+| Transport | What it does | When |
+| --- | --- | --- |
+| `log` | Writes the message, verification link included, to the logger and sends nothing. | Development. Refused at boot in production once onboarding is on — a flow whose link goes to a log file is one nobody ever finishes. |
+| `smtp` | Signs in to an ordinary mailbox and sends as it. | Now. It needs no domain, no DNS records and no provider account. |
+| `resend` | One POST to api.resend.com. | Once there is a domain to send from. |
+
+The split matters because of a constraint that is easy to meet late and painful
+to discover late: **an API sender will only send from a domain you have verified
+by DNS.** Resend, SES and Postmark all sign the `From` domain with DKIM records
+you publish yourself, and nobody can publish records for `gmail.com`. Setting
+`MAIL_FROM` to a Gmail address with `MAIL_TRANSPORT=resend` therefore fails at
+the provider on every single send — and `mailer.send` never throws, by design,
+so the symptom is a registration that returns `202`, a log filling with
+`MAIL_SEND_FAILED`, and no verification link ever arriving. `config.js` refuses
+to start on that combination instead, and the error names the remedy.
+
+SMTP has the opposite property. Mail genuinely relayed through Google carries
+Google's SPF and DKIM, so it is not a forgery and it reaches inboxes. What it
+does not carry is our own domain, and a free account is capped at roughly 500
+messages a day. That is the right trade while onboarding is a handful of leads a
+week, and the wrong one later.
+
+To send through a Gmail mailbox:
+
+```bash
+MAIL_TRANSPORT=smtp
+MAIL_FROM='Splite <splite.ve@gmail.com>'
+MAIL_SMTP_HOST=smtp.gmail.com
+MAIL_SMTP_PORT=465          # implicit TLS; 587 flips MAIL_SMTP_SECURE off for STARTTLS
+MAIL_SMTP_USER=splite.ve@gmail.com
+MAIL_SMTP_PASSWORD=…        # a 16-character app password, NOT the account password
+ONBOARDING_TEAM_EMAIL=splite.ve@gmail.com
+```
+
+The password is the one thing that trips people up: Google rejects the account
+password over SMTP outright. An **app password** is generated per application at
+myaccount.google.com, and the option only appears once 2-Step Verification is on
+for the account. It is a credential that can send mail as that address, so it
+belongs in the Railway variables beside the signing secrets and nowhere else —
+never in `.env`, which is not committed for exactly this reason.
+
+`ONBOARDING_TEAM_EMAIL` can be the same mailbox: it is where lead notifications
+are *read*, and receiving has none of the constraints sending does.
+
+The connection is built lazily and pooled, so a process that never sends mail —
+every CLI script, and the API itself while onboarding is off — never opens a
+socket or even loads the library. `src/server.js` closes it during shutdown,
+because a pooled socket left open holds the event loop past the last request and
+turns a graceful shutdown into a forced one.
 
 There is deliberately no HTTP route for the invite step. Every authenticated
 surface in this API is scoped to a restaurant the caller belongs to, and there is
@@ -2271,7 +2325,7 @@ what gets built, and they are parked deliberately rather than guessed at.
 
 | Open question | What it blocks | What happens meanwhile |
 | --- | --- | --- |
-| **Which mail provider, and on what domain?** | All of onboarding. `MAIL_TRANSPORT=log` writes the message to the log and sends nothing, and is refused in production. | `ONBOARDING_ENABLED=false`, so the form is not served at all. Needs SPF and DKIM on a real domain too, or the mail reaches spam and the team never learns a restaurant applied. |
+| **On what domain does Splite send?** | Nothing any more. Sending works: `MAIL_TRANSPORT=smtp` signs in to the team's own mailbox and sends as it, so onboarding can be turned on today. What is still open is the *domain* — mail from a gmail.com address is delivered but is visibly not from a company, and a free mailbox has a daily ceiling. | Send through the mailbox. Moving to a verified domain later is a `MAIL_*` change and no code: `MAIL_TRANSPORT=resend`, an API key, and SPF/DKIM records on the domain. |
 | **Which card acquirer?** | Card payments entirely, and paying inside the app. | Diners declare Pago Móvil and staff confirm. |
 | **What does a lapsed trial lose?** | Nothing today — `plan_tier` and `trial_ends_at` are reported by `GET /api/v1/account` and enforced nowhere. | Clients can warn. The obvious answer is the wrong one: cutting off bills mid-service strands a dining room full of seated diners over an unpaid invoice. |
 | **Should a failing RIF check digit be rejected?** | Nothing. The mod-11 result is recorded in `restaurant_signups.rif_checksum_ok` and shown to the reviewer. | Accepted either way. Turning away a real restaurant at the form is worse than storing one malformed tax id, and the column is the evidence for deciding later. Note `J-00000000-0` passes — the checksum catches transcription slips, not invention. |
