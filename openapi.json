@@ -5717,7 +5717,8 @@
           "Menu"
         ],
         "summary": "Restaurant menu settings",
-        "description": "Any authenticated staff role.",
+        "operationId": "getMenuSettings",
+        "description": "Any authenticated staff role.\n\n**Read `menuOcrAvailable` before offering the photo import.** Reading a menu from a photo is\nopt-in per deployment — it costs money per call and reaches a third party — so a server\nwithout a key configured answers `503 MENU_OCR_NOT_CONFIGURED`. Without this flag a client\nhas no way to know that until after the user has chosen a file and waited for several\nmegabytes to upload. Asking is free and the answer does not change between requests.",
         "security": [
           {
             "staffAuth": []
@@ -5725,11 +5726,24 @@
         ],
         "responses": {
           "200": {
-            "description": "Settings, including charge rates.",
+            "description": "Settings, including charge rates and what this deployment can do.",
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/MenuCharges"
+                  "allOf": [
+                    {
+                      "$ref": "#/components/schemas/MenuCharges"
+                    },
+                    {
+                      "type": "object",
+                      "properties": {
+                        "menuOcrAvailable": {
+                          "type": "boolean",
+                          "description": "Whether this server can read a menu from a photo or PDF. False means hide the import, not retry it: it is a fact about the deployment, not a transient failure."
+                        }
+                      }
+                    }
+                  ]
                 }
               }
             }

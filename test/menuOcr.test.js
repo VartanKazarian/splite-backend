@@ -2,7 +2,8 @@ const { test } = require('node:test');
 const assert = require('node:assert/strict');
 
 const { parseMenuPrice } = require('../src/services/menuPrice');
-const { toDraftItems } = require('../src/services/menuOcr');
+const { toDraftItems, isConfigured } = require('../src/services/menuOcr');
+const config = require('../src/config');
 
 /**
  * The menu reader, tested where it decides things: what a price on a menu means,
@@ -115,5 +116,30 @@ test('long fields are bounded to what the column holds', () => {
 test('a malformed provider payload yields no items rather than throwing', () => {
   for (const bad of [null, undefined, {}, { items: null }, { items: 'nope' }]) {
     assert.deepEqual(toDraftItems(bad, { currency: 'VES' }), []);
+  }
+});
+
+// --- What this deployment can do -------------------------------------------
+
+test('the reader reports itself unavailable without a key', () => {
+  // The flag the settings endpoint publishes. It is what lets a client hide the
+  // photo import instead of offering it, letting somebody choose a file, waiting
+  // for several megabytes to upload, and only then answering 503.
+  const key = config.menuOcr.apiKey;
+  const base = config.menuOcr.baseUrl;
+  try {
+    config.menuOcr.apiKey = '';
+    assert.equal(isConfigured(), false, 'no key means the feature is off here');
+
+    config.menuOcr.apiKey = 'sk-test';
+    assert.equal(isConfigured(), true);
+
+    // Both halves are required: a key with nowhere to send it is not a working
+    // reader, and the base URL is what selects the vendor.
+    config.menuOcr.baseUrl = '';
+    assert.equal(isConfigured(), false);
+  } finally {
+    config.menuOcr.apiKey = key;
+    config.menuOcr.baseUrl = base;
   }
 });

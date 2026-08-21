@@ -683,6 +683,14 @@ Off unless configured: without `MENU_OCR_API_KEY` the endpoint answers 503
 selects the provider — the request is the OpenAI-compatible chat-completions
 shape several vendors serve, so switching is configuration rather than code.
 
+**Ask before offering it.** `GET /api/v1/menu/settings` carries
+`menuOcrAvailable`, and a client should hide the photo import when it is false
+rather than discovering the answer the hard way. Without it the only way to find
+out was to offer the upload, let somebody choose a file, wait for several
+megabytes to go up, and then answer 503 -- which is what a deployment with no key
+did to every restaurant that tried. It is a fact about the server rather than a
+transient failure, so `false` means hide it, not retry it.
+
 Rate limited to 10 uploads a minute per staff member: each call costs money at a
 third party. Uploads are bounded (8 MB, 6 PDF pages) and held in memory only —
 no menu image is ever written to disk or to the database. A PDF is rasterised

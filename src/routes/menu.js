@@ -84,7 +84,25 @@ router.get('/settings', async (req, res, next) => {
       [req.user.restaurantId]
     );
     if (!rows.length) throw new ApiError('RESTAURANT_NOT_FOUND', 'Restaurant not found');
-    res.json(dto.menuCharges(rows[0]));
+    res.json({
+      ...dto.menuCharges(rows[0]),
+      /**
+       * Whether this deployment can read a menu from a photo at all.
+       *
+       * The reader is opt-in per deployment -- it costs money per call and
+       * reaches a third party -- so a server without a key answers 503. Until
+       * this field existed the client had no way to know that in advance: it
+       * offered the upload, the user chose a photo, waited for several
+       * megabytes to go up, and only then learned the feature was never
+       * available here. Asking is free, and the answer does not change between
+       * requests.
+       *
+       * Added here and not to the charges PATCH below, because it is a fact
+       * about the server rather than a setting the restaurant owns. Nothing a
+       * client sends can change it.
+       */
+      menuOcrAvailable: menuOcr.isConfigured()
+    });
   } catch (err) { next(err); }
 });
 

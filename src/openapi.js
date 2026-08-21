@@ -2593,10 +2593,39 @@ const paths = {
     get: {
       tags: ['Menu'],
       summary: 'Restaurant menu settings',
-      description: 'Any authenticated staff role.',
+      operationId: 'getMenuSettings',
+      description: [
+        'Any authenticated staff role.',
+        '',
+        '**Read `menuOcrAvailable` before offering the photo import.** Reading a menu from a photo is',
+        'opt-in per deployment — it costs money per call and reaches a third party — so a server',
+        'without a key configured answers `503 MENU_OCR_NOT_CONFIGURED`. Without this flag a client',
+        'has no way to know that until after the user has chosen a file and waited for several',
+        'megabytes to upload. Asking is free and the answer does not change between requests.'
+      ].join('\n'),
       security: staff,
       responses: {
-        200: { description: 'Settings, including charge rates.', content: { 'application/json': { schema: ref('MenuCharges') } } },
+        200: {
+          description: 'Settings, including charge rates and what this deployment can do.',
+          content: {
+            'application/json': {
+              schema: {
+                allOf: [
+                  ref('MenuCharges'),
+                  {
+                    type: 'object',
+                    properties: {
+                      menuOcrAvailable: {
+                        type: 'boolean',
+                        description: 'Whether this server can read a menu from a photo or PDF. False means hide the import, not retry it: it is a fact about the deployment, not a transient failure.'
+                      }
+                    }
+                  }
+                ]
+              }
+            }
+          }
+        },
         ...commonErrors,
         404: response('NotFound')
       }
