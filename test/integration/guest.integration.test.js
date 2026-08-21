@@ -1,9 +1,10 @@
 const { describe, it, before, after } = require('node:test');
 const assert = require('node:assert/strict');
-const crypto = require('node:crypto');
 
 const { skip } = require('./helpers/env');
 const { redis, connectRedis, closeRedis } = require('../../src/connectors/redis');
+const db = require('../../src/connectors/base');
+const fixtures = require('./helpers/fixtures');
 const {
   createGuestSession,
   resolveGuestSession,
@@ -11,16 +12,25 @@ const {
 } = require('../../src/services/guest');
 
 describe('guest sessions against a real Redis', { skip }, () => {
-  const restaurantId = crypto.randomUUID();
-  const tableId = crypto.randomUUID();
+  // Real rows rather than fabricated ids: a session now carries a composite
+  // foreign key to (table_id, restaurant_id), so the pairing is checked by the
+  // database instead of trusted from the caller.
+  let restaurantId;
+  let tableId;
   const created = [];
 
   before(async () => {
     await connectRedis();
+    const restaurant = await fixtures.createRestaurant({ name: 'Guest Redis Tenant' });
+    restaurantId = restaurant.id;
+    tableId = (await fixtures.createTable(restaurantId, { name: 'GR1' })).id;
   });
 
   after(async () => {
     for (const sessionId of created) await redis.del(`guest:session:${sessionId}`);
+    await db.query('DELETE FROM guest_sessions WHERE restaurant_id = $1', [restaurantId]);
+    await fixtures.destroyRestaurant(restaurantId);
+    await db.close();
     await closeRedis();
   });
 

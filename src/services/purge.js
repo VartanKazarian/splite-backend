@@ -84,6 +84,17 @@ const POLICIES = [
     )
   },
   {
+    // A guest session is dead the moment its absolute cap passes, and nothing
+    // reads one afterwards -- unlike a refresh session, there is no reuse
+    // detection here to point at. Kept a day past expiry all the same, so a
+    // question about an evening's sessions can still be answered the morning
+    // after.
+    name: 'guest_sessions',
+    run: opts => deleteInBatches(
+      'guest_sessions', "expires_at < NOW() - INTERVAL '1 day'", [], opts
+    )
+  },
+  {
     /**
      * The newest row per currency is never deleted, whatever its age.
      *
