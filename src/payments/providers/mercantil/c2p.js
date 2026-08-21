@@ -1,4 +1,5 @@
 const config = require('../../../config');
+const { readCappedText } = require('../../../connectors/resilient');
 const { logger } = require('../../../connectors/logger');
 const { loadCredentials } = require('../../providerConfigs');
 const { ApiError } = require('../../../errors');
@@ -200,7 +201,10 @@ class MercantilC2PClient {
         signal: controller.signal
       });
 
-      const text = await response.text();
+      // Bounded like every other read from a host we do not run. A bank core
+      // having a bad day can answer a JSON endpoint with a stack trace or an
+      // HTML error page, and neither is a reason to hold it all in memory.
+      const text = await readCappedText(response, { what: 'Mercantil C2P response' });
       let data;
       try { data = text ? JSON.parse(text) : {}; } catch { data = {}; }
 

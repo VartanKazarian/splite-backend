@@ -197,6 +197,33 @@ The bill records how the rate was obtained — `fxRateSource` reads
 `BCV_LAST_IN_FORCE` rather than `BCV` — because "where did this number come
 from" is exactly the question asked afterwards.
 
+### Reading from a host we do not run
+
+Every external read is bounded on three axes, not two. A **timeout** stops an
+upstream that has gone quiet and a **retry budget** stops us hammering one that
+is failing — but neither does anything about a host that keeps talking, and
+reading a response into memory with no ceiling is how a broken or hostile one
+takes the process down with a body. So there is a **size ceiling** too, 2 MB,
+about ten times the page actually parsed.
+
+It is counted in bytes rather than characters, which is not academic on a
+Spanish-language page: every accented character is one character and two bytes,
+so a character count would admit a body at roughly twice the ceiling. Chunks are
+collected as buffers and decoded once at the end, which also means a multi-byte
+character split across two chunks survives.
+
+Overflow is **fatal** — not retried. A body too large once will be too large
+again, and three attempts is three times the memory for the same answer. Where
+the server sends a `content-length` over the ceiling, it is refused before
+anything is streamed.
+
+The same ceiling applies to the bank. `MercantilC2PClient` reads its response
+through the same helper, and an unreadable body classifies as
+**`BANK_INDETERMINATE`** — the same answer a timeout gets, for the same reason:
+we asked a bank to move money and do not know what happened. Calling it FAILED
+would tell a diner their payment did not happen on the strength of a body nobody
+read.
+
 ## Guest sessions
 
 Scanning the QR exchanges it for a session held in Redis, and only the SHA-256

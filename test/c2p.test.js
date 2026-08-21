@@ -7,7 +7,8 @@ const {
   matchInDoubtPayment, OUTCOME, phoneMatchesLast4, amountsEqual, digitsOnly, canonicalReference
 } = require('../src/services/c2pMatcher');
 const {
-  isIndeterminateStatus, toMinorUnits, toBankAmount, redact, mapCharge, MercantilC2PError
+  isIndeterminateStatus, toMinorUnits, toBankAmount, redact, mapCharge, MercantilC2PError,
+  MercantilC2PClient
 } = require('../src/payments/providers/mercantil/c2p');
 const { buildInvoiceNumber } = require('../src/services/mercantilC2P');
 const { c2pChargeSchema, validate } = require('../src/middleware/schemas');
@@ -344,4 +345,34 @@ test('a client-supplied invoiceNumber never reaches the charge', () => {
   assert.ok(cleaned, 'the request validated');
   assert.equal(cleaned.invoiceNumber, undefined, 'a supplied invoiceNumber is stripped');
   assert.equal(cleaned.invoice_number, undefined, 'a supplied invoice_number is stripped');
+});
+
+test('a bank response too large to read is indeterminate, not a failure', async () => {
+  // The one classification that matters here. We asked a bank to move money and
+  // could not read what it said back, so the honest answer is that we do not
+  // know -- the same answer a timeout gets. Calling it FAILED would tell a diner
+  // their payment did not happen on the strength of a body we never read.
+  const client = new MercantilC2PClient({
+    credentials: { clientId: 'c', secretKey: 's', merchantId: 'm', integratorId: 'i', terminalId: 't' },
+    baseUrl: 'https://bank.invalid',
+    chargePath: '/payment/c2p',
+    timeoutMs: 1000
+  });
+
+  const realFetch = globalThis.fetch;
+  globalThis.fetch = async () => new Response('x'.repeat(4 * 1024 * 1024), {
+    status: 200, headers: { 'content-type': 'application/json' }
+  });
+  try {
+    await assert.rejects(
+      () => client._request('/payment/c2p', { any: 'body' }),
+      err => {
+        assert.ok(err instanceof MercantilC2PError);
+        assert.equal(err.code, 'BANK_INDETERMINATE');
+        return true;
+      }
+    );
+  } finally {
+    globalThis.fetch = realFetch;
+  }
 });
