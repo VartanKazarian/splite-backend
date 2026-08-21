@@ -190,6 +190,14 @@ const CODES = {
   MENU_OCR_UNAVAILABLE: 503,
   MENU_OCR_UNREADABLE_RESPONSE: 503,
 
+  // Registration is switched off for this deployment. It answered 404 until a
+  // frontend had to guess what that meant and told applicants to write to an
+  // address that does not exist -- a bare NOT_FOUND is indistinguishable from a
+  // mistyped path, so the only honest message a client could render was no
+  // message at all. Every other gated capability here says which one it is;
+  // this is that, for onboarding.
+  ONBOARDING_NOT_CONFIGURED: 503,
+
   // 500 -- the message is never echoed; correlate on requestId.
   INTERNAL_ERROR: 500
 };

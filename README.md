@@ -165,6 +165,7 @@ these do not** — they mean stop offering the feature on this server.
 | --- | --- | --- | --- |
 | **Read a menu from a photo** | `MENU_OCR_API_KEY`. `MENU_OCR_BASE_URL` defaults to OpenAI and selects the vendor | 503 `MENU_OCR_NOT_CONFIGURED` | `menuOcrAvailable` on `GET /api/v1/menu/settings` |
 | **Second factor** | `MFA_SECRET_KEYS` | 503 `MFA_KEY_MISSING` on enrolment. Existing accounts keep signing in on passwords | `GET /api/v1/auth/mfa` |
+| **Self-service registration** | `ONBOARDING_ENABLED=true`, plus everything the boot guard above then demands | 503 `ONBOARDING_NOT_CONFIGURED`. The router is not mounted at all — a stub answers, so no lead is recorded and no mail is sent | The code itself. It answered a bare 404 until a frontend, unable to tell that from a mistyped path, rendered an invented support address to a restaurant mid-application |
 | **Store bank credentials** | `PAYMENT_CREDENTIALS_KEYS` | 503 `PAYMENT_CREDENTIALS_KEY_MISSING` | — |
 | **Charge through Mercantil C2P** | `MERCANTIL_C2P_URL`, **and** credentials stored per restaurant, **and** those credentials proven by a real call | 503 `PAYMENT_PROVIDER_MISCONFIGURED` | `chargeable` on `GET /api/v1/account/banks` |
 | **Self-service signup** | `ONBOARDING_ENABLED=true` and a mail provider | The routes are **not mounted at all** — 404, not 503 | — |
