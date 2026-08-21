@@ -1311,6 +1311,66 @@ yet** — that needs an acquirer, and with one there is no matching problem at
 all: the acquirer answers authoritatively, so none of the reconciliation
 machinery above applies.
 
+## The service dashboard
+
+```
+GET /api/v1/payments/dashboard          the room, the queues and the takings
+GET /api/v1/payments/activity?since=…   what has happened since you last looked
+GET /api/v1/tables/floor                per table, with its open bill
+```
+
+Every one of these figures could be assembled by a client from endpoints that
+already existed. That is exactly why they are here: **assembling them meant
+adding up money in a browser**, and amounts cross this wire as strings precisely
+because `Number` loses precision past 2^53. A total a client summed is the one
+figure nobody checked. They are summed in Postgres instead, in one call.
+
+`outstandingVes` is the number a manager looks at first — what the room still
+owes, due minus paid, and not something a client should compute by subtracting
+two strings.
+
+**A declared Pago Móvil is not takings.** It appears under `claims.pending` and
+leaves `outstandingVes` alone, because a diner saying they paid is not money
+until somebody has found it in the bank app. The takings figure reads settlement
+from the transition to SUCCEEDED rather than from when the row was created, for
+the same reason the tips report does.
+
+### On "today"
+
+There is no timezone on a restaurant, and this product is Venezuela-only, so an
+unset `from` means the start of the current day **in America/Caracas**. In UTC a
+service ending at 23:00 local lands in tomorrow, which would make the takings
+wrong for the last four hours of every evening. A service that crosses midnight
+should pass `from` explicitly — the same rule the tips report teaches.
+
+### Knowing a payment landed
+
+`GET /api/v1/payments/activity` is a cursor, not a push. Poll it with the `asOf`
+from the previous response; entries come oldest first, so the last one is the
+next cursor, and `asOf` is returned even when nothing happened so a poll
+advances instead of re-scanning the same window forever.
+
+Two kinds, because they call for different reactions: **`SETTLED`** is money
+that became real, and **`DECLARED`** is a diner who says they paid and needs
+somebody to open the bank app. Each carries the **table name**, because nobody
+recognises a uuid across a dining room.
+
+A real push notification needs a service worker, a subscription store and a
+sender, none of which are built. This is what makes polling cheap enough that
+the absence does not matter for a screen somebody is already watching.
+
+### The floor, per table
+
+`GET /api/v1/tables/floor` gains `openedAt` and `openMinutes` — how long the
+table has been sitting, which a manager reads as either "they are ready for the
+bill" or "something has gone wrong" — plus `pendingClaims`, the diners at that
+table who say they have paid and nobody has checked, and `tipVes` so a table
+that tipped well is visible while its diners are still there.
+
+`openMinutes` is computed server-side on purpose: a browser subtracting dates
+does it against the visitor's clock, which is how a table comes to read as
+opened in the future.
+
 ## Tips
 
 A tip rides on a payment and **never touches the bill**. `payments.tip_ves` sits
@@ -1383,6 +1443,58 @@ of them: how much came in over this shift, and how did it arrive.
   ]
 }
 ```
+
+### Whose tips these are
+
+```
+GET /api/v1/payments/tips/mine?from=…&to=…   your own
+GET /api/v1/payments/tips?from=…&to=…        the shift, including byServer
+PATCH /api/v1/bills/:id/server               correct who served a table
+```
+
+Tips have been recorded per payment since migration 024 and reported per shift
+since. What never existed was any link between a bill and the person who served
+it — so the report could tell a restaurant what it owed its staff in total, and
+could tell no individual member of staff what they had earned.
+
+That is the half that changes behaviour. **A pooled figure a manager reads once
+a week is an accounting line; a number a waiter watches climb during their own
+shift is an incentive**, which is the reason to build tipping into the product
+at all.
+
+`bills.servedBy` is set to whoever opens the bill. That is right when the person
+taking the order opens it — which is the usual path, since adding the first
+order is what creates the bill — and wrong when a host or cashier opens it for
+somebody else. So it is correctable, by OWNER and MANAGER, and audited, because
+it moves money between people.
+
+**A correction is retroactive, deliberately.** Attribution is read through the
+bill's *current* server at query time rather than snapshotted when the payment
+settled, so fixing who served a table fixes the tips that followed from it. A
+correction that left yesterday's money against the wrong name would not be one.
+That is also why a waiter cannot reassign their own tables.
+
+Bills with no server — everything predating the column — report under a null
+`userId` rather than being dropped. Hiding them would make the parts stop
+summing to the total, which is exactly the kind of silent gap somebody finds
+while dividing cash.
+
+`/tips/mine` takes no user id: it is always the caller's own. A waiter seeing
+their own total is the whole incentive; seeing everybody else's is a different
+feature with a different conversation behind it, and a manager already has
+`byServer`.
+
+### Is tipping actually working?
+
+A total cannot answer that — a bigger number on a busier night says nothing. The
+report carries `billedVes` beside `totalTipsVes` and a **`tipRateBps`**: tips as
+basis points of what was billed, so 840 is 8.40%.
+
+Basis points and integer arithmetic, for the reason IVA and the service charge
+are bps: a rate gets compared against a target, and 8.4 that is really 8.399999
+is a number somebody argues with. Null when nothing was billed — zero would read
+as "nobody tipped", and "there was nothing to tip on" is a different fact about
+a shift.
 
 The split between `inTillVes` and `owedToStaffVes` is the point. A cash tip is
 physically in the drawer and the restaurant is only deciding how to divide it;
@@ -2255,8 +2367,11 @@ From the working copy, onto the current model:
 - **`scripts/` still uses `console.*`.** Only `src/` was converted to structured
   logging; the migrate and seed CLIs were left alone deliberately, but a deploy
   step arguably deserves structured output too.
-- **Dead code:** `requireTenant`, `revokeAllSessionsForUser` and
-  `registerSchema` are exported and never used.
+- **Dead code:** none known. `requireTenant` and `registerSchema` were exported
+  and never called, and have been deleted — an unused export is a thing a
+  reviewer has to reason about and a thing a future caller may reach for
+  believing it is load-bearing. `revokeAllSessionsForUser` was on that list too
+  and is now genuinely used, by staff deactivation and by a password change.
 
 ### Numbers that are guesses
 

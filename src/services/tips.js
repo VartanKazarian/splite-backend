@@ -36,6 +36,112 @@ const IN_TILL_METHODS = new Set(['CASH']);
 const OWED_METHODS = new Set(['CARD', 'TRANSFER', 'PAGO_MOVIL', 'C2P']);
 
 /**
+ * A tip rate in basis points, exactly.
+ *
+ * Basis points rather than a float, and integer arithmetic rather than
+ * division, for the same reason VAT and the service charge are bps: a rate is
+ * compared against a configured one, and 8.4 that is really 8.399999 is a
+ * number somebody argues with. 840 is 8.40%.
+ *
+ * Null when nothing was billed. Zero would read as "nobody tipped" rather than
+ * "there was nothing to tip on", and those are different facts about a shift.
+ */
+function rateBps(tips, billed) {
+  if (billed <= 0n) return null;
+  return Number((tips * 10000n) / billed);
+}
+
+/**
+ * Tips by the person the bill is attributed to.
+ *
+ * Read through `bills.served_by` at query time rather than copied onto the
+ * payment when it settles. That is what makes a correction work: a manager
+ * fixing who served a table moves the tips with it, and a snapshot taken at
+ * settlement would leave yesterday's money against the wrong name for ever.
+ *
+ * Bills with no server are reported under a null id rather than dropped. They
+ * are the ones that predate the column, and hiding them would make the parts
+ * stop summing to the total -- which is exactly the kind of silent gap somebody
+ * discovers while dividing cash.
+ */
+async function tipsByServer({ restaurantId, from, to }) {
+  const { rows } = await db.query(
+    `SELECT b.served_by                AS user_id,
+            u.email                    AS email,
+            COUNT(*)::int              AS payments,
+            SUM(p.tip_ves)::BIGINT     AS tips_ves,
+            SUM(p.amount_ves)::BIGINT  AS billed_ves
+       FROM payment_transitions t
+       JOIN payments p
+         ON p.id = t.payment_id AND p.restaurant_id = t.restaurant_id
+       JOIN bills b
+         ON b.id = p.bill_id AND b.restaurant_id = p.restaurant_id
+       LEFT JOIN users u
+         ON u.id = b.served_by AND u.restaurant_id = b.restaurant_id
+      WHERE t.restaurant_id = $1
+        AND t.to_status = 'SUCCEEDED'
+        AND t.created_at >= $2
+        AND t.created_at <  $3
+        AND p.status = 'SUCCEEDED'
+        AND p.tip_ves > 0
+      GROUP BY b.served_by, u.email
+      ORDER BY SUM(p.tip_ves) DESC`,
+    [restaurantId, from, to]
+  );
+
+  return rows.map(r => ({
+    userId: r.user_id,
+    email: r.email,
+    payments: r.payments,
+    tipsVes: r.tips_ves,
+    billedVes: r.billed_ves,
+    tipRateBps: rateBps(BigInt(r.tips_ves), BigInt(r.billed_ves))
+  }));
+}
+
+/**
+ * One person's own tips.
+ *
+ * Any role reaches this, for themselves only -- there is no user id in the
+ * path. A waiter seeing their own total is the whole incentive; a waiter seeing
+ * everybody else's is a different feature with a different conversation behind
+ * it, and managers already have `byServer` on the shift report.
+ */
+async function tipsForServer({ restaurantId, userId, from, to }) {
+  const { rows } = await db.query(
+    `SELECT COUNT(*)::int              AS payments,
+            COUNT(DISTINCT p.bill_id)::int AS bills,
+            COALESCE(SUM(p.tip_ves), 0)::BIGINT    AS tips_ves,
+            COALESCE(SUM(p.amount_ves), 0)::BIGINT AS billed_ves
+       FROM payment_transitions t
+       JOIN payments p
+         ON p.id = t.payment_id AND p.restaurant_id = t.restaurant_id
+       JOIN bills b
+         ON b.id = p.bill_id AND b.restaurant_id = p.restaurant_id
+      WHERE t.restaurant_id = $1
+        AND b.served_by = $2
+        AND t.to_status = 'SUCCEEDED'
+        AND t.created_at >= $3
+        AND t.created_at <  $4
+        AND p.status = 'SUCCEEDED'`,
+    [restaurantId, userId, from, to]
+  );
+
+  const r = rows[0];
+  return {
+    from: new Date(from).toISOString(),
+    to: new Date(to).toISOString(),
+    currency: 'VES',
+    userId,
+    tipsVes: r.tips_ves,
+    billedVes: r.billed_ves,
+    tipRateBps: rateBps(BigInt(r.tips_ves), BigInt(r.billed_ves)),
+    payments: r.payments,
+    bills: r.bills
+  };
+}
+
+/**
  * Tips over a period, in total and by how they arrived.
  *
  * The window is half-open -- `from` inclusive, `to` exclusive -- so consecutive
@@ -63,8 +169,9 @@ const OWED_METHODS = new Set(['CARD', 'TRANSFER', 'PAGO_MOVIL', 'C2P']);
 async function tipsReport({ restaurantId, from, to }) {
   const { rows } = await db.query(
     `SELECT p.payment_method,
-            COUNT(*)::int          AS payments,
-            SUM(p.tip_ves)::BIGINT AS tips_ves
+            COUNT(*)::int             AS payments,
+            SUM(p.tip_ves)::BIGINT    AS tips_ves,
+            SUM(p.amount_ves)::BIGINT AS billed_ves
        FROM payment_transitions t
        JOIN payments p
          ON p.id = t.payment_id
@@ -81,23 +188,34 @@ async function tipsReport({ restaurantId, from, to }) {
   );
 
   let total = 0n;
+  let billed = 0n;
   let inTill = 0n;
   let owed = 0n;
   let unclassified = 0n;
   const byMethod = rows.map(row => {
     const tips = BigInt(row.tips_ves);
     total += tips;
+    billed += BigInt(row.billed_ves);
     if (IN_TILL_METHODS.has(row.payment_method)) inTill += tips;
     else if (OWED_METHODS.has(row.payment_method)) owed += tips;
     else unclassified += tips;
     return { paymentMethod: row.payment_method, payments: row.payments, tipsVes: tips.toString() };
   });
 
+  const byServer = await tipsByServer({ restaurantId, from, to });
+
   return {
     from: new Date(from).toISOString(),
     to: new Date(to).toISOString(),
     currency: 'VES',
     totalTipsVes: total.toString(),
+    // What was billed alongside those tips, and the rate they represent.
+    // A total alone cannot answer "is tipping working here" -- a bigger number
+    // on a busier night says nothing. The rate is the figure that moves when
+    // something changes, so it is the one to put in front of a restaurant.
+    billedVes: billed.toString(),
+    tipRateBps: rateBps(total, billed),
+    byServer,
     // The split that decides what actually has to be handed over. The three
     // always sum to the total, so a figure cannot go missing between them.
     inTillVes: inTill.toString(),
@@ -124,4 +242,7 @@ async function tipsForBill({ restaurantId, billId }) {
   return rows[0].tips_ves;
 }
 
-module.exports = { tipsReport, tipsForBill, IN_TILL_METHODS, OWED_METHODS };
+module.exports = {
+  tipsReport, tipsForBill, tipsByServer, tipsForServer, rateBps,
+  IN_TILL_METHODS, OWED_METHODS
+};

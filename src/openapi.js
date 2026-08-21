@@ -97,6 +97,10 @@ const schemas = {
       restaurantId: { type: 'string', format: 'uuid' },
       tableId: { type: 'string', format: 'uuid' },
       status: { type: 'string', enum: ['OPEN', 'CLOSED', 'VOID'] },
+      servedBy: {
+        type: ['string', 'null'], format: 'uuid',
+        description: 'The member of staff this bill is attributed to for tips. Set to whoever opened it, correctable at PATCH /api/v1/bills/{id}/server. Null for bills that predate the column and for ones deliberately detached.'
+      },
       subtotalMinor: { ...minorUnits, description: 'Sum of the line items, before charges.' },
       vatBps: {
         type: 'integer', minimum: 0, maximum: 10000,
@@ -494,6 +498,26 @@ const schemas = {
         description:
           'Tips on payments whose method was not recorded (SPLITE, OTHER). Reported separately rather than folded into either figure above: calling them cash cancels a real debt to staff, and calling them electronic pays out money already in the drawer. The three always sum to `totalTipsVes`.'
       },
+      billedVes: { ...minorUnits, description: 'What was billed alongside these tips — the denominator of the rate.' },
+      tipRateBps: {
+        type: ['integer', 'null'],
+        description: 'Tips as basis points of what was billed: 840 is 8.40%. **This is the figure that answers "is tipping working here"** — a total alone cannot, because a bigger number on a busier night says nothing. Null when nothing was billed; zero would read as "nobody tipped", which is a different fact about a shift.'
+      },
+      byServer: {
+        type: 'array',
+        description: 'Tips by the person the bill is attributed to. Attribution is read through `bills.servedBy` **at query time**, so a manager correcting who served a table moves the tips with it — a correction that left the money against the wrong name would not be one. A bill with no server is reported under a null `userId` rather than dropped, or the parts would stop summing to the total.',
+        items: {
+          type: 'object',
+          properties: {
+            userId: { type: ['string', 'null'], format: 'uuid' },
+            email: { type: ['string', 'null'] },
+            payments: { type: 'integer' },
+            tipsVes: minorUnits,
+            billedVes: minorUnits,
+            tipRateBps: { type: ['integer', 'null'] }
+          }
+        }
+      },
       byMethod: {
         type: 'array',
         items: {
@@ -670,6 +694,16 @@ const schemas = {
               fxRateVesPerUnit: { type: ['string', 'null'] },
               usdReference: { type: ['string', 'null'] },
               itemCount: { type: 'integer' },
+              openedAt: { type: ['string', 'null'], format: 'date-time' },
+              openMinutes: {
+                type: ['integer', 'null'],
+                description: 'How long this table has been sitting. Computed here rather than by the client: a browser subtracting dates uses the visitor\'s clock, which is how a table reads as opened in the future.'
+              },
+              pendingClaims: {
+                type: 'integer',
+                description: 'Diners at this table who say they have paid and nobody has verified. The one per-table fact a floor view cannot derive from the bill, and the one with somebody waiting.'
+              },
+              tipVes: { ...minorUnits, description: 'Tips already settled on this bill, so a table that tipped well is visible while its diners are still sitting there.' },
               updatedAt: { type: 'string', format: 'date-time' }
             }
           }
@@ -1141,6 +1175,95 @@ Object.assign(schemas, {
       },
       createdAt: { type: 'string', format: 'date-time' },
       updatedAt: { type: 'string', format: 'date-time' }
+    }
+  },
+
+  MyTips: {
+    type: 'object',
+    properties: {
+      from: { type: 'string', format: 'date-time' },
+      to: { type: 'string', format: 'date-time' },
+      currency: { type: 'string', enum: ['VES'] },
+      userId: { type: 'string', format: 'uuid' },
+      tipsVes: minorUnits,
+      billedVes: { ...minorUnits, description: 'What was billed on the payments these tips came with — the denominator of the rate.' },
+      tipRateBps: {
+        type: ['integer', 'null'],
+        description: 'Tips as basis points of what was billed: 840 is 8.40%. Null when nothing was billed — zero would read as "nobody tipped", which is a different fact. Basis points rather than a float for the reason IVA is: a rate that is really 8.399999 is a number somebody argues with.'
+      },
+      payments: { type: 'integer' },
+      bills: { type: 'integer' }
+    }
+  },
+
+  ServiceSnapshot: {
+    type: 'object',
+    description: 'The room right now, plus what has been taken over a window. Every money figure is summed server-side.',
+    properties: {
+      asOf: { type: 'string', format: 'date-time', description: 'Pass this back as `since` to /activity.' },
+      since: { type: ['string', 'null'], format: 'date-time', description: 'The window the `taken` figures cover. Null means the default — today in America/Caracas.' },
+      tables: {
+        type: 'object',
+        properties: {
+          total: { type: 'integer' }, occupied: { type: 'integer' }, free: { type: 'integer' }
+        }
+      },
+      openBills: {
+        type: 'object',
+        properties: {
+          count: { type: 'integer' },
+          totalDueVes: minorUnits,
+          amountPaidVes: minorUnits,
+          outstandingVes: { ...minorUnits, description: 'What the room still owes. Due minus paid, computed here so no client subtracts two strings.' },
+          oldestOpenedAt: { type: ['string', 'null'], format: 'date-time' }
+        }
+      },
+      taken: {
+        type: 'object',
+        description: 'Settled money in the window, read from the transition to SUCCEEDED rather than from when the row was created — a declared payment settles when staff verify it, not when the diner says so.',
+        properties: {
+          paymentsVes: minorUnits, tipsVes: minorUnits, payments: { type: 'integer' }
+        }
+      },
+      claims: {
+        type: 'object',
+        description: 'Declared Pago Móvil waiting for a person. The age is the half that matters: a count cannot tell a quiet queue from an ignored one.',
+        properties: {
+          pending: { type: 'integer' },
+          oldestPendingAt: { type: ['string', 'null'], format: 'date-time' },
+          oldestPendingAgeSeconds: { type: ['integer', 'null'] }
+        }
+      },
+      unresolvedC2P: {
+        type: 'object',
+        description: 'Charges where the diner has been debited and only a person can end it.',
+        properties: { inDoubt: { type: 'integer' }, ambiguous: { type: 'integer' } }
+      }
+    }
+  },
+
+  PaymentActivity: {
+    type: 'object',
+    properties: {
+      asOf: { type: 'string', format: 'date-time', description: 'The next cursor. Returned even when nothing happened, so a poll advances instead of re-scanning the same window forever.' },
+      since: { type: ['string', 'null'], format: 'date-time' },
+      data: {
+        type: 'array',
+        items: {
+          type: 'object',
+          properties: {
+            kind: { type: 'string', enum: ['SETTLED', 'DECLARED'] },
+            at: { type: 'string', format: 'date-time' },
+            paymentId: { type: 'string', format: 'uuid' },
+            billId: { type: 'string', format: 'uuid' },
+            tableId: { type: ['string', 'null'], format: 'uuid' },
+            tableName: { type: ['string', 'null'], description: 'What a person reads. Nobody recognises a uuid across a dining room.' },
+            amountVes: minorUnits,
+            tipVes: minorUnits,
+            paymentMethod: { type: 'string' }
+          }
+        }
+      }
     }
   },
 
@@ -2259,6 +2382,57 @@ const paths = {
     }
   },
 
+  '/api/v1/bills/{id}/server': {
+    patch: {
+      tags: ['Bills'],
+      summary: 'Correct who served a table',
+      operationId: 'setBillServer',
+      'x-required-roles': ['OWNER', 'MANAGER'],
+      description: [
+        '**OWNER and MANAGER only, and audited, because this moves money between people.**',
+        '',
+        '`servedBy` is set automatically when a bill is opened, to whoever opened it. That is right',
+        'when the person taking the order opens the bill and wrong when a host or a cashier opens it',
+        'on somebody else\'s behalf — common enough to need a correction path rather than an',
+        'assumption.',
+        '',
+        'Tips are attributed through the bill\'s **current** server, so a correction here moves the',
+        'tips that followed from it. That is the point: a correction leaving yesterday\'s money',
+        'against the wrong name would not be one. It is also why a waiter cannot do this to their',
+        'own tables.',
+        '',
+        '`servedBy: null` clears it — better for a bill to belong to nobody than to the wrong person.',
+        'An inactive account is refused with `STAFF_NOT_FOUND`, so somebody who has left cannot',
+        'quietly be given a share.'
+      ].join('\n'),
+      security: staff,
+      parameters: [{ $ref: '#/components/parameters/BillId' }],
+      requestBody: {
+        required: true,
+        content: {
+          'application/json': {
+            schema: {
+              type: 'object',
+              required: ['servedBy'],
+              properties: {
+                servedBy: {
+                  type: ['string', 'null'], format: 'uuid',
+                  description: 'Null is meaningful and distinct from omitting the field: it detaches the bill from anybody.'
+                }
+              }
+            }
+          }
+        }
+      },
+      responses: {
+        200: { description: 'The bill, reattributed.', content: { 'application/json': { schema: ref('Bill') } } },
+        403: response('Forbidden'),
+        404: response('NotFound'),
+        ...commonErrors
+      }
+    }
+  },
+
   '/api/v1/bills/{id}': {
     get: {
       tags: ['Bills'],
@@ -2872,6 +3046,112 @@ const paths = {
         409: response('Conflict'),
         429: response('TooManyRequests'),
         500: response('ServerError')
+      }
+    }
+  },
+
+  '/api/v1/payments/tips/mine': {
+    get: {
+      tags: ['Payments'],
+      summary: 'Your own tips',
+      operationId: 'getMyTips',
+      description: [
+        'Any authenticated staff role, **for themselves only** — there is no user id in the path.',
+        '',
+        'A waiter seeing their own total is the entire incentive for building tipping into the',
+        'product; seeing everybody else\'s is a different feature with a different conversation',
+        'behind it. A manager already has `byServer` on the shift report.',
+        '',
+        'Attributed through `bills.servedBy` at query time, so a manager correcting who served a',
+        'table moves these figures with it.'
+      ].join('\n'),
+      security: staff,
+      parameters: [
+        { name: 'from', in: 'query', required: true, schema: { type: 'string', format: 'date-time' } },
+        { name: 'to', in: 'query', required: true, schema: { type: 'string', format: 'date-time' } }
+      ],
+      responses: {
+        200: {
+          description: 'Tips earned in the window.',
+          content: { 'application/json': { schema: ref('MyTips') } }
+        },
+        ...commonErrors
+      }
+    }
+  },
+
+  '/api/v1/payments/dashboard': {
+    get: {
+      tags: ['Payments'],
+      summary: 'The whole floor in one call',
+      operationId: 'getServiceSnapshot',
+      description: [
+        'Any authenticated staff role — a waiter needs to know which tables still owe money as much',
+        'as an owner does.',
+        '',
+        '**The totals are summed in Postgres, not by the client.** Amounts cross the wire as strings',
+        'because a browser\'s `Number` loses precision past 2^53, so a total a client assembled by',
+        'adding them up is the one figure nobody checked.',
+        '',
+        '`from` bounds only the *since* figures — takings, tips, payment count. The floor and the',
+        'queues are always **now**: an open bill is open whatever window somebody asked about.',
+        '',
+        'Unset, `from` means the start of the current day **in America/Caracas**, not UTC. There is',
+        'no timezone on a restaurant and this product is Venezuela-only; in UTC a service ending at',
+        '23:00 local lands in tomorrow, which would make the takings wrong for the last four hours of',
+        'every evening. A service that crosses midnight should send `from` explicitly.',
+        '',
+        '**A declared Pago Móvil is not takings.** It appears under `claims.pending` and leaves',
+        '`openBills.outstandingVes` untouched, because a diner saying they paid is not money until a',
+        'member of staff has found it in the bank app.'
+      ].join('\n'),
+      security: staff,
+      parameters: [
+        { name: 'from', in: 'query', required: false, schema: { type: 'string', format: 'date-time' } }
+      ],
+      responses: {
+        200: {
+          description: 'The room, the queues and the takings.',
+          content: { 'application/json': { schema: ref('ServiceSnapshot') } }
+        },
+        ...commonErrors
+      }
+    }
+  },
+
+  '/api/v1/payments/activity': {
+    get: {
+      tags: ['Payments'],
+      summary: 'What has happened since the client last looked',
+      operationId: 'getPaymentActivity',
+      description: [
+        'Any authenticated staff role. Poll this with the `asOf` from the previous response as',
+        '`since`, and render `data` in order — it is oldest first, so the last entry is the next',
+        'cursor.',
+        '',
+        'Two kinds, because they call for different reactions:',
+        '',
+        '- `SETTLED` — money became real. Table 6 has paid.',
+        '- `DECLARED` — a diner *says* they paid. Somebody has to open the bank app.',
+        '',
+        '**This is deliberately not a push.** A real notification needs a service worker, a',
+        'subscription store and a sender, none of which are built; a cursor is what makes polling',
+        'cheap enough that the absence does not matter for a screen somebody is watching.',
+        '',
+        'Use `asOf` rather than a time the client made up — a clock running fast would otherwise skip',
+        'events, and a skipped settlement is a table nobody knows has paid.'
+      ].join('\n'),
+      security: staff,
+      parameters: [
+        { name: 'since', in: 'query', required: false, schema: { type: 'string', format: 'date-time' } },
+        { name: 'limit', in: 'query', required: false, schema: { type: 'integer', minimum: 1, maximum: 200, default: 50 } }
+      ],
+      responses: {
+        200: {
+          description: 'Events since the cursor, oldest first.',
+          content: { 'application/json': { schema: ref('PaymentActivity') } }
+        },
+        ...commonErrors
       }
     }
   },

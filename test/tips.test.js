@@ -4,7 +4,7 @@ const assert = require('node:assert/strict');
 const db = require('../src/connectors/base');
 const dto = require('../src/dto');
 const { processSplitPayment } = require('../src/services/locks');
-const { tipsReport } = require('../src/services/tips');
+const { tipsReport, rateBps } = require('../src/services/tips');
 const {
   splitPaymentSchema, declareClaimSchema, c2pChargeSchema, tipsReportQuerySchema
 } = require('../src/middleware/schemas');
@@ -131,20 +131,29 @@ test('tips stay exact beyond 2^53 centimos', async () => {
 
 /* --- the report ------------------------------------------------------- */
 
-/** Scripts the grouped rows the report reads, and captures the query it ran. */
-function stubReport(rows) {
+/**
+ * Scripts the two grouped reads the report makes, and captures both.
+ *
+ * It runs one query per breakdown -- by method, and by the person the bill is
+ * attributed to -- so a stub returning one set of rows for anything asked would
+ * feed the method rows to the server grouping and quietly assert nonsense.
+ */
+function stubReport(byMethod, byServer = []) {
   const calls = [];
-  db.query = async (text, params) => { calls.push({ text, params }); return { rows }; };
+  db.query = async (text, params) => {
+    calls.push({ text, params });
+    return { rows: text.includes('served_by') ? byServer : byMethod };
+  };
   return calls;
 }
 
 test('an unrecorded method is reported as unclassified, not guessed', async () => {
   stubReport([
-    { payment_method: 'CASH', payments: 1, tips_ves: '1000' },
-    { payment_method: 'CARD', payments: 1, tips_ves: '2000' },
+    { payment_method: 'CASH', payments: 1, tips_ves: '1000', billed_ves: '10000' },
+    { payment_method: 'CARD', payments: 1, tips_ves: '2000', billed_ves: '20000' },
     // What the till records when the client does not say how the money came in.
-    { payment_method: 'SPLITE', payments: 3, tips_ves: '4000' },
-    { payment_method: 'OTHER', payments: 1, tips_ves: '500' }
+    { payment_method: 'SPLITE', payments: 3, tips_ves: '4000', billed_ves: '40000' },
+    { payment_method: 'OTHER', payments: 1, tips_ves: '500', billed_ves: '5000' }
   ]);
 
   const out = await tipsReport({
@@ -160,9 +169,9 @@ test('an unrecorded method is reported as unclassified, not guessed', async () =
 
 test('the three buckets always sum to the total', async () => {
   stubReport([
-    { payment_method: 'CASH', payments: 1, tips_ves: '1000' },
-    { payment_method: 'C2P', payments: 1, tips_ves: '2000' },
-    { payment_method: 'SPLITE', payments: 1, tips_ves: '3000' }
+    { payment_method: 'CASH', payments: 1, tips_ves: '1000', billed_ves: '10000' },
+    { payment_method: 'C2P', payments: 1, tips_ves: '2000', billed_ves: '20000' },
+    { payment_method: 'SPLITE', payments: 1, tips_ves: '3000', billed_ves: '30000' }
   ]);
   const out = await tipsReport({
     restaurantId: 'r1', from: '2026-08-01T00:00:00Z', to: '2026-08-02T00:00:00Z'
@@ -174,9 +183,9 @@ test('the three buckets always sum to the total', async () => {
 
 test('cash tips are in the till; electronic tips are owed to staff', async () => {
   stubReport([
-    { payment_method: 'C2P', payments: 4, tips_ves: '12000' },
-    { payment_method: 'CASH', payments: 2, tips_ves: '3000' },
-    { payment_method: 'PAGO_MOVIL', payments: 1, tips_ves: '1000' }
+    { payment_method: 'C2P', payments: 4, tips_ves: '12000', billed_ves: '120000' },
+    { payment_method: 'CASH', payments: 2, tips_ves: '3000', billed_ves: '30000' },
+    { payment_method: 'PAGO_MOVIL', payments: 1, tips_ves: '1000', billed_ves: '10000' }
   ]);
 
   const out = await tipsReport({
@@ -223,8 +232,8 @@ test('an empty period reports zeroes rather than nothing', async () => {
 
 test('report totals stay exact beyond 2^53 centimos', async () => {
   stubReport([
-    { payment_method: 'CASH', payments: 1, tips_ves: '9007199254740993' },
-    { payment_method: 'C2P', payments: 1, tips_ves: '9007199254740993' }
+    { payment_method: 'CASH', payments: 1, tips_ves: '9007199254740993', billed_ves: '90071992547409930' },
+    { payment_method: 'C2P', payments: 1, tips_ves: '9007199254740993', billed_ves: '90071992547409930' }
   ]);
   const out = await tipsReport({
     restaurantId: 'r1', from: '2026-08-01T00:00:00Z', to: '2026-08-02T00:00:00Z'
@@ -333,4 +342,65 @@ test('a claim from before tips existed reads as untipped', () => {
   });
   assert.equal(out.tipVes, '0');
   assert.equal(out.totalPaidVes, '2500');
+});
+
+/* --- the rate, and who earned it -------------------------------------- */
+
+test('the tip rate is exact basis points, not a float', async () => {
+  // Basis points for the same reason IVA and the service charge are: a rate is
+  // compared against a configured one, and 8.4 that is really 8.399999 is a
+  // number somebody argues with.
+  assert.equal(rateBps(840n, 10000n), 840);
+  assert.equal(rateBps(1n, 3n), 3333);
+  assert.equal(rateBps(0n, 10000n), 0, 'nobody tipped is a real answer');
+});
+
+test('nothing billed has no rate, rather than a rate of zero', async () => {
+  // Zero would read as "nobody tipped". There was nothing to tip on, which is
+  // a different fact about a shift.
+  assert.equal(rateBps(0n, 0n), null);
+  assert.equal(rateBps(500n, 0n), null);
+});
+
+test('the report carries what was billed beside what was tipped', async () => {
+  // A total alone cannot answer "is tipping working here" -- a bigger number on
+  // a busier night says nothing.
+  stubReport([
+    { payment_method: 'CASH', payments: 2, tips_ves: '1000', billed_ves: '10000' },
+    { payment_method: 'C2P', payments: 3, tips_ves: '2000', billed_ves: '30000' }
+  ]);
+
+  const out = await tipsReport({
+    restaurantId: 'r1', from: '2026-08-01T00:00:00Z', to: '2026-08-02T00:00:00Z'
+  });
+
+  assert.equal(out.totalTipsVes, '3000');
+  assert.equal(out.billedVes, '40000');
+  assert.equal(out.tipRateBps, 750, '3000 on 40000 is 7.50%');
+});
+
+test('the report attributes tips to the person the bill belongs to', async () => {
+  stubReport(
+    [{ payment_method: 'CASH', payments: 3, tips_ves: '3000', billed_ves: '30000' }],
+    [
+      { user_id: 'u1', email: 'ana@example.com', payments: 2, tips_ves: '2000', billed_ves: '20000' },
+      // A bill nobody was recorded against. Reported rather than dropped, or
+      // the parts stop summing to the total -- the kind of silent gap somebody
+      // finds while dividing cash.
+      { user_id: null, email: null, payments: 1, tips_ves: '1000', billed_ves: '10000' }
+    ]
+  );
+
+  const out = await tipsReport({
+    restaurantId: 'r1', from: '2026-08-01T00:00:00Z', to: '2026-08-02T00:00:00Z'
+  });
+
+  assert.equal(out.byServer.length, 2);
+  assert.equal(out.byServer[0].email, 'ana@example.com');
+  assert.equal(out.byServer[0].tipsVes, '2000');
+  assert.equal(out.byServer[0].tipRateBps, 1000);
+  assert.equal(out.byServer[1].userId, null, 'unattributed is still reported');
+
+  const attributed = out.byServer.reduce((sum, s) => sum + BigInt(s.tipsVes), 0n);
+  assert.equal(attributed.toString(), out.totalTipsVes, 'the parts sum to the total');
 });

@@ -33,17 +33,4 @@ function requireRole(...roles) {
   };
 }
 
-/**
- * Defence in depth. Every query is already scoped by req.user.restaurantId;
- * this rejects requests that *ask* for a different tenant so the attempt is
- * visible rather than silently returning an empty result.
- */
-function requireTenant(req, res, next) {
-  const requested = req.params?.restaurantId || req.body?.restaurantId || req.query?.restaurantId;
-  if (requested && requested !== req.user?.restaurantId) {
-    return next(new ApiError('CROSS_TENANT_DENIED', 'Cross-tenant access denied'));
-  }
-  next();
-}
-
-module.exports = { authenticateToken, requireRole, requireTenant };
+module.exports = { authenticateToken, requireRole };

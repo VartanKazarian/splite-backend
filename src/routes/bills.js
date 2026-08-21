@@ -17,6 +17,7 @@ const {
   splitIdParamSchema,
   listBillsQuerySchema,
   billIdParamSchema,
+  setBillServerSchema,
   tableIdParamSchema
 } = require('../middleware/schemas');
 const { processSplitPayment } = require('../services/locks');
@@ -41,7 +42,7 @@ const BILL_COLUMNS = `id, restaurant_id, table_id, status,
                       service_charge_bps, service_charge_minor,
                       total_due_ves, amount_paid_ves,
                       fx_rate_ves_per_unit, fx_rate_source, fx_value_date,
-                      calculation_version, created_at, updated_at`;
+                      calculation_version, served_by, created_at, updated_at`;
 
 router.use(authenticateToken);
 
@@ -193,16 +194,20 @@ router.post(
           // subtotal_minor mirrors total_due here so the sum-of-parts check
           // holds for a bill opened with a fixed figure and no lines. Once it
           // is itemised, recalculateTotals owns all five columns.
+          // served_by is whoever opened it. Right when the person taking the
+          // order opens the bill, wrong when a host or cashier does it for
+          // them -- which is why PATCH /bills/:id/server exists rather than
+          // this being treated as the final word.
           `INSERT INTO bills (restaurant_id, table_id, total_due, subtotal_minor, currency,
                               vat_bps, service_charge_bps,
                               total_due_ves, fx_rate_ves_per_unit, fx_rate_source,
-                              fx_value_date, fx_rate_as_of)
-           VALUES ($1, $2, $3, $3, $4, $5, $6, $7, $8, $9, $10, NOW())
+                              fx_value_date, fx_rate_as_of, served_by)
+           VALUES ($1, $2, $3, $3, $4, $5, $6, $7, $8, $9, $10, NOW(), $11)
            RETURNING ${BILL_COLUMNS}`,
           [
             req.user.restaurantId, req.body.tableId, req.body.totalDueMinorUnits, menuCurrency,
             vatBps, serviceChargeBps,
-            fx.totalDueVes, fx.rate, fx.source, fx.valueDate
+            fx.totalDueVes, fx.rate, fx.source, fx.valueDate, req.user.sub
           ]
         );
         return rows[0];
@@ -290,14 +295,17 @@ router.post(
 
         if (!billId) {
           const created = await client.query(
+            // Same rule as POST /bills: the person who opened it. This path is
+            // the one a waiter actually uses -- they add the first order and
+            // the bill appears -- so it is usually the accurate one.
             `INSERT INTO bills (restaurant_id, table_id, total_due, subtotal_minor, currency,
                                 vat_bps, service_charge_bps,
                                 total_due_ves, fx_rate_ves_per_unit, fx_rate_source,
-                                fx_value_date, fx_rate_as_of)
-             VALUES ($1, $2, 0, 0, $3, $4, $5, 0, $6, $7, $8, NOW())
+                                fx_value_date, fx_rate_as_of, served_by)
+             VALUES ($1, $2, 0, 0, $3, $4, $5, 0, $6, $7, $8, NOW(), $9)
              RETURNING id`,
             [restaurantId, req.params.tableId, menuCurrency, vatBps, serviceChargeBps,
-              fx.rate, fx.source, fx.valueDate]
+              fx.rate, fx.source, fx.valueDate, req.user.sub]
           );
           billId = created.rows[0].id;
           opened = true;
@@ -323,6 +331,63 @@ router.post(
       });
 
       res.status(201).json({ opened: result.opened, bill: dto.billWithItems(result.bill, items) });
+    } catch (err) { next(err); }
+  }
+);
+
+/**
+ * Correct who served a table.
+ *
+ * OWNER and MANAGER only, and audited, because this moves money between people:
+ * tips are attributed through the bill's *current* server, so a correction here
+ * moves yesterday's tips with it. That is the point -- a correction that left
+ * the money against the wrong name would not be one -- but it is also why a
+ * waiter cannot do it to their own tables.
+ *
+ * `servedBy: null` clears it, for a bill that should not be attributed to
+ * anybody rather than attributed wrongly.
+ */
+router.patch(
+  '/:id/server',
+  requireRole('OWNER', 'MANAGER'),
+  validateParams(billIdParamSchema),
+  validateBody(setBillServerSchema),
+  async (req, res, next) => {
+    try {
+      const restaurantId = req.user.restaurantId;
+      const servedBy = req.body.servedBy ?? null;
+
+      const updated = await db.withTransaction(async client => {
+        // Checked rather than left to the foreign key, so the answer is
+        // "no such person here" rather than a constraint name -- and so an
+        // inactive account cannot quietly be given somebody's tips.
+        if (servedBy) {
+          const { rows } = await client.query(
+            'SELECT id FROM users WHERE id = $1 AND restaurant_id = $2 AND active = true',
+            [servedBy, restaurantId]
+          );
+          if (!rows.length) throw new ApiError('STAFF_NOT_FOUND', 'No such person at this restaurant');
+        }
+
+        const { rows } = await client.query(
+          `UPDATE bills SET served_by = $3
+            WHERE id = $1 AND restaurant_id = $2
+            RETURNING ${BILL_COLUMNS}`,
+          [req.params.id, restaurantId, servedBy]
+        );
+        if (!rows.length) throw new ApiError('BILL_NOT_FOUND', 'Bill not found');
+        return rows[0];
+      });
+
+      await logAudit({
+        ...auditContext(req),
+        action: 'BILL_SERVER_CHANGED',
+        resourceType: 'bill',
+        resourceId: updated.id,
+        details: { servedBy }
+      });
+
+      res.json(dto.bill(updated));
     } catch (err) { next(err); }
   }
 );

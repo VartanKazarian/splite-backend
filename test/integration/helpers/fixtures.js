@@ -19,7 +19,7 @@ async function createRestaurant({ name = 'Integration Test Restaurant', currency
 
 async function createTable(restaurantId, { name = 'T1' } = {}) {
   const { rows } = await db.query(
-    'INSERT INTO tables (restaurant_id, name) VALUES ($1, $2) RETURNING id, qr_nonce',
+    'INSERT INTO tables (restaurant_id, name) VALUES ($1, $2) RETURNING id, name, qr_nonce',
     [restaurantId, name]
   );
   return rows[0];
