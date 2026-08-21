@@ -144,6 +144,12 @@ fail loudly at deploy time rather than at the first request:
 | `CORS_ORIGINS` | Required, and `*` is refused |
 | `MAIL_*`, `APP_BASE_URL`, `ONBOARDING_TEAM_EMAIL` | Only when `ONBOARDING_ENABLED=true`. Scoped to the flag so turning onboarding on is what makes them mandatory |
 
+`LOG_LEVEL` is refused above `warn` in production. Metrics are counted where
+failures are logged, and pino skips its hook for a line below the configured
+level — so raising it would silence the warnings *and* the metrics counted with
+them. A monitoring hole with no symptom is the worst kind, so it is a boot
+failure instead.
+
 Redis is not asserted, because the app degrades rather than fails without it:
 guest sessions fall back to Postgres, and rate limiting fails open everywhere
 except `/auth`. It is still expected in production — the degraded mode is for an
@@ -164,6 +170,7 @@ these do not** — they mean stop offering the feature on this server.
 | **Self-service signup** | `ONBOARDING_ENABLED=true` and a mail provider | The routes are **not mounted at all** — 404, not 503 | — |
 | **Foreign-currency menus** | `FX_ENABLED` (on by default) and a reachable BCV | 503 `FX_UNAVAILABLE`, but only after the stored-rate fallback is exhausted | `GET /api/v1/exchange-rate` |
 | **Browsable contract at `/docs`** | `DOCS_ENABLED` (on by default) | Not served | — |
+| **Prometheus metrics at `/metrics`** | `METRICS_TOKEN` | Not mounted — 404, not 401 | — |
 
 **Declared Pago Móvil needs none of this.** A diner declares a transfer and a
 member of staff confirms it against the bank app, which is why it is the rail
@@ -1825,6 +1832,55 @@ number a restaurant might reconcile against.
 What the structured events do give you is the operational half of that picture:
 because every line carries `restaurantId` and a stable `event`, "which tenant is
 seeing payment failures this week" is a query rather than a grep.
+
+### Metrics
+
+Logs answer *what happened*. They do not answer *how often, and is it getting
+worse* — so nobody could see a C2P failure rate climbing or a claims queue going
+forty deep without grepping for it or running the reconciler by hand, and both
+of those are things somebody does after a restaurant complains.
+
+`GET /metrics` serves Prometheus text, behind `METRICS_TOKEN` as a bearer.
+Unset, the route is not mounted at all: this response names every queue in the
+installation and how far behind each one is, and an endpoint that exists but
+refuses is an endpoint somebody probes.
+
+**Counters are collected at the logger, not at call sites.** Every failure this
+service knows how to have already goes through one funnel — a `warn` or `error`
+carrying a stable `event` — so a pino hook counts there. A new failure mode
+becomes a metric the moment somebody logs it rather than the moment somebody
+remembers to instrument it, and the metric vocabulary is the event vocabulary
+already in use. Instrumenting by hand would have meant twenty-seven edits and a
+twenty-eighth that somebody forgets, which is precisely how `AUDIT_WRITE_FAILED`
+came to be swallowed with nothing watching.
+
+```
+splite_events_total{event="AUDIT_WRITE_FAILED",level="error"} 3
+splite_pending_claims 12
+splite_oldest_pending_claim_age_seconds 5400
+splite_unresolved_c2p{status="IN_DOUBT"} 2
+splite_unresolved_c2p{status="AMBIGUOUS"} 0
+```
+
+The gauges are read at scrape time from the ledger, so they are exact rather
+than accumulated, and they are deliberately **cross-tenant**: this endpoint
+answers to whoever runs the service, and "somebody's diner has been waiting two
+hours" is the same alert whichever restaurant they are sitting in. A series at
+zero is emitted rather than omitted — a vanished series reads as *no data* on a
+dashboard, not as *nothing waiting*.
+
+A gauge that throws is skipped rather than failing the scrape, and the failure
+is counted like any other, so the gap explains itself in the same response. A
+monitoring endpoint that goes dark because one query failed removes the
+visibility it exists for, at the moment it is most wanted.
+
+There is deliberately **no payment counter**. The obvious one — increment on
+each state transition — would have to fire inside the caller's transaction,
+which is the only place that knows a transition happened; a transaction that
+rolled back afterwards would leave the count claiming money moved when none did.
+A number about money that can be wrong is worse than no number. The ledger holds
+the exact answer, so throughput belongs in a gauge over `payments`, which needs
+an index shaped for the window it asks about — a decision to take on its own.
 
 ## Deploying to Railway
 

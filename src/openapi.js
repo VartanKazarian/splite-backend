@@ -3683,6 +3683,7 @@ const document = {
       '| Charge a diner through Mercantil C2P | `MERCANTIL_C2P_URL`, **plus** credentials stored and proven per restaurant | 503 `PAYMENT_PROVIDER_MISCONFIGURED` | `chargeable` on `GET /api/v1/account/banks` |',
       '| Self-service restaurant signup | `ONBOARDING_ENABLED` and a mail provider | The routes are **not mounted at all**, so 404 | — |',
       '| Foreign-currency menu prices | `FX_ENABLED` (on by default) and a reachable BCV | 503 `FX_UNAVAILABLE`, after the stored-rate fallback is exhausted | `GET /api/v1/exchange-rate` |',
+      '| Prometheus metrics at `/metrics` | `METRICS_TOKEN` | The route is **not mounted** — 404, not 401 | — |',
       '',
       'Declared Pago Móvil needs none of this and is the rail that works on a bare deployment: a',
       'diner declares a transfer, a member of staff confirms it against the bank app.',
