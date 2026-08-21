@@ -54,6 +54,7 @@ const corsOrigins = (process.env.CORS_ORIGINS || 'http://localhost:5173')
 // Read once here because assertProductionConfig and the exported object both
 // need them, and the guard runs before the export is consulted.
 const onboardingEnabled = boolean('ONBOARDING_ENABLED', false);
+const logLevel = process.env.LOG_LEVEL || (isProduction ? 'info' : 'debug');
 const mailTransport = process.env.MAIL_TRANSPORT || 'log';
 
 /**
@@ -84,6 +85,16 @@ function assertProductionConfig() {
     throw new Error('DATABASE_URL or DB_PASSWORD is required in production');
   }
   if (!process.env.CORS_ORIGINS) throw new Error('CORS_ORIGINS is required in production');
+
+  // Metrics are counted where failures are logged, and pino skips the hook for
+  // a line below the configured level -- so raising this past `warn` silently
+  // stops counting warnings as well as printing them. That is a monitoring hole
+  // with no symptom, which is the worst kind, so it is a boot failure instead.
+  if (!['trace', 'debug', 'info', 'warn'].includes(logLevel)) {
+    throw new Error(
+      `LOG_LEVEL=${logLevel} would silence warnings and the metrics counted with them; use warn or lower`
+    );
+  }
   if (corsOrigins.includes('*')) throw new Error('Wildcard CORS origin is not allowed in production');
 
   // Scoped to the flag rather than asserted unconditionally, so that deploying
@@ -259,6 +270,20 @@ module.exports = {
     extraCaFile: process.env.EXCHANGE_RATE_EXTRA_CA
       || require('path').join(__dirname, '..', 'certs', 'sectigo-public-server-auth-dv-r36.pem')
   },
+  metrics: {
+    /**
+     * Prometheus exposition at /metrics, behind a bearer token.
+     *
+     * Empty means the endpoint is not mounted at all -- 404, not 401. The same
+     * shape as onboarding, and for the same reason: an endpoint that exists but
+     * refuses is an endpoint somebody probes, and this one names every queue in
+     * the installation and how far behind each is.
+     *
+     * A token rather than an allowlist because the network in front of this is
+     * a platform's, not ours, and an address is not something we can check.
+     */
+    token: process.env.METRICS_TOKEN || ''
+  },
   docs: {
     // The spec is a contract that frontends and payment providers consume, so
     // it is served by default. It documents shapes and status codes, not
@@ -269,8 +294,10 @@ module.exports = {
   },
   log: {
     // debug in development, info in production. `silent` is honoured too, which
-    // the test suite uses to keep output readable.
-    level: process.env.LOG_LEVEL || (isProduction ? 'info' : 'debug')
+    // the test suite uses to keep output readable -- and is refused in
+    // production by assertProductionConfig, along with anything else above
+    // `warn`, because metrics are counted where warnings are logged.
+    level: logLevel
   },
   auth: {
     // Failed logins counted per account, closing the gap the address limiter

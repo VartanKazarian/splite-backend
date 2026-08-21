@@ -13,6 +13,8 @@ const openapi = require('./openapi');
 const { logger } = require('./connectors/logger');
 const rateLimit = require('./middleware/rateLimit');
 const errorHandler = require('./middleware/errorHandler');
+const metrics = require('./services/metrics');
+const { safeEqual } = require('./utils/tokens');
 const { ApiError } = require('./errors');
 const authRoutes = require('./routes/auth');
 const guestRoutes = require('./routes/guest');
@@ -83,6 +85,31 @@ app.get('/health/ready', async (req, res) => {
     redis: checks[1].status === 'fulfilled' ? 'up' : 'down'
   });
 });
+
+/**
+ * Prometheus exposition, beside the health checks and for the same reasons:
+ * ahead of body parsing and of the rate limiter, so a scrape every fifteen
+ * seconds never consumes a client's request budget and never fails because
+ * Redis is down.
+ *
+ * Mounted only when a token is configured. Absent means 404 rather than 401 --
+ * an endpoint that exists but refuses is an endpoint somebody probes, and this
+ * one names every queue in the installation and how far behind each is.
+ */
+if (config.metrics.token) {
+  metrics.registerQueueGauges();
+  app.get('/metrics', async (req, res, next) => {
+    const [scheme, token] = (req.get('authorization') || '').split(' ');
+    // Constant-time, and the same helper the QR signature uses: a scrape
+    // endpoint is still a credential check.
+    if (scheme !== 'Bearer' || !token || !safeEqual(token, config.metrics.token)) {
+      return next(new ApiError('AUTH_TOKEN_INVALID', 'Invalid or missing metrics token'));
+    }
+    try {
+      res.type('text/plain; version=0.0.4; charset=utf-8').send(await metrics.render());
+    } catch (err) { next(err); }
+  });
+}
 
 // rawBody is captured for HMAC webhook verification, which must sign the exact
 // bytes received rather than a re-serialised object.

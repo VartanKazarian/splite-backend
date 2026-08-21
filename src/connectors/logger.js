@@ -107,10 +107,51 @@ const REDACT_PATHS = [
   '*.otpauthUri'
 ];
 
+/**
+ * Counts what it logs, at warn and above.
+ *
+ * Every failure this service knows how to have already passes through here
+ * carrying an `event` field. Counting at this one point means a new failure
+ * mode becomes a metric the moment somebody logs it, rather than the moment
+ * somebody remembers to instrument it -- which is how AUDIT_WRITE_FAILED came
+ * to be swallowed with nothing watching.
+ *
+ * Required lazily. `metrics` reaches for the database for its gauges, and this
+ * module is imported by config-time code that must not open a pool.
+ *
+ * Never allowed to break a log call: a counter is worth strictly less than the
+ * line it is counting, and a monitoring bug must not silence the diagnostics.
+ *
+ * One coupling to know about: pino skips the hook for a line below the
+ * configured level, so counting stops wherever logging stops. At the production
+ * default of `info` that covers everything at warn and above, which is the
+ * whole set. Raising `LOG_LEVEL` past `warn` would silence the metrics along
+ * with the lines -- which is a reason not to, and is written down rather than
+ * left to be discovered.
+ */
+const WARN = 40;
+let metrics = null;
+function countEvent(level, arg) {
+  if (level < WARN || !arg || typeof arg !== 'object' || !arg.event) return;
+  try {
+    metrics = metrics || require('../services/metrics');
+    metrics.increment('splite_events_total', {
+      event: String(arg.event),
+      level: level >= 50 ? 'error' : 'warn'
+    });
+  } catch { /* the log line matters more than the count of it */ }
+}
+
 const logger = pino({
   level: config.log.level,
   base: { service: 'splite-api', env: config.env },
   timestamp: pino.stdTimeFunctions.isoTime,
+  hooks: {
+    logMethod(args, method, level) {
+      countEvent(level, args[0]);
+      return method.apply(this, args);
+    }
+  },
   redact: { paths: REDACT_PATHS, censor: '[redacted]' },
   // Merged into every line, so requestId / restaurantId / userId appear without
   // any call site having to pass them. See contextSnapshot above for why this

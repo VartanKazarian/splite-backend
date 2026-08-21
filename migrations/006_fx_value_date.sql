@@ -1,3 +1,10 @@
+-- NOT-BACKWARD-COMPATIBLE: Adds NOT NULL to fx_rates.value_date and de-duplicates the rows that stopped it. Predates the first deployment.
+--
+-- Code from the previous release cannot run against the schema this leaves, so
+-- rolling back past it means restoring a backup rather than redeploying an
+-- image. Every migration from 010 onward is additive precisely so that this is
+-- not the normal case; see "Migrations" in the README.
+
 -- 006_fx_value_date.sql
 --
 -- Records which day a rate applies to, not just when it was fetched.

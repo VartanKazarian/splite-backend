@@ -1,3 +1,10 @@
+-- NOT-BACKWARD-COMPATIBLE: Drops the pre-VES bill columns once their values have been carried into the minor-unit ones. Predates the first deployment.
+--
+-- Code from the previous release cannot run against the schema this leaves, so
+-- rolling back past it means restoring a backup rather than redeploying an
+-- image. Every migration from 010 onward is additive precisely so that this is
+-- not the normal case; see "Migrations" in the README.
+
 -- 008_ves_settlement_columns.sql
 --
 -- Moves settlement onto explicit VES columns, and freezes the exchange rate
