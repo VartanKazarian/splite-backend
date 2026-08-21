@@ -56,7 +56,8 @@ test('an unknown transport fails the send instead of the request', async () => {
   const result = await withMailConfig({ transport: 'carrier-pigeon' }, () =>
     mailer.send({ to: 'a@example.com', subject: 'Hola', text: 'Link' }));
 
-  assert.deepEqual(result, { sent: false });
+  assert.equal(result.sent, false);
+  assert.match(result.error, /carrier-pigeon/);
 });
 
 test('a transport that throws is swallowed and reported as not sent', async () => {
@@ -65,7 +66,10 @@ test('a transport that throws is swallowed and reported as not sent', async () =
   try {
     const result = await withMailConfig({ transport: 'log' }, () =>
       mailer.send({ to: 'a@example.com', subject: 'Hola', text: 'Link' }));
-    assert.deepEqual(result, { sent: false });
+    assert.equal(result.sent, false);
+    // Carried back for `npm run onboarding -- test-mail`, whose entire job is to
+    // say which thing is wrong. A caller told only "false" cannot fix anything.
+    assert.equal(result.error, 'provider is down');
   } finally {
     mailer.TRANSPORTS.log = original;
   }
@@ -184,7 +188,8 @@ test('an smtp failure is a failed send, never a thrown request', async () => {
     smtp: { host: 'smtp.gmail.com', port: 465, secure: true, user: 'u', password: 'bad' }
   }, () => mailer.send({ to: 'a@example.com', subject: 's', text: 't' })));
 
-  assert.deepEqual(result, { sent: false });
+  assert.equal(result.sent, false);
+  assert.match(result.error, /535/);
 });
 
 test('resend posts the message and treats a rejection as a failed send', async () => {
@@ -215,8 +220,25 @@ test('resend posts the message and treats a rejection as a failed send', async (
     const rejected = await withMailConfig({
       transport: 'resend', apiKey: 're_test', from: 'Splite <splite.ve@gmail.com>', timeoutMs: 5000
     }, () => mailer.send({ to: 'a@example.com', subject: 'Verifica', text: 'https://x/y' }));
-    assert.deepEqual(rejected, { sent: false });
+    assert.equal(rejected.sent, false);
+    assert.match(rejected.error, /403/);
   } finally {
     global.fetch = originalFetch;
   }
+});
+
+test('the failure reason never reaches the caller of a submission', async () => {
+  // `send` hands the reason back so a human running the CLI is told what broke.
+  // The onboarding service must still discard it: a provider's body can quote
+  // the recipient address back, and the endpoint that triggers this mail is
+  // unauthenticated, so it must learn nothing about who else was mailed.
+  const fs = require('node:fs');
+  const path = require('node:path');
+  const source = fs.readFileSync(
+    path.join(__dirname, '..', 'src', 'services', 'onboarding.js'), 'utf8'
+  );
+
+  const assigned = [...source.matchAll(/(\w+)\s*=\s*await mailer\.send/g)].map(m => m[1]);
+  assert.deepEqual(assigned, [], `onboarding must not read the send result: ${assigned.join(', ')}`);
+  assert.match(source, /await mailer\.send\(/, 'the notification must still be sent');
 });

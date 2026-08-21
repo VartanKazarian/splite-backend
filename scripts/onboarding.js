@@ -1,6 +1,8 @@
 #!/usr/bin/env node
 
 const db = require('../src/connectors/base');
+const config = require('../src/config');
+const mailer = require('../src/services/mailer');
 const onboarding = require('../src/services/onboarding');
 const { formatRif } = require('../src/utils/rif');
 
@@ -12,6 +14,7 @@ const { formatRif } = require('../src/utils/rif');
  *   npm run onboarding -- contacted <id> [notes...]
  *   npm run onboarding -- invite <id>
  *   npm run onboarding -- reject <id> [notes...]
+ *   npm run onboarding -- test-mail [address]
  *
  * A command line rather than an internal API because every authenticated
  * surface in this app is scoped to a restaurant the caller belongs to, and
@@ -83,6 +86,64 @@ async function show(id) {
   ].filter(l => l !== null).join('\n'));
 }
 
+/**
+ * Proves the mail path, before a real restaurant depends on it.
+ *
+ * `mailer.send` never throws -- a provider outage must not fail the request
+ * that triggered it -- so a wrong app password or an unverified sender produces
+ * a lead that is recorded, a 202 that looks fine, and a notification nobody
+ * receives. The failure has no symptom at the place it happens, which is why
+ * there is a command whose whole job is to make it produce one.
+ *
+ * Sends to ONBOARDING_TEAM_EMAIL unless given an address, and exits non-zero
+ * when the send fails, so it can gate a deploy.
+ */
+async function testMail(address) {
+  const to = address || config.onboarding.teamEmail;
+  const { transport, from } = config.mail;
+
+  console.log(`Transporte:   ${transport}`);
+  console.log(`Remitente:    ${from}`);
+  console.log(`Destinatario: ${to}`);
+  if (transport === 'log') {
+    console.log('\nMAIL_TRANSPORT=log no envía nada: escribe el mensaje en el log.');
+  }
+  console.log('');
+
+  const stamp = new Date().toISOString();
+  const result = await mailer.send({
+    to,
+    subject: 'Prueba de correo — Splite',
+    text: [
+      'Esto es una prueba del envío de correo de Splite.',
+      '',
+      `Transporte: ${transport}`,
+      `Enviado:    ${stamp}`,
+      '',
+      'Si recibiste este mensaje, las notificaciones de nuevos restaurantes',
+      'llegarán a esta dirección.'
+    ].join('\n')
+  });
+
+  // Closed here rather than left to the process: a pooled SMTP connection is an
+  // open socket, and a CLI that holds one never exits.
+  mailer.closeTransport();
+
+  if (!result.sent) {
+    console.error(`No se pudo enviar: ${result.error || 'motivo desconocido'}`);
+    if (/535|credentials|password/i.test(result.error || '')) {
+      console.error('\nGmail rechaza la contraseña de la cuenta. MAIL_SMTP_PASSWORD tiene que');
+      console.error('ser una contraseña de aplicación de 16 caracteres, generada en');
+      console.error('myaccount.google.com con la verificación en dos pasos activada.');
+    }
+    process.exitCode = 1;
+    return;
+  }
+
+  console.log(`Enviado por ${result.transport}${result.id ? ` (${result.id})` : ''}.`);
+  if (transport !== 'log') console.log(`Revisa ${to}, incluida la carpeta de spam.`);
+}
+
 async function invite(id) {
   const lead = await onboarding.inviteLead(id);
   console.log(`Invitación enviada a ${lead.email} (${lead.restaurantName}).`);
@@ -104,6 +165,8 @@ async function run() {
     case 'invite': return invite(requireId(id));
     case 'contacted': return mark(requireId(id), 'CONTACTED', notes);
     case 'reject': return mark(requireId(id), 'REJECTED', notes);
+    // `id` is the positional argument; here it is an optional address.
+    case 'test-mail': return testMail(id);
     default:
       console.log([
         'Uso:',
@@ -111,7 +174,8 @@ async function run() {
         '  npm run onboarding -- show <id>',
         '  npm run onboarding -- contacted <id> [notas...]',
         '  npm run onboarding -- invite <id>',
-        '  npm run onboarding -- reject <id> [notas...]'
+        '  npm run onboarding -- reject <id> [notas...]',
+        '  npm run onboarding -- test-mail [dirección]'
       ].join('\n'));
       process.exitCode = 1;
   }

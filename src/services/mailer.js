@@ -147,14 +147,14 @@ function closeTransport() {
  * succeeded -- and resubmitting is then blocked by the rate limiter.
  *
  * The failure is logged with the request id so it can be found and resent; the
- * caller gets `{ sent: false }` and decides nothing.
+ * caller gets `{ sent: false, error }` and decides nothing.
  */
 async function send(message) {
   const transport = TRANSPORTS[config.mail.transport];
   if (!transport) {
     logger.error({ event: 'MAIL_TRANSPORT_UNKNOWN', transport: config.mail.transport },
       'Configured MAIL_TRANSPORT does not exist');
-    return { sent: false };
+    return { sent: false, error: `Unknown MAIL_TRANSPORT: ${config.mail.transport}` };
   }
 
   try {
@@ -164,7 +164,13 @@ async function send(message) {
   } catch (err) {
     logger.error({ event: 'MAIL_SEND_FAILED', to: message.to, subject: message.subject, err },
       'Mail send failed');
-    return { sent: false };
+    // The reason rides along for a caller that is a person -- `npm run
+    // onboarding -- test-mail` exists to be told "535 Username and Password not
+    // accepted" rather than "it did not work". No HTTP route reads this: the
+    // onboarding service discards the return value entirely, which is what
+    // keeps a provider's body (it can quote the recipient back) away from an
+    // unauthenticated response.
+    return { sent: false, error: err.message };
   }
 }
 

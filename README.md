@@ -538,6 +538,27 @@ npm run onboarding -- list NEW
 
 then `show <id>`, `contacted <id> [notas]`, `invite <id>`, `reject <id> [notas]`.
 
+There is one more, and it is the one to run first:
+
+```bash
+npm run onboarding -- test-mail            # to ONBOARDING_TEAM_EMAIL
+npm run onboarding -- test-mail otra@x.com # or wherever
+```
+
+`mailer.send` never throws, by design — a provider outage must not fail the
+request that triggered it. The cost of that is a failure with no symptom where
+it happens: a wrong app password produces a lead that is recorded, a `202` that
+looks correct, and a notification nobody receives. `test-mail` exists to give
+that failure a symptom. It reports the transport, the sender and the recipient,
+prints the provider's actual complaint when a send fails — `535 Username and
+Password not accepted` is the usual one, and it means the account password was
+used instead of an app password — and exits non-zero, so it can gate a deploy.
+
+Note that the lead itself is never at risk: it is committed to
+`restaurant_signups` before any mail is attempted, and `npm run onboarding --
+list NEW` reads it whatever the mail did. What a failed send loses is the
+*notification*, not the restaurant.
+
 **`restaurants` and `users` are still only created inside the transaction that
 spends the token**, even though a human has already vouched for the lead. Being
 vouched for is not the same as controlling the inbox, and migration 002 made
