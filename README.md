@@ -226,8 +226,9 @@ read.
 
 ## Guest sessions
 
-Scanning the QR exchanges it for a session held in Redis, and only the SHA-256
-of the token is stored.
+Scanning the QR exchanges it for an opaque bearer token. Only the SHA-256 of it
+is ever written, so neither a database dump nor a Redis dump yields a usable
+credential.
 
 The TTL is an **idle timeout, not a total lifetime**: every authenticated
 request pushes it back. It was previously set once at creation and never
@@ -241,13 +242,41 @@ The diner had to get up and scan the sticker again.
 `GUEST_MAX_SESSION_AGE_SECONDS` (12h) is the ceiling sliding cannot pass.
 Without it, "renew on every use" means a session something keeps touching — a
 tab open on a phone in a drawer, a client polling on a timer — never expires at
-all. A session past the ceiling is deleted rather than left to lapse: a
-credential known to be dead should not sit in the store.
+all.
 
-Sessions live only in Redis, so a Redis restart drops every one of them
-mid-service. Diners recover by re-scanning, which works because the QR is
-permanent — but see [Open points](#open-points): binding sessions to the open
-bill is the durable fix.
+### Two stores, holding different facts
+
+Sessions used to live **only** in Redis, which made a cache the sole authority
+on who may pay a bill. A restart, a `FLUSHALL`, or `maxmemory` evicting under
+pressure signed out every diner in every restaurant at once — and, exactly as
+above, they could not recover on their own, because the client has already
+stripped the QR token out of the URL. Somebody had to get up and rescan the
+sticker in the middle of paying.
+
+So the two stores now hold different things, and the split is what keeps a
+sliding session from costing a database write per request:
+
+| | holds | if it is lost |
+| --- | --- | --- |
+| **Postgres** | who the session is, the absolute expiry, whether it was revoked | nothing works anyway |
+| **Redis** | the idle timer, slid on every request | the next request re-reads the row and warms the cache |
+
+`guest_sessions.expires_at` is the **absolute cap**, set once at creation and
+never moved — the sliding TTL never touches Postgres. During a Redis outage the
+fallback therefore enforces the more generous of the two windows, the cap rather
+than the idle timeout, which is the right way round: a diner mid-meal keeps
+paying, and a session left open in a drawer still dies on schedule.
+
+Writes go to **Postgres first**, then the cache. If the cache write fails the
+session still works; the reverse order would hand back a token that
+authenticates only until Redis blinks. Revocation stamps `revoked_at` rather
+than deleting the row, so a flush cannot resurrect a session somebody
+deliberately ended by re-reading a row that never said so.
+
+The one gap this leaves, stated rather than hidden: a session that passes its
+cap while a cache entry is still live keeps working until that entry expires.
+The idle timeout bounds that window, which is why it has to be the shorter of
+the two numbers — there is a test asserting exactly that.
 
 ## Bill lifecycle and the one-open-bill rule
 
@@ -1797,8 +1826,11 @@ schema. The live document is also served at `/openapi.json`, with Swagger UI at
 
 ## Retention
 
-Four tables grow forever and none is consulted after a point. `npm run purge`
-clears them; `npm run purge -- --dry-run` counts without deleting. Nothing here
+Five tables grow forever and none is consulted after a point. `npm run purge`
+clears them; `npm run purge -- --dry-run` counts without deleting. Guest sessions
+are the newest of them: a session is dead the moment its absolute cap passes and
+nothing reads one afterwards, but they are kept a day past expiry so a question
+about an evening can still be answered the morning after. Nothing here
 is urgent — a purge that misses a week deletes a week more the next time. It
 runs daily on a schedule; see
 [Scheduled maintenance](#scheduled-maintenance).
@@ -2021,11 +2053,14 @@ From the working copy, onto the current model:
 
 - POS settlement: HMAC request signing, timestamp and nonce replay protection,
   and an external-reference idempotency key.
-- Guest sessions bound to the current bill. The incoming version moves them from
-  Redis into a `guest_sessions` table keyed on `bill_id`; that is a model change,
-  not an addition, and has not been adopted. (Split shares are now persisted in
-  their own tables — see [Splitting a bill](#splitting-a-bill) — rather than
-  waiting on this.)
+- Guest sessions bound to the current bill. The durable half of this has landed
+  — there is a `guest_sessions` table, and a cache flush no longer signs a
+  dining room out (see [Guest sessions](#guest-sessions)) — but it is keyed on
+  the **table**, not on `bill_id`. Binding a session to one bill is still a
+  model change rather than an addition: it would mean a session ending when the
+  bill closes, which is a different product decision from a session ending when
+  the diner leaves. (Split shares are persisted in their own tables — see
+  [Splitting a bill](#splitting-a-bill) — rather than waiting on this.)
 - Per-quantity item claims. `ITEMS` splits a whole line evenly between its
   claimants; assigning a subset of a line's quantity — two of three beers to Ana,
   one to Luis — is deliberately deferred, and would add a quantity column to
