@@ -1444,6 +1444,58 @@ of them: how much came in over this shift, and how did it arrive.
 }
 ```
 
+### Whose tips these are
+
+```
+GET /api/v1/payments/tips/mine?from=…&to=…   your own
+GET /api/v1/payments/tips?from=…&to=…        the shift, including byServer
+PATCH /api/v1/bills/:id/server               correct who served a table
+```
+
+Tips have been recorded per payment since migration 024 and reported per shift
+since. What never existed was any link between a bill and the person who served
+it — so the report could tell a restaurant what it owed its staff in total, and
+could tell no individual member of staff what they had earned.
+
+That is the half that changes behaviour. **A pooled figure a manager reads once
+a week is an accounting line; a number a waiter watches climb during their own
+shift is an incentive**, which is the reason to build tipping into the product
+at all.
+
+`bills.servedBy` is set to whoever opens the bill. That is right when the person
+taking the order opens it — which is the usual path, since adding the first
+order is what creates the bill — and wrong when a host or cashier opens it for
+somebody else. So it is correctable, by OWNER and MANAGER, and audited, because
+it moves money between people.
+
+**A correction is retroactive, deliberately.** Attribution is read through the
+bill's *current* server at query time rather than snapshotted when the payment
+settled, so fixing who served a table fixes the tips that followed from it. A
+correction that left yesterday's money against the wrong name would not be one.
+That is also why a waiter cannot reassign their own tables.
+
+Bills with no server — everything predating the column — report under a null
+`userId` rather than being dropped. Hiding them would make the parts stop
+summing to the total, which is exactly the kind of silent gap somebody finds
+while dividing cash.
+
+`/tips/mine` takes no user id: it is always the caller's own. A waiter seeing
+their own total is the whole incentive; seeing everybody else's is a different
+feature with a different conversation behind it, and a manager already has
+`byServer`.
+
+### Is tipping actually working?
+
+A total cannot answer that — a bigger number on a busier night says nothing. The
+report carries `billedVes` beside `totalTipsVes` and a **`tipRateBps`**: tips as
+basis points of what was billed, so 840 is 8.40%.
+
+Basis points and integer arithmetic, for the reason IVA and the service charge
+are bps: a rate gets compared against a target, and 8.4 that is really 8.399999
+is a number somebody argues with. Null when nothing was billed — zero would read
+as "nobody tipped", and "there was nothing to tip on" is a different fact about
+a shift.
+
 The split between `inTillVes` and `owedToStaffVes` is the point. A cash tip is
 physically in the drawer and the restaurant is only deciding how to divide it;
 an electronic tip landed in the restaurant's *bank account* and is a debt to

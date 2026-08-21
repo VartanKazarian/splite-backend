@@ -202,6 +202,25 @@ router.post(
  * a diner says they sent, and handing out cash against it is the mistake the
  * whole confirm step exists to prevent.
  */
+/**
+ * One person's own tips.
+ *
+ * Any role, for themselves only -- there is no user id in the path. A waiter
+ * seeing their own total is the entire incentive; seeing everybody else's is a
+ * different feature with a different conversation behind it, and a manager
+ * already has `byServer` on the shift report.
+ */
+router.get('/tips/mine', validateQuery(tipsReportQuerySchema), async (req, res, next) => {
+  try {
+    res.json(await tips.tipsForServer({
+      restaurantId: req.user.restaurantId,
+      userId: req.user.sub,
+      from: req.query.from,
+      to: req.query.to
+    }));
+  } catch (err) { next(err); }
+});
+
 router.get('/tips', validateQuery(tipsReportQuerySchema), async (req, res, next) => {
   try {
     res.json(await tips.tipsReport({

@@ -97,6 +97,10 @@ const schemas = {
       restaurantId: { type: 'string', format: 'uuid' },
       tableId: { type: 'string', format: 'uuid' },
       status: { type: 'string', enum: ['OPEN', 'CLOSED', 'VOID'] },
+      servedBy: {
+        type: ['string', 'null'], format: 'uuid',
+        description: 'The member of staff this bill is attributed to for tips. Set to whoever opened it, correctable at PATCH /api/v1/bills/{id}/server. Null for bills that predate the column and for ones deliberately detached.'
+      },
       subtotalMinor: { ...minorUnits, description: 'Sum of the line items, before charges.' },
       vatBps: {
         type: 'integer', minimum: 0, maximum: 10000,
@@ -493,6 +497,26 @@ const schemas = {
         ...minorUnits,
         description:
           'Tips on payments whose method was not recorded (SPLITE, OTHER). Reported separately rather than folded into either figure above: calling them cash cancels a real debt to staff, and calling them electronic pays out money already in the drawer. The three always sum to `totalTipsVes`.'
+      },
+      billedVes: { ...minorUnits, description: 'What was billed alongside these tips — the denominator of the rate.' },
+      tipRateBps: {
+        type: ['integer', 'null'],
+        description: 'Tips as basis points of what was billed: 840 is 8.40%. **This is the figure that answers "is tipping working here"** — a total alone cannot, because a bigger number on a busier night says nothing. Null when nothing was billed; zero would read as "nobody tipped", which is a different fact about a shift.'
+      },
+      byServer: {
+        type: 'array',
+        description: 'Tips by the person the bill is attributed to. Attribution is read through `bills.servedBy` **at query time**, so a manager correcting who served a table moves the tips with it — a correction that left the money against the wrong name would not be one. A bill with no server is reported under a null `userId` rather than dropped, or the parts would stop summing to the total.',
+        items: {
+          type: 'object',
+          properties: {
+            userId: { type: ['string', 'null'], format: 'uuid' },
+            email: { type: ['string', 'null'] },
+            payments: { type: 'integer' },
+            tipsVes: minorUnits,
+            billedVes: minorUnits,
+            tipRateBps: { type: ['integer', 'null'] }
+          }
+        }
       },
       byMethod: {
         type: 'array',
@@ -1151,6 +1175,24 @@ Object.assign(schemas, {
       },
       createdAt: { type: 'string', format: 'date-time' },
       updatedAt: { type: 'string', format: 'date-time' }
+    }
+  },
+
+  MyTips: {
+    type: 'object',
+    properties: {
+      from: { type: 'string', format: 'date-time' },
+      to: { type: 'string', format: 'date-time' },
+      currency: { type: 'string', enum: ['VES'] },
+      userId: { type: 'string', format: 'uuid' },
+      tipsVes: minorUnits,
+      billedVes: { ...minorUnits, description: 'What was billed on the payments these tips came with — the denominator of the rate.' },
+      tipRateBps: {
+        type: ['integer', 'null'],
+        description: 'Tips as basis points of what was billed: 840 is 8.40%. Null when nothing was billed — zero would read as "nobody tipped", which is a different fact. Basis points rather than a float for the reason IVA is: a rate that is really 8.399999 is a number somebody argues with.'
+      },
+      payments: { type: 'integer' },
+      bills: { type: 'integer' }
     }
   },
 
@@ -2340,6 +2382,57 @@ const paths = {
     }
   },
 
+  '/api/v1/bills/{id}/server': {
+    patch: {
+      tags: ['Bills'],
+      summary: 'Correct who served a table',
+      operationId: 'setBillServer',
+      'x-required-roles': ['OWNER', 'MANAGER'],
+      description: [
+        '**OWNER and MANAGER only, and audited, because this moves money between people.**',
+        '',
+        '`servedBy` is set automatically when a bill is opened, to whoever opened it. That is right',
+        'when the person taking the order opens the bill and wrong when a host or a cashier opens it',
+        'on somebody else\'s behalf — common enough to need a correction path rather than an',
+        'assumption.',
+        '',
+        'Tips are attributed through the bill\'s **current** server, so a correction here moves the',
+        'tips that followed from it. That is the point: a correction leaving yesterday\'s money',
+        'against the wrong name would not be one. It is also why a waiter cannot do this to their',
+        'own tables.',
+        '',
+        '`servedBy: null` clears it — better for a bill to belong to nobody than to the wrong person.',
+        'An inactive account is refused with `STAFF_NOT_FOUND`, so somebody who has left cannot',
+        'quietly be given a share.'
+      ].join('\n'),
+      security: staff,
+      parameters: [{ $ref: '#/components/parameters/BillId' }],
+      requestBody: {
+        required: true,
+        content: {
+          'application/json': {
+            schema: {
+              type: 'object',
+              required: ['servedBy'],
+              properties: {
+                servedBy: {
+                  type: ['string', 'null'], format: 'uuid',
+                  description: 'Null is meaningful and distinct from omitting the field: it detaches the bill from anybody.'
+                }
+              }
+            }
+          }
+        }
+      },
+      responses: {
+        200: { description: 'The bill, reattributed.', content: { 'application/json': { schema: ref('Bill') } } },
+        403: response('Forbidden'),
+        404: response('NotFound'),
+        ...commonErrors
+      }
+    }
+  },
+
   '/api/v1/bills/{id}': {
     get: {
       tags: ['Bills'],
@@ -2953,6 +3046,36 @@ const paths = {
         409: response('Conflict'),
         429: response('TooManyRequests'),
         500: response('ServerError')
+      }
+    }
+  },
+
+  '/api/v1/payments/tips/mine': {
+    get: {
+      tags: ['Payments'],
+      summary: 'Your own tips',
+      operationId: 'getMyTips',
+      description: [
+        'Any authenticated staff role, **for themselves only** — there is no user id in the path.',
+        '',
+        'A waiter seeing their own total is the entire incentive for building tipping into the',
+        'product; seeing everybody else\'s is a different feature with a different conversation',
+        'behind it. A manager already has `byServer` on the shift report.',
+        '',
+        'Attributed through `bills.servedBy` at query time, so a manager correcting who served a',
+        'table moves these figures with it.'
+      ].join('\n'),
+      security: staff,
+      parameters: [
+        { name: 'from', in: 'query', required: true, schema: { type: 'string', format: 'date-time' } },
+        { name: 'to', in: 'query', required: true, schema: { type: 'string', format: 'date-time' } }
+      ],
+      responses: {
+        200: {
+          description: 'Tips earned in the window.',
+          content: { 'application/json': { schema: ref('MyTips') } }
+        },
+        ...commonErrors
       }
     }
   },

@@ -295,6 +295,18 @@ const declareClaimSchema = Joi.object({
  * current day in Venezuela; see src/services/dashboard.js for why that and not
  * UTC.
  */
+/**
+ * Correcting who served a table.
+ *
+ * `null` is allowed and distinct from omitting the field: it means this bill
+ * belongs to nobody, which is a better answer than belonging to the wrong
+ * person. Joi treats a missing key as "no change", so the two have to be
+ * expressible separately.
+ */
+const setBillServerSchema = Joi.object({
+  servedBy: uuid.allow(null).required()
+});
+
 const dashboardQuerySchema = Joi.object({
   from: Joi.date().iso()
 });
@@ -651,6 +663,7 @@ module.exports = {
   c2pBankGuideQuerySchema,
   venezuelanMobile,
   listClaimsQuerySchema,
+  setBillServerSchema,
   dashboardQuerySchema,
   activityQuerySchema,
   rejectClaimSchema,

@@ -66,6 +66,9 @@ function bill(row) {
     restaurantId: row.restaurant_id,
     tableId: row.table_id,
     status: row.status,
+    // Who this bill is attributed to for tips. Null for bills that predate the
+    // column, and for ones a manager has deliberately detached.
+    servedBy: row.served_by ?? null,
     // What the menu quoted, kept for display.
     currency: row.currency,
     // The breakdown behind the total. A bill that shows only a grand total is

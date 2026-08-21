@@ -7,7 +7,7 @@ const fixtures = require('./helpers/fixtures');
 const { processSplitPayment } = require('../../src/services/locks');
 const { createC2PPayment, resolveC2PPayment } = require('../../src/services/mercantilC2P');
 const { MercantilC2PError } = require('../../src/payments/providers/mercantil/c2p');
-const { tipsReport, tipsForBill } = require('../../src/services/tips');
+const { tipsReport, tipsForBill, tipsForServer } = require('../../src/services/tips');
 
 /**
  * Tips against a real Postgres.
@@ -348,6 +348,123 @@ describe('tips against a real Postgres', { skip }, () => {
 
     await db.query("UPDATE payments SET status = 'REFUNDED' WHERE id = $1", [rows[0].id]);
     assert.equal((await tipsReport({ restaurantId: restaurant.id, ...window })).totalTipsVes, '0');
+  });
+
+  it('attributes a tip to the person the bill belongs to', async () => {
+    // The whole point of the column. A pooled figure a manager reads weekly is
+    // an accounting line; a number a waiter can see against their own name is
+    // the incentive.
+    const { rows: staff } = await db.query(
+      `INSERT INTO users (restaurant_id, email, password_hash, role)
+       VALUES ($1, 'ana@example.com', 'x', 'WAITER') RETURNING id`,
+      [restaurant.id]
+    );
+    const ana = staff[0].id;
+
+    const bill = await freshBill({ totalDue: 10000, totalDueVes: 10000 });
+    await db.query('UPDATE bills SET served_by = $2 WHERE id = $1', [bill.id, ana]);
+
+    const from = new Date(Date.now() - 60_000);
+    await processSplitPayment({
+      restaurantId: restaurant.id, billId: bill.id, amountPaidMinorUnits: 5000, tipVes: '600'
+    });
+    const to = new Date(Date.now() + 60_000);
+
+    const mine = await tipsForServer({ restaurantId: restaurant.id, userId: ana, from, to });
+    assert.equal(mine.tipsVes, '600');
+    assert.equal(mine.billedVes, '5000');
+    assert.equal(mine.tipRateBps, 1200, '600 on 5000 is 12.00%');
+    assert.equal(mine.bills, 1);
+
+    const report = await tipsReport({ restaurantId: restaurant.id, from, to });
+    const hers = report.byServer.find(r => r.userId === ana);
+    assert.ok(hers, 'and she appears in the shift report');
+    assert.equal(hers.email, 'ana@example.com');
+  });
+
+  it('a correction moves the tips with it', async () => {
+    // Attribution is read through the bill's *current* server rather than
+    // snapshotted when the payment settled, so fixing who served a table fixes
+    // the money that followed from it. A correction that left yesterday's tips
+    // against the wrong name would not be a correction.
+    const { rows: staff } = await db.query(
+      `INSERT INTO users (restaurant_id, email, password_hash, role)
+       VALUES ($1, 'luis@example.com', 'x', 'WAITER'), ($1, 'sofia@example.com', 'x', 'WAITER')
+       RETURNING id, email`,
+      [restaurant.id]
+    );
+    const luis = staff.find(u => u.email === 'luis@example.com').id;
+    const sofia = staff.find(u => u.email === 'sofia@example.com').id;
+
+    const bill = await freshBill({ totalDue: 8000, totalDueVes: 8000 });
+    await db.query('UPDATE bills SET served_by = $2 WHERE id = $1', [bill.id, luis]);
+
+    const from = new Date(Date.now() - 60_000);
+    await processSplitPayment({
+      restaurantId: restaurant.id, billId: bill.id, amountPaidMinorUnits: 4000, tipVes: '400'
+    });
+    const to = new Date(Date.now() + 60_000);
+
+    assert.equal((await tipsForServer({ restaurantId: restaurant.id, userId: luis, from, to })).tipsVes, '400');
+
+    // The table was really Sofia's.
+    await db.query('UPDATE bills SET served_by = $2 WHERE id = $1', [bill.id, sofia]);
+
+    assert.equal((await tipsForServer({ restaurantId: restaurant.id, userId: luis, from, to })).tipsVes, '0');
+    assert.equal((await tipsForServer({ restaurantId: restaurant.id, userId: sofia, from, to })).tipsVes, '400');
+  });
+
+  it('removing a member of staff clears the attribution and keeps the tenant', async () => {
+    // The bug this pins, found by the suite rather than by reading: a plain
+    // ON DELETE SET NULL on a *composite* foreign key nulls every referencing
+    // column, so deleting a waiter tried to blank bills.restaurant_id too. The
+    // NOT NULL on that column turned it into a refusal rather than corruption,
+    // which is why the whole suite started failing on a DELETE FROM users.
+    //
+    // Naming the column -- ON DELETE SET NULL (served_by) -- nulls only the
+    // attribution, which was always the intent: somebody who leaves takes their
+    // name off the bill and none of the money with it.
+    const { rows: staff } = await db.query(
+      `INSERT INTO users (restaurant_id, email, password_hash, role)
+       VALUES ($1, 'leaver@example.com', 'x', 'WAITER') RETURNING id`,
+      [restaurant.id]
+    );
+    const bill = await freshBill({ totalDue: 3000, totalDueVes: 3000 });
+    await db.query('UPDATE bills SET served_by = $2 WHERE id = $1', [bill.id, staff[0].id]);
+
+    await db.query('DELETE FROM users WHERE id = $1', [staff[0].id]);
+
+    const { rows } = await db.query(
+      'SELECT restaurant_id, served_by FROM bills WHERE id = $1', [bill.id]
+    );
+    assert.equal(rows[0].served_by, null, 'the attribution goes');
+    assert.equal(rows[0].restaurant_id, restaurant.id, 'the tenant stays');
+  });
+
+  it('a bill with no server still counts toward the total', async () => {
+    // Bills predating the column have no server and must not pretend to. If
+    // they were dropped from the breakdown the parts would stop summing to the
+    // total, which is the kind of gap somebody finds while dividing cash.
+    const bill = await freshBill({ totalDue: 5000, totalDueVes: 5000 });
+    const from = new Date(Date.now() - 60_000);
+    await processSplitPayment({
+      restaurantId: restaurant.id, billId: bill.id, amountPaidMinorUnits: 2000, tipVes: '250'
+    });
+    const to = new Date(Date.now() + 60_000);
+
+    const report = await tipsReport({ restaurantId: restaurant.id, from, to });
+    const unattributed = report.byServer.find(r => r.userId === null);
+    assert.ok(unattributed, 'it is reported, not hidden');
+    // At least this one, not exactly this one: every other test in this file
+    // shares the restaurant and tips on bills with no server, and they land in
+    // the same window. An absolute here would be asserting their arithmetic.
+    assert.ok(
+      BigInt(unattributed.tipsVes) >= 250n,
+      `expected the unattributed bucket to include this tip, got ${unattributed.tipsVes}`
+    );
+
+    const summed = report.byServer.reduce((acc, r) => acc + BigInt(r.tipsVes), 0n);
+    assert.equal(summed.toString(), report.totalTipsVes);
   });
 
   it('does not report another tenant\'s tips', async () => {
