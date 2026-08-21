@@ -15,6 +15,7 @@ opens so a diner's total cannot move while they eat.
 - Short-lived access JWTs plus rotating refresh sessions with reuse detection
 - Redis-backed rate limiting, fail-closed on the auth surface
 - RBAC: `OWNER`, `MANAGER`, `CASHIER`, `WAITER`
+- Staff administration by rank, with a restaurant that cannot lose its last owner
 - Optional TOTP second factor with sealed secrets and single-use recovery codes
 - Signed, expiring, rotatable QR tokens; hashed guest session tokens
 - Guest bill access scoped to the scanned table, naming no resource ids
@@ -103,6 +104,12 @@ runs the integration suite against them. `npm run db:local:stop` shuts them down
 The integration tests skip unless `RUN_INTEGRATION=1` and a live database are
 present, so `npm test` stays fast and offline.
 
+**`.env.example` is the complete reference.** Every setting `src/config.js`
+reads appears there or in this file with its default and the reason it exists,
+and a test fails the build if one is added to the config without being written
+down in either — a setting nobody can find is a setting nobody sets, and the
+whole Mercantil C2P block had gone undocumented that way.
+
 Generate production secrets with:
 
 ```bash
@@ -189,6 +196,33 @@ until it counts the money.
 The bill records how the rate was obtained — `fxRateSource` reads
 `BCV_LAST_IN_FORCE` rather than `BCV` — because "where did this number come
 from" is exactly the question asked afterwards.
+
+### Reading from a host we do not run
+
+Every external read is bounded on three axes, not two. A **timeout** stops an
+upstream that has gone quiet and a **retry budget** stops us hammering one that
+is failing — but neither does anything about a host that keeps talking, and
+reading a response into memory with no ceiling is how a broken or hostile one
+takes the process down with a body. So there is a **size ceiling** too, 2 MB,
+about ten times the page actually parsed.
+
+It is counted in bytes rather than characters, which is not academic on a
+Spanish-language page: every accented character is one character and two bytes,
+so a character count would admit a body at roughly twice the ceiling. Chunks are
+collected as buffers and decoded once at the end, which also means a multi-byte
+character split across two chunks survives.
+
+Overflow is **fatal** — not retried. A body too large once will be too large
+again, and three attempts is three times the memory for the same answer. Where
+the server sends a `content-length` over the ceiling, it is refused before
+anything is streamed.
+
+The same ceiling applies to the bank. `MercantilC2PClient` reads its response
+through the same helper, and an unreadable body classifies as
+**`BANK_INDETERMINATE`** — the same answer a timeout gets, for the same reason:
+we asked a bank to move money and do not know what happened. Calling it FAILED
+would tell a diner their payment did not happen on the strength of a body nobody
+read.
 
 ## Guest sessions
 
@@ -469,9 +503,78 @@ rather than storing anything.
 
 It is **optional per user**, and there is no enforcement point that requires it
 of a role. That is deliberate for now rather than finished: a mandatory rollout
-with no admin surface and no mail is a way to lock people out of their own
-accounts. Requiring it of OWNER is a decision to take once there is a way to
-help somebody who gets stuck.
+with no mail is a way to lock people out of their own accounts. Requiring it of
+OWNER is a decision to take once there is a way to help somebody who gets stuck
+— an administrator can now reset a password, which is most of that way.
+
+## Staff
+
+```
+GET    /api/v1/account/users                    who works here
+POST   /api/v1/account/users                    add somebody
+PATCH  /api/v1/account/users/:userId            change a role, a standing, or both
+POST   /api/v1/account/users/:userId/password   set somebody else's password
+```
+
+This existed only as SQL until recently. A restaurant was created with one owner
+and could never gain a second account, and firing a cashier meant somebody with
+database access running an `UPDATE` — on a system where **CASHIER and above
+decide that money arrived**. That is not an access-control model; it is an
+access-control model plus a promise.
+
+OWNER and MANAGER reach these routes. Three rules decide what each may actually
+do, and they live in `src/services/staff.js` rather than in the router, because
+a rule enforced in a router is a rule enforced on the paths somebody remembered:
+
+1. **Rank.** An owner may act on anybody but themselves. Everyone else may act
+   only on a strictly lower role — and may only *grant* a strictly lower role.
+   Without that second half, "may manage staff" silently means "may become an
+   owner". A manager cannot touch a peer either: otherwise the first argument
+   between two managers settles itself.
+2. **Never yourself**, neither role nor standing. It stops an owner demoting
+   themselves out of the only account that could undo it, and costs nothing —
+   another owner can still do it for them.
+3. **The last active owner stays.** Worth being precise about what this guards:
+   serially it is unreachable, because once a restaurant is down to one active
+   owner, only an owner may act on an owner, the only one left is themselves,
+   and rule 2 refuses that. Rules 1 and 2 *are* the serial guard. The check
+   exists for the race — both of the last two owners removing each other at the
+   same instant, each reading the other as remaining — and so it is counted
+   inside the transaction with the row already locked.
+
+**Deactivating is not instant, and the response says so.** It revokes every
+refresh session the person holds, so they cannot mint a new access token, and
+returns `sessionsRevoked` as proof. The access token already in their hands
+keeps working until it expires — at most `JWT_ACCESS_TTL`, fifteen minutes by
+default. That is the standing cost of stateless tokens, and somebody removing a
+person after an argument needs to know the door is not shut this second rather
+than discovering it later.
+
+A password reset revokes sessions for the same reason: a reset that leaves the
+old sessions running has not locked anybody out. It is how a **forgotten**
+password is recovered — an administrator sets a new one and tells the person.
+
+A password somebody still knows is changed by them, at
+`POST /api/v1/auth/password`, without going through anybody senior. There is no
+user id in that path: the only account it changes is the one you are signed in
+as. The current password is required, and that is the guard — an access token in
+somebody else's hands should not be enough to take an account permanently.
+
+It is deliberately **not** counted against the login throttle. That throttle
+locks an *account* after enough failures, so wiring this into it would hand
+anyone holding a stolen token a way to lock the real owner out — turning a
+containable compromise into a denial of service against the person best placed
+to fix it. The auth router's rate limit bounds the attempts instead.
+
+It **answers like a login**, because that is what the caller now holds: every
+refresh session is revoked and the returned pair are the replacements. The
+device doing the changing stays signed in and every other one is signed out,
+with `sessionsRevoked` counting them. Forcing somebody to sign in again on the
+phone they just used is how a security action gets postponed.
+
+What is still missing here is a **forgotten-password flow that does not need
+another person** — that needs mail, which is optional in this deployment, so it
+waits on the same decision self-service onboarding does.
 
 ## Bill line items
 
@@ -1194,11 +1297,26 @@ it electronic pays out money already in the drawer. The three always sum to
 set by the rails that own them, and naming one here would be claiming a bank
 movement nobody verified.
 
-The period is read from **when the payment was taken**, not when it was
-confirmed. A Pago Móvil claim declared at 23:50 and confirmed at 00:10 belongs
-to the shift it was declared in and appears there once it is confirmed — so a
-report run at midnight sharp will not yet show it. Re-run the report after the
-queue is worked, which is the same rule as counting a till.
+The period is read from **when the payment settled**, not when its row was
+created. For a card or a cash sale those are the same instant. For a declared
+Pago Móvil they are not: the row is created when the diner says they paid, and
+it settles when a member of staff finds the transfer in the bank app — which can
+be hours later, and can be after midnight.
+
+This reverses an earlier decision, so the argument is worth keeping. Reporting on
+creation files a tip in the shift it was *earned* in, which is the fairer answer
+to "whose tip is it". But it made a closed shift's number **retroactively
+mutable**: a claim declared at 23:50 and confirmed at 00:10 was absent from
+Friday's report at midnight and present in it on Monday. Whoever divided the cash
+on Friday night divided the smaller number, and nothing told them a later
+confirmation would change it.
+
+A figure that money is handed out against has to be final once the shift is over.
+Settlement time gives that: after the queue is worked, a past window never moves
+again. The cost is a real one — a tip earned before midnight and confirmed after
+it appears in the next shift's figures — and a restaurant that cares about which
+crew earned it should work the claims queue before closing the till, which is
+worth doing anyway for the reason the queue exists.
 
 Only **SUCCEEDED** payments count. A tip on a PENDING Pago Móvil claim is money
 a diner *says* they sent, and counting it would have a restaurant hand out cash

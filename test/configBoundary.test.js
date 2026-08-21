@@ -95,3 +95,30 @@ test('CORS origins are required, and a wildcard is refused', () => {
   assert.ok(!wildcard.ok);
   assert.match(wildcard.out, /Wildcard CORS origin/);
 });
+
+test('every environment variable the config reads is written down somewhere', () => {
+  // A setting nobody can find is a setting nobody sets. Eighteen of these had
+  // gone undocumented at once -- including the whole Mercantil C2P block, which
+  // is the rail the product is built around -- because each was added beside its
+  // code and nothing checked the other side.
+  //
+  // Deliberately loose about *where*: the README explains the ones that need an
+  // argument, and .env.example carries the rest with their defaults. Either
+  // counts. What must not happen is neither.
+  const fs = require('node:fs');
+  const root = path.join(__dirname, '..');
+  const source = fs.readFileSync(CONFIG, 'utf8');
+
+  const referenced = new Set(
+    [...source.matchAll(/process\.env\.([A-Z][A-Z_0-9]*)/g)].map(m => m[1])
+      // integer('NAME', …) and boolean('NAME', …) read the environment too.
+      .concat([...source.matchAll(/\b(?:integer|boolean|secret)\('([A-Z][A-Z_0-9]*)'/g)].map(m => m[1]))
+  );
+
+  const docs = ['README.md', '.env.example', '.env.production.example']
+    .map(name => fs.readFileSync(path.join(root, name), 'utf8'))
+    .join('\n');
+
+  const undocumented = [...referenced].filter(name => !new RegExp(`\\b${name}\\b`).test(docs)).sort();
+  assert.deepEqual(undocumented, [], `undocumented settings: ${undocumented.join(', ')}`);
+});

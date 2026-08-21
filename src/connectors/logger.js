@@ -74,7 +74,37 @@ const REDACT_PATHS = [
   '*.password',
   '*.accessToken',
   '*.refreshToken',
-  '*.guestToken'
+  '*.guestToken',
+  // The diner's single-use C2P clave, and the identity documents that travel
+  // beside it. The Mercantil adapter has its own redact() over the one call
+  // site that deliberately logs a request body, and this is the net under it:
+  // the clave is the most sensitive transient value in the system, and a
+  // cedula is somebody's identity document rather than a payment detail.
+  //
+  // Spelled at each depth a body actually reaches a log at. pino's `*` matches
+  // one level, so '*.clave' covers `body.clave` and not `req.body.clave`.
+  'clave',
+  '*.clave',
+  'body.clave',
+  'req.body.clave',
+  'idNumber',
+  '*.idNumber',
+  'body.idNumber',
+  'req.body.idNumber',
+  'idOrigin',
+  '*.idOrigin',
+  'body.idOrigin',
+  'req.body.idOrigin',
+  // TOTP material. The secret is sealed at rest; these are the shapes it and
+  // the recovery codes pass through in memory.
+  'mfaSecret',
+  'mfa_secret',
+  '*.mfaSecret',
+  '*.mfa_secret',
+  'recoveryCodes',
+  '*.recoveryCodes',
+  'otpauthUri',
+  '*.otpauthUri'
 ];
 
 const logger = pino({

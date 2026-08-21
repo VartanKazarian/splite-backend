@@ -503,8 +503,31 @@ function billSplit({ split, participants, claims = [], fxRate = null }) {
   };
 }
 
+/**
+ * A member of staff, as an administrator sees them.
+ *
+ * `password_hash` is not omitted here so much as never selected -- `staff.js`
+ * lists the columns it reads, and the hash is not among them. This mapper is
+ * the second wall rather than the first, because a DTO that is the only thing
+ * standing between a hash and a response is one refactor from being bypassed.
+ *
+ * The same field names as `user` in a login response, so a client that already
+ * has that type does not need a second one.
+ */
+function staffMember(row) {
+  return {
+    id: row.id,
+    email: row.email,
+    role: row.role,
+    active: row.active,
+    restaurantId: row.restaurant_id,
+    createdAt: isoTimestamp(row.created_at),
+    updatedAt: isoTimestamp(row.updated_at)
+  };
+}
+
 module.exports = {
-  isoDate, isoTimestamp,
+  isoDate, isoTimestamp, staffMember,
   bill, billItem, billWithItems, guestBill,
   table, floorTable, product, publicProduct, menuSettings, menuCharges, account, payout, guestPayee, paymentProviderConfig, paymentClaim, staffPaymentClaim, c2pCharge, billSplit
 };

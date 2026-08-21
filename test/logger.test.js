@@ -125,3 +125,40 @@ test('logging outside a request works and adds nothing', () => {
   assert.equal(lines[0].requestId, undefined);
   assert.equal(addContext({ userId: 'x' }), undefined, 'adding context outside a request is a no-op');
 });
+
+test('a C2P clave never reaches the output, at any depth a body reaches a log', () => {
+  // The clave is the diner's single-use bank password. The Mercantil adapter
+  // redacts the one call site that deliberately logs a request body; this is
+  // the net under it, so an accidental logger.info({ req }) cannot leak one.
+  const { logger, raw } = capturingLogger();
+
+  logger.info({ clave: 'supersecret' }, 'top level');
+  logger.info({ body: { clave: 'supersecret' } }, 'a body');
+  logger.info({ req: { body: { clave: 'supersecret' } } }, 'a request body');
+  logger.info({ payer: { clave: 'supersecret' } }, 'nested under the payer');
+
+  assert.equal(raw().includes('supersecret'), false);
+});
+
+test('an identity document is not a payment detail', () => {
+  // A cedula belongs to a person. It travels beside the clave on the charge and
+  // beside the reference on a declared payment, and neither is a reason for it
+  // to sit in a log line.
+  const { logger, raw } = capturingLogger();
+
+  logger.info({ body: { idNumber: 'V12345678' } }, 'a charge');
+  logger.info({ req: { body: { idOrigin: 'V12345678' } } }, 'a claim');
+  logger.info({ idNumber: 'V12345678', idOrigin: 'V12345678' }, 'both, bare');
+
+  assert.equal(raw().includes('V12345678'), false);
+});
+
+test('TOTP material stays out of the logs in every shape it takes', () => {
+  const { logger, raw } = capturingLogger();
+
+  logger.info({ mfaSecret: 'supersecret', mfa_secret: 'supersecret' }, 'both spellings');
+  logger.info({ user: { mfaSecret: 'supersecret' } }, 'nested');
+  logger.info({ recoveryCodes: ['supersecret'], otpauthUri: 'otpauth://totp/x?secret=supersecret' }, 'enrolment');
+
+  assert.equal(raw().includes('supersecret'), false);
+});

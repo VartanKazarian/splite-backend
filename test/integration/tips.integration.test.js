@@ -268,7 +268,14 @@ describe('tips against a real Postgres', { skip }, () => {
     });
 
     const boundary = new Date('2026-08-15T12:00:00.000Z');
+    // The seam is the settlement, so it is the transition that has to sit on
+    // it. A platform payment settles at creation, so both move together.
     await db.query('UPDATE payments SET created_at = $2 WHERE id = $1', [paymentId, boundary]);
+    await db.query(
+      `UPDATE payment_transitions SET created_at = $2
+        WHERE payment_id = $1 AND to_status = 'SUCCEEDED'`,
+      [paymentId, boundary]
+    );
 
     const earlier = await tipsReport({
       restaurantId: restaurant.id, from: '2026-08-15T00:00:00.000Z', to: boundary
@@ -280,6 +287,67 @@ describe('tips against a real Postgres', { skip }, () => {
     // Exactly one of two consecutive reports may claim a payment on the seam.
     assert.equal(earlier.totalTipsVes, '0');
     assert.equal(later.totalTipsVes, '700');
+  });
+
+  it('reports a tip in the shift it was verified in, not the one it was claimed in', async () => {
+    // The bug this pins: a diner declares a Pago Movil at 23:50 and a member of
+    // staff finds it in the bank app at 00:30. The row is created before
+    // midnight and the money becomes real after it. Reporting on creation put
+    // the tip in Friday's figures, and Friday's figures are what a restaurant
+    // hands cash out against -- so one shift was short and the next was over.
+    const bill = await freshBill({ totalDue: 9000, totalDueVes: 9000 });
+    const declaredAt = new Date('2026-09-04T23:50:00.000Z');
+    const confirmedAt = new Date('2026-09-05T00:30:00.000Z');
+
+    const { rows } = await db.query(
+      `INSERT INTO payments (restaurant_id, bill_id, amount_ves, tip_ves, status, payment_method, payer_type, created_at)
+       VALUES ($1, $2, 9000, 1500, 'PENDING', 'PAGO_MOVIL', 'GUEST', $3) RETURNING id`,
+      [restaurant.id, bill.id, declaredAt]
+    );
+    await db.query(
+      `INSERT INTO payment_transitions (payment_id, restaurant_id, from_status, to_status, actor_type, created_at)
+       VALUES ($1, $2, 'PENDING', 'SUCCEEDED', 'STAFF', $3)`,
+      [rows[0].id, restaurant.id, confirmedAt]
+    );
+    await db.query("UPDATE payments SET status = 'SUCCEEDED' WHERE id = $1", [rows[0].id]);
+
+    const friday = await tipsReport({
+      restaurantId: restaurant.id,
+      from: '2026-09-04T00:00:00.000Z', to: '2026-09-05T00:00:00.000Z'
+    });
+    const saturday = await tipsReport({
+      restaurantId: restaurant.id,
+      from: '2026-09-05T00:00:00.000Z', to: '2026-09-06T00:00:00.000Z'
+    });
+
+    assert.equal(friday.totalTipsVes, '0', 'nothing was owed on Friday: nobody had verified it yet');
+    assert.equal(saturday.totalTipsVes, '1500', 'it became real on Saturday, and is owed there');
+    assert.equal(saturday.owedToStaffVes, '1500');
+  });
+
+  it('a refund after the shift removes the tip from it', async () => {
+    // The SUCCEEDED transition still sits inside the window, so the window is
+    // not what excludes it -- the payment's current status is. A tip on money
+    // that went back to the diner is owed to nobody.
+    const bill = await freshBill({ totalDue: 5000, totalDueVes: 5000 });
+    const settledAt = new Date('2026-09-10T20:00:00.000Z');
+
+    const { rows } = await db.query(
+      `INSERT INTO payments (restaurant_id, bill_id, amount_ves, tip_ves, status, payment_method, payer_type, created_at)
+       VALUES ($1, $2, 5000, 800, 'SUCCEEDED', 'CARD', 'STAFF', $3) RETURNING id`,
+      [restaurant.id, bill.id, settledAt]
+    );
+    await db.query(
+      `INSERT INTO payment_transitions (payment_id, restaurant_id, from_status, to_status, actor_type, created_at)
+       VALUES ($1, $2, NULL, 'SUCCEEDED', 'STAFF', $3)`,
+      [rows[0].id, restaurant.id, settledAt]
+    );
+
+    const window = { from: '2026-09-10T00:00:00.000Z', to: '2026-09-11T00:00:00.000Z' };
+    assert.equal((await tipsReport({ restaurantId: restaurant.id, ...window })).totalTipsVes, '800');
+
+    await db.query("UPDATE payments SET status = 'REFUNDED' WHERE id = $1", [rows[0].id]);
+    assert.equal((await tipsReport({ restaurantId: restaurant.id, ...window })).totalTipsVes, '0');
   });
 
   it('does not report another tenant\'s tips', async () => {

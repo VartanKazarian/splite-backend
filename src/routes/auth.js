@@ -1,8 +1,10 @@
 const express = require('express');
 const {
-  validateBody, loginSchema, refreshSchema, mfaChallengeSchema, mfaCodeSchema
+  validateBody, loginSchema, refreshSchema, mfaChallengeSchema, mfaCodeSchema, changePasswordSchema
 } = require('../middleware/schemas');
-const { login, completeMfaLogin, refresh, revokeSession, currentUser } = require('../services/auth');
+const {
+  login, completeMfaLogin, refresh, revokeSession, currentUser, changeOwnPassword
+} = require('../services/auth');
 const mfa = require('../services/mfa');
 const { authenticateToken } = require('../middleware/auth');
 const { verifyRefreshToken } = require('../utils/tokens');
@@ -82,6 +84,23 @@ router.post('/mfa/recovery-codes', authenticateToken, validateBody(mfaCodeSchema
  *
  * A client restoring a session calls this, not /refresh -- see currentUser().
  */
+/**
+ * Change your own password.
+ *
+ * Answers exactly like a login, because that is what the caller now holds: the
+ * old refresh tokens are dead and these are the replacements. `sessionsRevoked`
+ * says how many other devices were signed out, which is the fact somebody
+ * changing a password they think is known to somebody else actually wants.
+ */
+router.post('/password', authenticateToken, validateBody(changePasswordSchema), async (req, res, next) => {
+  try {
+    const result = await changeOwnPassword(
+      req.user.sub, req.body.currentPassword, req.body.newPassword, meta(req)
+    );
+    res.json(result);
+  } catch (err) { next(err); }
+});
+
 router.get('/me', authenticateToken, async (req, res, next) => {
   try {
     res.json({ user: await currentUser(req.user.sub) });

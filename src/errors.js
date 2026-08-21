@@ -65,11 +65,18 @@ const CODES = {
   FORBIDDEN_ROLE: 403,
   CROSS_TENANT_DENIED: 403,
   CORS_ORIGIN_NOT_ALLOWED: 403,
+  // Staff administration. Three separate codes because they are three separate
+  // conversations: you lack the standing, you are pointing at yourself, or the
+  // restaurant would be left with nobody able to undo it.
+  STAFF_OUTRANKED: 403,
+  STAFF_ROLE_TOO_HIGH: 403,
+  STAFF_SELF_FORBIDDEN: 403,
 
   // 404 -- named per resource, so a client can tell which lookup failed
   // without parsing prose. All of these mean "not found *in your restaurant*";
   // another tenant's row is reported absent rather than forbidden.
   NOT_FOUND: 404,
+  STAFF_NOT_FOUND: 404,
   BILL_NOT_FOUND: 404,
   BILL_ITEM_NOT_FOUND: 404,
   TABLE_NOT_FOUND: 404,
@@ -85,6 +92,9 @@ const CODES = {
 
   // 409 -- valid request, incompatible with current state.
   OPEN_BILL_EXISTS: 409,
+  STAFF_EMAIL_TAKEN: 409,
+  PASSWORD_UNCHANGED: 409,
+  STAFF_LAST_OWNER: 409,
   // Enrolment state, all of them "the account is not in the state this asks
   // for" rather than an authentication failure.
   MFA_ALREADY_ENABLED: 409,
@@ -230,7 +240,18 @@ const DETAILS = {
   FX_UNAVAILABLE: { currency: 'string -- the currency with no usable rate, when specific to one' },
   RATE_LIMITED: { retryAfterSeconds: 'integer -- matches the Retry-After header' },
   CORS_ORIGIN_NOT_ALLOWED: { origin: 'string -- the rejected Origin, so it can be copied into CORS_ORIGINS' },
-  RATE_LIMITER_UNAVAILABLE: { retryAfterSeconds: 'integer -- matches the Retry-After header' }
+  RATE_LIMITER_UNAVAILABLE: { retryAfterSeconds: 'integer -- matches the Retry-After header' },
+  STAFF_OUTRANKED: {
+    actorRole: 'string -- your role',
+    targetRole: 'string -- theirs, which is at or above it'
+  },
+  STAFF_ROLE_TOO_HIGH: {
+    actorRole: 'string -- your role',
+    role: 'string -- the role you tried to grant, which is at or above it'
+  },
+  STAFF_SELF_FORBIDDEN: { hint: 'string -- who can do this for you instead' },
+  STAFF_EMAIL_TAKEN: { email: 'string -- the address, which already belongs to somebody here' },
+  STAFF_LAST_OWNER: { hint: 'string -- what has to happen first' }
 };
 
 /**
