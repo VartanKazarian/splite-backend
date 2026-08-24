@@ -58,8 +58,30 @@ async function existingTenant(client, { email, rif }) {
   return { emailTaken: rows[0].email_taken, rifTaken: rows[0].rif_taken };
 }
 
+/**
+ * When the form was submitted, in the reader's own clock.
+ *
+ * Caracas rather than UTC, and spelled dd/mm rather than ISO, because the only
+ * person who reads this line is deciding whether a restaurant that applied is
+ * still worth telephoning this morning. In UTC an evening submission is dated
+ * tomorrow, which is the same reason the dashboard's day window is Caracas --
+ * see services/dashboard.js. Venezuela is UTC-04:00 year round, so there is no
+ * daylight-saving edge to get wrong.
+ */
+function receivedAt(value) {
+  if (!value) return null;
+  const at = new Date(value);
+  if (Number.isNaN(at.getTime())) return null;
+  return new Intl.DateTimeFormat('es-VE', {
+    timeZone: 'America/Caracas',
+    day: '2-digit', month: '2-digit', year: 'numeric',
+    hour: '2-digit', minute: '2-digit', hour12: false
+  }).format(at);
+}
+
 function teamNotification(lead, duplicate) {
   const p = lead.profile || {};
+  const received = receivedAt(lead.created_at);
   const flags = [
     duplicate.emailTaken ? 'ESE CORREO YA TIENE CUENTA' : null,
     duplicate.rifTaken ? 'ESE RIF YA ESTÁ REGISTRADO' : null,
@@ -72,6 +94,10 @@ function teamNotification(lead, duplicate) {
     `Contacto:     ${lead.email}`,
     `Teléfono:     ${lead.phone}`,
     `Moneda menú:  ${p.menuCurrency || 'VES'}`,
+    // Omitted rather than printed as a dash when absent: this is the one field
+    // nobody typed, so a placeholder would be reporting a gap in our own data
+    // as though the restaurant had declined to answer.
+    ...(received ? [`Recibido:     ${received}`] : []),
     '',
     `Mesas:        ${p.tableCount ?? '—'}`,
     `Personal:     ${p.staffCount ?? '—'}`,
@@ -108,7 +134,7 @@ async function submitLead(input, meta = {}) {
     `INSERT INTO restaurant_signups
        (restaurant_name, rif, rif_checksum_ok, email, phone, profile, status, ip, user_agent)
      VALUES ($1, $2, $3, $4, $5, $6::jsonb, 'NEW', $7, $8)
-     RETURNING id, restaurant_name, rif, rif_checksum_ok, email, phone, profile`,
+     RETURNING id, restaurant_name, rif, rif_checksum_ok, email, phone, profile, created_at`,
     [
       input.restaurantName,
       rif,
@@ -362,6 +388,9 @@ async function markLead(leadId, status, reviewNotes = null) {
 
 module.exports = {
   submitLead,
+  // Exported for tests. The Caracas conversion is the part worth pinning: it is
+  // invisible in the output and wrong only for four hours a day.
+  teamNotification,
   inviteLead,
   verifySignup,
   listLeads,
