@@ -2173,6 +2173,23 @@ schema. The live document is also served at `/openapi.json`, with Swagger UI at
    On Railway that is `railway.json`'s `preDeployCommand`, which runs before the
    new version takes traffic; elsewhere it is a release command or a manual step.
 6. Commit `package-lock.json`; the image build and CI both depend on it for reproducibility.
+7. **When a deploy never becomes healthy, read stderr first.** A container that
+   dies before `app.listen` shows up in a hosting dashboard as repeated
+   healthcheck retries and `replicas never became healthy` — the symptom, with
+   nothing about the cause. The cause is written twice: once as a structured
+   `STARTUP_FAILED` record on stdout, for querying later, and once in plain text
+   on stderr between two rules:
+
+   ```
+   ================================================================
+   STARTUP FAILED: MAIL_FROM=team@gmail.com cannot be used with MAIL_TRANSPORT=resend: ...
+   ================================================================
+   ```
+
+   The second exists because the first is a single ~1KB JSON object, and a log
+   viewer that collapses long lines hides precisely the one line worth reading.
+   Only three things run before the port is bound — `assertProductionConfig`,
+   the Postgres check, and the Redis connection — so that sentence names which.
 
 ## Retention
 

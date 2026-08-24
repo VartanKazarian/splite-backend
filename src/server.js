@@ -109,6 +109,24 @@ async function start() {
 if (require.main === module) {
   start().catch(err => {
     logger.fatal({ event: 'STARTUP_FAILED', err }, 'Startup failed');
+    // The line above is for the log pipeline. This one is for the person
+    // watching a deployment that will not come up.
+    //
+    // A container that dies before `listen` shows, in a hosting dashboard, four
+    // healthcheck retries and "replicas never became healthy" -- the symptom,
+    // and not one word of the cause. The cause is in the fatal line, but that
+    // is a single ~1KB JSON object on stdout, and a log viewer that collapses
+    // long lines or paginates them away ("...and 8 more logs") hides precisely
+    // the one line worth reading. A deploy refused over a single environment
+    // variable then costs an afternoon of guessing at which one.
+    //
+    // So the reason is repeated in the plainest form there is: unstructured, on
+    // stderr, between rules that survive a search box. Duplicating it is the
+    // point -- the structured record is what gets queried next month, and this
+    // is what gets read now.
+    process.stderr.write(
+      `\n${'='.repeat(64)}\nSTARTUP FAILED: ${err.message}\n${'='.repeat(64)}\n\n`
+    );
     process.exit(1);
   });
 }
