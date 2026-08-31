@@ -2290,6 +2290,50 @@
           }
         }
       },
+      "QrContext": {
+        "type": "object",
+        "description": "Enough to orient a diner and to fetch the public menu. No amounts: this is unauthenticated and reachable by anyone who can photograph a table.",
+        "properties": {
+          "restaurant": {
+            "type": "object",
+            "properties": {
+              "id": {
+                "type": "string",
+                "format": "uuid",
+                "description": "Addresses the public menu."
+              },
+              "name": {
+                "type": "string"
+              },
+              "menuCurrency": {
+                "type": "string",
+                "enum": [
+                  "VES",
+                  "USD",
+                  "EUR"
+                ]
+              }
+            }
+          },
+          "table": {
+            "type": "object",
+            "properties": {
+              "id": {
+                "type": "string",
+                "format": "uuid"
+              },
+              "name": {
+                "type": "string",
+                "description": "What is printed on the table, e.g. \"Mesa 6\"."
+              }
+            }
+          },
+          "hasOpenBill": {
+            "type": "boolean",
+            "description": "Whether to offer the bill. False means a session would find nothing to show."
+          }
+        }
+      },
       "PublicMenu": {
         "type": "object",
         "properties": {
@@ -4535,6 +4579,50 @@
           },
           "400": {
             "$ref": "#/components/responses/BadRequest"
+          },
+          "429": {
+            "$ref": "#/components/responses/TooManyRequests"
+          },
+          "500": {
+            "$ref": "#/components/responses/ServerError"
+          }
+        }
+      }
+    },
+    "/api/v1/guest/qr/context": {
+      "post": {
+        "tags": [
+          "Guest"
+        ],
+        "summary": "What a scanned table QR points at, without opening a session",
+        "description": "The landing a physical code leads to. Public, and it creates nothing.\n\nA printed QR previously had one thing it could do — mint a session — so a diner who\nscanned it to read the menu got a session anyway. The menu was unreachable regardless:\n`GET /api/v1/menu/public/{restaurantId}/products` is addressed by restaurant, and there\nwas no way to learn a restaurant id without first taking a session. This returns one.\n\n**POST, not GET**, unlike the rest of the read surface: a token in the query string would\nbe written to `req.url` in every access log line. It is a low-value credential printed on\na table in a public room, but there is no reason to copy it into the logs to save a verb.\n\nCarries nothing about money. `hasOpenBill` says only what somebody standing in the room\ncan see, and is there so the landing knows whether to offer the bill at all; the amount\nstays behind the session.\n\nEvery rejection is `QR_INVALID` — bad signature, unknown table, deactivated table or\nrestaurant, or a rotated nonce. Distinguishing them would answer questions about a\nrestaurant for anyone holding a photograph of its furniture.",
+        "security": [],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/GuestSessionRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "The table the code names.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/QrContext"
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
           },
           "429": {
             "$ref": "#/components/responses/TooManyRequests"
