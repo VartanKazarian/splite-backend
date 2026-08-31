@@ -1586,6 +1586,14 @@
                   "examples": [
                     "756710"
                   ]
+                },
+                "section": {
+                  "type": [
+                    "string",
+                    "null"
+                  ],
+                  "maxLength": 80,
+                  "description": "The heading the reader found, passed back from the draft. Matched to a section by name; a new one is created at the end of the menu, in the order sections first appear here."
                 }
               }
             }
@@ -1598,6 +1606,13 @@
         "properties": {
           "importedCount": {
             "type": "integer"
+          },
+          "categoriesCreated": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/MenuCategory"
+            },
+            "description": "Sections this import created. Six named after the menu means the structure was read; none means the photo had no headings the reader could find."
           },
           "items": {
             "type": "array",
@@ -2025,6 +2040,47 @@
           }
         }
       },
+      "MenuCategory": {
+        "type": "object",
+        "description": "A section of the menu. Ordered by `position`, which is what makes the section list a menu rather than a set — starters before desserts, an order alphabetical sorting cannot express.",
+        "properties": {
+          "id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "name": {
+            "type": "string",
+            "maxLength": 80
+          },
+          "position": {
+            "type": "integer",
+            "description": "Order on the menu. Set from where the section first appeared in an OCR import, which is the printed order."
+          },
+          "active": {
+            "type": "boolean",
+            "description": "False hides the whole section from the public menu without deactivating each product — the kitchen ran out of fish."
+          },
+          "productCount": {
+            "type": "integer",
+            "description": "Present only on GET /menu/categories."
+          }
+        }
+      },
+      "MenuCategoryList": {
+        "type": "object",
+        "properties": {
+          "data": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/MenuCategory"
+            }
+          },
+          "uncategorisedCount": {
+            "type": "integer",
+            "description": "Products with no section. They have no category row to appear under, and a screen that groups by section must still show them."
+          }
+        }
+      },
       "Product": {
         "type": "object",
         "properties": {
@@ -2056,6 +2112,25 @@
               "USD",
               "EUR"
             ]
+          },
+          "categoryId": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "uuid",
+            "description": "The section this sits under. Null is uncategorised — a real state, not a missing value."
+          },
+          "categoryName": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Flattened on so a client can group without a second request."
+          },
+          "position": {
+            "type": "integer",
+            "description": "Order within its section."
           },
           "active": {
             "type": "boolean"
@@ -2101,6 +2176,21 @@
               "USD",
               "EUR"
             ]
+          },
+          "categoryId": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "uuid",
+            "description": "The section this sits under. Null is uncategorised — a real state, not a missing value."
+          },
+          "categoryName": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Flattened on so a client can group without a second request."
           }
         }
       },
@@ -2148,6 +2238,14 @@
               "756710"
             ]
           },
+          "categoryId": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "uuid",
+            "description": "The section it belongs under. Null or omitted is uncategorised."
+          },
           "active": {
             "type": "boolean",
             "default": true
@@ -2179,6 +2277,14 @@
               "756710"
             ]
           },
+          "categoryId": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "uuid",
+            "description": "Explicit null moves the product out of every section. Omitting the field leaves it where it is — the two are different."
+          },
           "active": {
             "type": "boolean"
           }
@@ -2189,6 +2295,13 @@
         "properties": {
           "restaurant": {
             "$ref": "#/components/schemas/MenuSettings"
+          },
+          "categories": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/MenuCategory"
+            },
+            "description": "Active sections in order. Sent alongside the products rather than nested, so a client renders the headers in the menu's order instead of inferring it from whichever products came back."
           },
           "products": {
             "type": "array",
@@ -6454,13 +6567,51 @@
         }
       }
     },
+    "/api/v1/menu/categories": {
+      "get": {
+        "tags": [
+          "Menu"
+        ],
+        "summary": "List menu sections",
+        "description": "Any authenticated staff role.\n\nIts own endpoint rather than a shape nested inside the product list, because the two are\npaginated differently: a client renders every section header at once and pages through the\nfood underneath. Deriving the headers from one page of products would hide any section\nwhose items fell past the limit.\n\n`uncategorisedCount` counts products filed under no section. They have no row here to\nappear under, and are precisely the ones somebody needs to notice.",
+        "security": [
+          {
+            "staffAuth": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Sections in menu order.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/MenuCategoryList"
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "429": {
+            "$ref": "#/components/responses/TooManyRequests"
+          },
+          "500": {
+            "$ref": "#/components/responses/ServerError"
+          }
+        }
+      }
+    },
     "/api/v1/menu/products": {
       "get": {
         "tags": [
           "Menu"
         ],
         "summary": "List menu products",
-        "description": "Any authenticated staff role.",
+        "description": "Any authenticated staff role.\n\nOrdered as the menu reads: section position, then the product's position within it, then\nname. Uncategorised products sort last. Name is the tie-break rather than the sort —\neverything imported at once shares a position, and alphabetical-within-a-section is a\nreasonable default until somebody reorders it.",
         "security": [
           {
             "staffAuth": []
@@ -6479,6 +6630,25 @@
             "schema": {
               "type": "boolean"
             }
+          },
+          {
+            "name": "categoryId",
+            "in": "query",
+            "schema": {
+              "oneOf": [
+                {
+                  "type": "string",
+                  "format": "uuid"
+                },
+                {
+                  "type": "string",
+                  "enum": [
+                    "none"
+                  ]
+                }
+              ]
+            },
+            "description": "Narrow to one section. `none` is the uncategorised bucket, which has no id and would otherwise be unreachable."
           }
         ],
         "responses": {

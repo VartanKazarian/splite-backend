@@ -403,7 +403,14 @@ const menuOcrImportItemSchema = Joi.object({
   description: Joi.string().trim().max(500).allow('', null),
   // A price of zero is legal on a menu -- a garnish, a refill -- so this is the
   // non-negative form rather than the strictly positive one payments use.
-  priceMinorUnits: minorUnits.required()
+  priceMinorUnits: minorUnits.required(),
+  // The heading the reader found this item under, passed back from the draft
+  // it produced. Optional, because a menu with no printed sections yields none
+  // and a reviewer may clear one that was misread. The import matches it to a
+  // category by name and creates the section if it is new -- so the structure
+  // the restaurant already printed is the structure it gets, without anybody
+  // typing it in twice.
+  section: Joi.string().trim().max(80).allow('', null)
 });
 
 /**
@@ -595,6 +602,9 @@ const createProductSchema = Joi.object({
   // accepted here: it is copied from the restaurant so a product can never
   // disagree with the menu it belongs to.
   priceMinorUnits: minorUnits.required(),
+  // The section it belongs under. Null is uncategorised, which is a real answer
+  // rather than a missing one -- plenty of menus are a single list.
+  categoryId: uuid.allow(null),
   active: Joi.boolean().default(true)
 });
 
@@ -602,12 +612,19 @@ const updateProductSchema = Joi.object({
   name: Joi.string().trim().min(1).max(160),
   description: Joi.string().trim().max(500).allow('', null),
   priceMinorUnits: minorUnits,
+  // Explicitly nullable: moving a product out of every section is a thing
+  // somebody means to do, and is not the same as omitting the field.
+  categoryId: uuid.allow(null),
   active: Joi.boolean()
 }).min(1);
 
 const listProductsQuerySchema = Joi.object({
   ...paginationKeys,
-  active: Joi.boolean()
+  active: Joi.boolean(),
+  // Narrow to one section. `none` is the uncategorised bucket, which has no id
+  // to filter on and would otherwise be unreachable -- a client rendering
+  // section by section could show every group but that one.
+  categoryId: Joi.alternatives().try(uuid, Joi.string().valid('none'))
 });
 
 const billIdParamSchema = Joi.object({ id: uuid.required() });

@@ -300,6 +300,26 @@ function floorTable(row) {
   return { ...table(row), openBill };
 }
 
+/**
+ * A menu section.
+ *
+ * `position` travels because it is what the order means: a client that sorts
+ * these itself has to be told how, and one that renders them in whatever order
+ * they arrived would put desserts before starters the first time a query plan
+ * changed.
+ */
+function menuCategory(row) {
+  return {
+    id: row.id,
+    name: row.name,
+    position: row.position,
+    active: row.active,
+    // Present only where the query counted; a listing that did not join
+    // products omits it rather than reporting zero.
+    productCount: row.product_count === undefined ? undefined : Number(row.product_count)
+  };
+}
+
 function product(row) {
   return {
     id: row.id,
@@ -307,6 +327,11 @@ function product(row) {
     description: row.description ?? null,
     priceMinorUnits: row.price_minor_units,
     currency: row.currency,
+    // The section, flattened onto the product so a client can group without a
+    // second request. Null is uncategorised -- a real state, not an absent one.
+    categoryId: row.category_id ?? null,
+    categoryName: row.category_name ?? null,
+    position: row.position ?? 0,
     active: row.active,
     createdAt: isoTimestamp(row.created_at),
     updatedAt: isoTimestamp(row.updated_at)
@@ -326,7 +351,12 @@ function publicProduct(row) {
     name: row.name,
     description: row.description ?? null,
     priceMinorUnits: row.price_minor_units,
-    currency: row.currency
+    currency: row.currency,
+    // A diner needs the sections most of all: the alternative is scrolling one
+    // alphabetical list to find a drink, which is worse than the paper menu
+    // they are sitting next to.
+    categoryId: row.category_id ?? null,
+    categoryName: row.category_name ?? null
   };
 }
 
@@ -543,5 +573,5 @@ function staffMember(row) {
 module.exports = {
   isoDate, isoTimestamp, staffMember,
   bill, billItem, billWithItems, guestBill,
-  table, floorTable, product, publicProduct, menuSettings, menuCharges, account, payout, guestPayee, paymentProviderConfig, paymentClaim, staffPaymentClaim, c2pCharge, billSplit
+  table, floorTable, product, publicProduct, menuCategory, menuSettings, menuCharges, account, payout, guestPayee, paymentProviderConfig, paymentClaim, staffPaymentClaim, c2pCharge, billSplit
 };
