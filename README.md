@@ -142,7 +142,7 @@ fail loudly at deploy time rather than at the first request:
 | `JWT_ACCESS_SECRET`, `JWT_REFRESH_SECRET`, `QR_SIGNING_SECRET`, `WEBHOOK_SECRET` | All four. Long, not the placeholder, and **all different** — reusing one secret for two purposes means a token minted for one is valid for the other |
 | `DATABASE_URL` (or `DB_PASSWORD` with the discrete `DB_*` set) | One or the other |
 | `CORS_ORIGINS` | Required, and `*` is refused |
-| `MAIL_*`, `APP_BASE_URL`, `ONBOARDING_TEAM_EMAIL` | Only when `ONBOARDING_ENABLED=true`. Scoped to the flag so turning onboarding on is what makes them mandatory. `MAIL_TRANSPORT=smtp` additionally requires `MAIL_SMTP_HOST`, `MAIL_SMTP_USER` and `MAIL_SMTP_PASSWORD`; `resend` requires `MAIL_API_KEY` and refuses a `MAIL_FROM` at a mailbox provider |
+| `MAIL_*`, `APP_BASE_URL`, `ONBOARDING_TEAM_EMAIL` | Only when `ONBOARDING_ENABLED=true`. Scoped to the flag so turning onboarding on is what makes them mandatory. `resend` requires `MAIL_API_KEY` and refuses a `MAIL_FROM` at a mailbox provider; `smtp` additionally requires `MAIL_SMTP_HOST`, `MAIL_SMTP_USER` and `MAIL_SMTP_PASSWORD` — **and a host that permits outbound SMTP, which Railway does not below Pro** |
 
 `LOG_LEVEL` is refused above `warn` in production. Metrics are counted where
 failures are logged, and pino skips its hook for a line below the configured
@@ -528,8 +528,8 @@ Three transports, chosen by `MAIL_TRANSPORT`, behind one `mailer.send`:
 | Transport | What it does | When |
 | --- | --- | --- |
 | `log` | Writes the message, verification link included, to the logger and sends nothing. | Development. Refused at boot in production once onboarding is on — a flow whose link goes to a log file is one nobody ever finishes. |
-| `smtp` | Signs in to an ordinary mailbox and sends as it. | Now. It needs no domain, no DNS records and no provider account. |
-| `resend` | One POST to api.resend.com. | Once there is a domain to send from. |
+| `smtp` | Signs in to an ordinary mailbox and sends as it. | Where outbound SMTP is permitted. It needs no domain, no DNS records and no provider account — **but see the host constraint below.** |
+| `resend` | One POST to api.resend.com. | **What this deployment uses.** HTTPS on 443, so it works where SMTP ports are blocked. |
 
 The split matters because of a constraint that is easy to meet late and painful
 to discover late: **an API sender will only send from a domain you have verified
@@ -544,10 +544,74 @@ to start on that combination instead, and the error names the remedy.
 SMTP has the opposite property. Mail genuinely relayed through Google carries
 Google's SPF and DKIM, so it is not a forgery and it reaches inboxes. What it
 does not carry is our own domain, and a free account is capped at roughly 500
-messages a day. That is the right trade while onboarding is a handful of leads a
-week, and the wrong one later.
+messages a day.
 
-To send through a Gmail mailbox:
+#### The host gets a say, and Railway says no
+
+That reasoning is sound and it was still the wrong plan, because it is about the
+*provider* and the binding constraint turned out to be the *host*.
+
+**Railway disables outbound SMTP below the Pro plan.** Not port 25 — all of it.
+Their own documentation is explicit: "Free, Trial, and Hobby plans must use
+transactional email services with HTTPS APIs. SMTP is disabled on these plans to
+prevent spam and abuse." So `MAIL_TRANSPORT=smtp` cannot work here at any port,
+with any mailbox, however correct the credentials.
+
+It cost an afternoon because of how it fails. Port 587 over IPv4 is dropped
+rather than refused, so it surfaces as `ETIMEDOUT` after a full connect timeout
+— indistinguishable from a slow relay. nodemailer then falls back to IPv6 and
+gets `ENETUNREACH`, because Railway also leaves outbound IPv6 off by default.
+Two unrelated-looking network errors, neither of which says "your plan forbids
+this". The credentials were never reached, let alone wrong.
+
+Both are documented Railway behaviours, and the second one names itself:
+"While this setting is disabled, IPv6 connection attempts fail with 'Network is
+unreachable' or `ENETUNREACH`."
+
+**So this deployment sends over `resend`, from `splite.lat`.** That reverses the
+advice this section used to give. It is also where the product was heading
+anyway — a `gmail.com` sender is visibly not a company on the one email that
+asks a restaurant to trust us with its till — so the host constraint only
+brought the domain decision forward. Railway recommends the same thing even on
+Pro: "we recommend transactional email services with HTTPS APIs for all plans."
+
+The `smtp` transport stays. It is the right answer on a host that permits it,
+and the point of three transports behind one `mailer.send` is that the host is a
+`MAIL_*` change rather than a rewrite. **Check whether your host allows outbound
+SMTP before choosing it** — Railway's own probe, run over `railway ssh`, is:
+
+```bash
+SMTP_HOST="smtp.gmail.com" bash -c '
+for port in 25 465 587 2525; do
+  timeout 1 bash -c "</dev/tcp/$SMTP_HOST/$port" 2>/dev/null \
+    && echo "$SMTP_HOST port $port reachable" \
+    || echo "$SMTP_HOST port $port unreachable"
+done'
+```
+
+All four unreachable means the plan forbids it, and no port or credential change
+will help.
+
+#### Sending over Resend
+
+```bash
+MAIL_TRANSPORT=resend
+MAIL_FROM='Splite <noreply@splite.lat>'
+MAIL_API_KEY=re_…                       # sending access only, scoped to the domain
+ONBOARDING_TEAM_EMAIL=splite.ve@gmail.com
+```
+
+The domain is verified once in the provider by publishing three records — a DKIM
+`TXT`, an SPF `TXT`, and an `MX` on a `send.` subdomain. `ONBOARDING_TEAM_EMAIL`
+stays a Gmail address: the restriction is on the *sender*, and receiving has
+none of the constraints sending does.
+
+Nothing in `src/` changed to move hosts. `TRANSPORTS.resend` was written before
+any of this and is a single `fetch`.
+
+#### Sending through a Gmail mailbox
+
+Still supported, on a host that permits SMTP:
 
 ```bash
 MAIL_TRANSPORT=smtp
@@ -2437,7 +2501,7 @@ what gets built, and they are parked deliberately rather than guessed at.
 
 | Open question | What it blocks | What happens meanwhile |
 | --- | --- | --- |
-| **On what domain does Splite send?** | Nothing any more. Sending works: `MAIL_TRANSPORT=smtp` signs in to the team's own mailbox and sends as it, so onboarding can be turned on today. What is still open is the *domain* — mail from a gmail.com address is delivered but is visibly not from a company, and a free mailbox has a daily ceiling. | Send through the mailbox. Moving to a verified domain later is a `MAIL_*` change and no code: `MAIL_TRANSPORT=resend`, an API key, and SPF/DKIM records on the domain. |
+| ~~**On what domain does Splite send?**~~ **Answered: `splite.lat`.** | Nothing. Onboarding mail sends over `MAIL_TRANSPORT=resend` from a verified domain. | Closed. It was answered earlier than planned because the host forced it: Railway disables outbound SMTP below Pro, so sending through the team's Gmail mailbox — which this table previously recommended — cannot work there at all. See [How the mail actually leaves](#how-the-mail-actually-leaves). No code changed; it was three variables. |
 | **Which card acquirer?** | Card payments entirely, and paying inside the app. | Diners declare Pago Móvil and staff confirm. |
 | **What does a lapsed trial lose?** | Nothing today — `plan_tier` and `trial_ends_at` are reported by `GET /api/v1/account` and enforced nowhere. | Clients can warn. The obvious answer is the wrong one: cutting off bills mid-service strands a dining room full of seated diners over an unpaid invoice. |
 | **Should a failing RIF check digit be rejected?** | Nothing. The mod-11 result is recorded in `restaurant_signups.rif_checksum_ok` and shown to the reviewer. | Accepted either way. Turning away a real restaurant at the form is worse than storing one malformed tax id, and the column is the evidence for deciding later. Note `J-00000000-0` passes — the checksum catches transcription slips, not invention. |
