@@ -1928,11 +1928,47 @@ Minting goes through the API rather than the database so that it stays
 restricted to OWNER and MANAGER, stays tenant-scoped, and leaves a `QR_ISSUED`
 audit entry.
 
+### What a scan lands on
+
+A scanned code does not have to mean "open the bill". A diner reaching for a
+phone at a table is as likely to want the menu, and a session is the wrong
+price for reading one — so the code resolves first, and the diner chooses:
+
+```
+POST /api/v1/guest/qr/context   ->  { restaurant, table, hasOpenBill }
+                                     |
+                   menu ------------ +------------ bill
+                     |                              |
+GET /api/v1/menu/public/{restaurantId}/products    POST /api/v1/guest/sessions
+(no session)                                       (the existing flow)
+```
+
+Before this route the menu was unreachable from a QR at all: the public menu
+endpoints need a restaurant id, and the only way to learn one was to mint a
+session first. Both things a person does at a table were behind the same door.
+
+`POST`, not `GET`, alone among the read surface. The token would otherwise sit
+in `req.url`, which the access log records on every request. It is a low-value
+credential printed on furniture in a public room, but there is no reason to copy
+it into every log line to save a verb.
+
+The response carries no money. `hasOpenBill` is the one fact the landing needs —
+whether to offer the bill at all — and it says only what anyone standing in the
+room can already see. What the table owes stays behind the session.
+
+Both public routes that accept a printed code run the same checks from one
+function: the HMAC, a tenant-scoped table lookup, `active` on the table and its
+restaurant, and the nonce. Every failure is the same `QR_INVALID`, message
+included — a code stuck to a table is read by strangers, and distinguishing
+"no such table" from "rotated nonce" would answer questions about a restaurant
+to somebody holding a photograph of its furniture.
+
 ## Guest access
 
 A diner scans a table QR, exchanges it for a session, and reads their bill:
 
 ```
+POST   /api/v1/guest/qr/context          resolve a printed code, no session
 POST   /api/v1/guest/sessions            exchange a signed QR for a session
 GET    /api/v1/guest/bill                the open bill for that table
 POST   /api/v1/guest/bill/split/preview  split it

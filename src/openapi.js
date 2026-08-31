@@ -870,6 +870,33 @@ const schemas = {
     }
   },
 
+  QrContext: {
+    type: 'object',
+    description:
+      'Enough to orient a diner and to fetch the public menu. No amounts: this is unauthenticated and reachable by anyone who can photograph a table.',
+    properties: {
+      restaurant: {
+        type: 'object',
+        properties: {
+          id: { type: 'string', format: 'uuid', description: 'Addresses the public menu.' },
+          name: { type: 'string' },
+          menuCurrency: { type: 'string', enum: ['VES', 'USD', 'EUR'] }
+        }
+      },
+      table: {
+        type: 'object',
+        properties: {
+          id: { type: 'string', format: 'uuid' },
+          name: { type: 'string', description: 'What is printed on the table, e.g. "Mesa 6".' }
+        }
+      },
+      hasOpenBill: {
+        type: 'boolean',
+        description: 'Whether to offer the bill. False means a session would find nothing to show.'
+      }
+    }
+  },
+
   PublicMenu: {
     type: 'object',
     properties: {
@@ -2087,6 +2114,42 @@ const paths = {
       responses: {
         204: { description: 'Revoked, or the token was already invalid.' },
         400: response('BadRequest'),
+        429: response('TooManyRequests'),
+        500: response('ServerError')
+      }
+    }
+  },
+
+  '/api/v1/guest/qr/context': {
+    post: {
+      tags: ['Guest'],
+      summary: 'What a scanned table QR points at, without opening a session',
+      description: [
+        'The landing a physical code leads to. Public, and it creates nothing.',
+        '',
+        'A printed QR previously had one thing it could do — mint a session — so a diner who',
+        'scanned it to read the menu got a session anyway. The menu was unreachable regardless:',
+        '`GET /api/v1/menu/public/{restaurantId}/products` is addressed by restaurant, and there',
+        'was no way to learn a restaurant id without first taking a session. This returns one.',
+        '',
+        '**POST, not GET**, unlike the rest of the read surface: a token in the query string would',
+        'be written to `req.url` in every access log line. It is a low-value credential printed on',
+        'a table in a public room, but there is no reason to copy it into the logs to save a verb.',
+        '',
+        'Carries nothing about money. `hasOpenBill` says only what somebody standing in the room',
+        'can see, and is there so the landing knows whether to offer the bill at all; the amount',
+        'stays behind the session.',
+        '',
+        'Every rejection is `QR_INVALID` — bad signature, unknown table, deactivated table or',
+        'restaurant, or a rotated nonce. Distinguishing them would answer questions about a',
+        'restaurant for anyone holding a photograph of its furniture.'
+      ].join('\n'),
+      security: [],
+      requestBody: { required: true, content: { 'application/json': { schema: ref('GuestSessionRequest') } } },
+      responses: {
+        200: { description: 'The table the code names.', content: { 'application/json': { schema: ref('QrContext') } } },
+        400: response('BadRequest'),
+        401: response('Unauthorized'),
         429: response('TooManyRequests'),
         500: response('ServerError')
       }

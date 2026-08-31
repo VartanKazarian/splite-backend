@@ -114,6 +114,86 @@ router.post(
 );
 
 /**
+ * The table a QR token names, or an error.
+ *
+ * Shared by the two public routes that accept a printed code, because the
+ * checks are the whole of its security and a second copy is a second place for
+ * one of them to go missing: the HMAC, the tenant-scoped lookup, `active`, and
+ * the nonce -- which is what makes a reprinted or rotated code stop working.
+ *
+ * Every failure is the same `QR_INVALID`. A code stuck to a table is read by
+ * strangers, and distinguishing "no such table" from "wrong nonce" would answer
+ * questions about a restaurant to somebody holding a photograph of its
+ * furniture.
+ */
+async function tableForQr(qrToken) {
+  let payload;
+  try {
+    payload = verifyQrToken(qrToken);
+  } catch {
+    throw new ApiError('QR_INVALID', 'Invalid table QR');
+  }
+
+  const { rows } = await db.query(
+    `SELECT t.id, t.restaurant_id, t.name, t.qr_nonce, t.active,
+            r.name AS restaurant_name, r.menu_currency, r.active AS restaurant_active
+       FROM tables t
+       JOIN restaurants r ON r.id = t.restaurant_id
+      WHERE t.id = $1 AND t.restaurant_id = $2`,
+    [payload.tableId, payload.restaurantId]
+  );
+  const table = rows[0];
+  if (!table || !table.active || !table.restaurant_active ||
+      String(table.qr_nonce) !== String(payload.nonce)) {
+    throw new ApiError('QR_INVALID', 'Invalid table QR');
+  }
+  return table;
+}
+
+/**
+ * Public: what a scanned code points at, without opening anything.
+ *
+ * A printed QR used to have exactly one thing it could do -- mint a session --
+ * so a diner who scanned it to read the menu got a session anyway, and the
+ * menu was unreachable regardless: `GET /menu/public/:restaurantId/products`
+ * needs a restaurant id, and until this route there was no way to learn one
+ * without first taking a session. The two things a person does at a table were
+ * behind the same door.
+ *
+ * So this is the landing: enough to say which restaurant and which table, and
+ * enough to fetch the public menu. A session is minted only by the diner who
+ * asks for the bill.
+ *
+ * POST rather than GET, unlike the rest of the read surface. The token would
+ * otherwise sit in `req.url`, which the access log records on every request --
+ * see the pino-http serializer in app.js. It is a low-value credential printed
+ * on a table in a public room, but there is no reason to copy it into every
+ * log line to save a verb.
+ *
+ * Returns nothing about money. `hasOpenBill` is the one fact the landing needs
+ * -- whether to offer the bill at all -- and it says only what anyone standing
+ * in the room can see. What the table owes stays behind the session.
+ */
+router.post(
+  '/qr/context',
+  rateLimit({ windowSeconds: 60, max: 60, keyPrefix: 'guest:qrctx' }),
+  validateBody(guestSessionSchema),
+  async (req, res, next) => {
+    try {
+      const table = await tableForQr(req.body.qrToken);
+
+      const { rows } = await db.query(
+        `SELECT 1 FROM bills
+          WHERE restaurant_id = $1 AND table_id = $2 AND status = 'OPEN' LIMIT 1`,
+        [table.restaurant_id, table.id]
+      );
+
+      res.json(dto.qrContext(table, { hasOpenBill: rows.length > 0 }));
+    } catch (err) { next(err); }
+  }
+);
+
+/**
  * Public: exchanges a signed QR token for a short-lived guest session.
  *
  * Minting is the one guest route with no credential to count per, so it stays
@@ -132,22 +212,10 @@ router.post(
   validateBody(guestSessionSchema),
   async (req, res, next) => {
     try {
-      let payload;
-      try {
-        payload = verifyQrToken(req.body.qrToken);
-      } catch {
-        throw new ApiError('QR_INVALID', 'Invalid table QR');
-      }
-
-      const { rows } = await db.query(
-        'SELECT id, restaurant_id, qr_nonce, active FROM tables WHERE id = $1 AND restaurant_id = $2',
-        [payload.tableId, payload.restaurantId]
-      );
-      const table = rows[0];
-      // Nonce check makes a reprinted/rotated QR immediately unusable.
-      if (!table || !table.active || String(table.qr_nonce) !== String(payload.nonce)) {
-        throw new ApiError('QR_INVALID', 'Invalid table QR');
-      }
+      // Same checks as /qr/context, from one place: the nonce is what makes a
+      // reprinted or rotated code stop working, and it must not be possible for
+      // one route to keep honouring a code the other has stopped honouring.
+      const table = await tableForQr(req.body.qrToken);
 
       const session = await createGuestSession({
         restaurantId: table.restaurant_id,

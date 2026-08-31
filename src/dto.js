@@ -308,6 +308,33 @@ function floorTable(row) {
  * they arrived would put desserts before starters the first time a query plan
  * changed.
  */
+/**
+ * What a scanned table code resolves to, before any session exists.
+ *
+ * Deliberately thin. This is unauthenticated and reachable by anyone who can
+ * photograph a code stuck to a table, so it carries what a landing page needs
+ * to orient a diner -- which restaurant, which table, and whether there is a
+ * bill to ask for -- and nothing about the money. `restaurantId` is here
+ * because the public menu is addressed by it; without that, the menu half of
+ * the flow cannot be reached without taking a session first.
+ */
+function qrContext(row, { hasOpenBill }) {
+  return {
+    restaurant: {
+      id: row.restaurant_id,
+      name: row.restaurant_name,
+      menuCurrency: row.menu_currency
+    },
+    table: {
+      id: row.id,
+      name: row.name
+    },
+    // Whether to offer the bill at all. Says only what somebody standing in the
+    // room can already see; the amount stays behind the session.
+    hasOpenBill
+  };
+}
+
 function menuCategory(row) {
   return {
     id: row.id,
@@ -573,5 +600,5 @@ function staffMember(row) {
 module.exports = {
   isoDate, isoTimestamp, staffMember,
   bill, billItem, billWithItems, guestBill,
-  table, floorTable, product, publicProduct, menuCategory, menuSettings, menuCharges, account, payout, guestPayee, paymentProviderConfig, paymentClaim, staffPaymentClaim, c2pCharge, billSplit
+  table, floorTable, product, publicProduct, menuCategory, qrContext, menuSettings, menuCharges, account, payout, guestPayee, paymentProviderConfig, paymentClaim, staffPaymentClaim, c2pCharge, billSplit
 };
