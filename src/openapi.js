@@ -584,7 +584,11 @@ const schemas = {
           properties: {
             name: { type: 'string', minLength: 1, maxLength: 160 },
             description: { type: ['string', 'null'], maxLength: 500 },
-            priceMinorUnits: { ...minorUnits, description: 'Zero is allowed: a garnish or a refill can be free.' }
+            priceMinorUnits: { ...minorUnits, description: 'Zero is allowed: a garnish or a refill can be free.' },
+            section: {
+              type: ['string', 'null'], maxLength: 80,
+              description: 'The heading the reader found, passed back from the draft. Matched to a section by name; a new one is created at the end of the menu, in the order sections first appear here.'
+            }
           }
         }
       }
@@ -597,6 +601,10 @@ const schemas = {
       'Partial success is normal. Each row is inserted in its own savepoint, so a duplicate name rejects that row and keeps the rest.',
     properties: {
       importedCount: { type: 'integer' },
+      categoriesCreated: {
+        type: 'array', items: ref('MenuCategory'),
+        description: 'Sections this import created. Six named after the menu means the structure was read; none means the photo had no headings the reader could find.'
+      },
       items: { type: 'array', items: ref('Product') },
       errors: {
         type: 'array',
@@ -762,6 +770,30 @@ const schemas = {
     }
   },
 
+  MenuCategory: {
+    type: 'object',
+    description:
+      'A section of the menu. Ordered by `position`, which is what makes the section list a menu rather than a set — starters before desserts, an order alphabetical sorting cannot express.',
+    properties: {
+      id: { type: 'string', format: 'uuid' },
+      name: { type: 'string', maxLength: 80 },
+      position: { type: 'integer', description: 'Order on the menu. Set from where the section first appeared in an OCR import, which is the printed order.' },
+      active: { type: 'boolean', description: 'False hides the whole section from the public menu without deactivating each product — the kitchen ran out of fish.' },
+      productCount: { type: 'integer', description: 'Present only on GET /menu/categories.' }
+    }
+  },
+
+  MenuCategoryList: {
+    type: 'object',
+    properties: {
+      data: { type: 'array', items: ref('MenuCategory') },
+      uncategorisedCount: {
+        type: 'integer',
+        description: 'Products with no section. They have no category row to appear under, and a screen that groups by section must still show them.'
+      }
+    }
+  },
+
   Product: {
     type: 'object',
     properties: {
@@ -770,6 +802,12 @@ const schemas = {
       description: { type: ['string', 'null'] },
       priceMinorUnits: minorUnits,
       currency: { type: 'string', enum: ['VES', 'USD', 'EUR'] },
+      categoryId: {
+        type: ['string', 'null'], format: 'uuid',
+        description: 'The section this sits under. Null is uncategorised — a real state, not a missing value.'
+      },
+      categoryName: { type: ['string', 'null'], description: 'Flattened on so a client can group without a second request.' },
+      position: { type: 'integer', description: 'Order within its section.' },
       active: { type: 'boolean' },
       createdAt: { type: 'string', format: 'date-time' },
       updatedAt: { type: 'string', format: 'date-time' }
@@ -786,7 +824,12 @@ const schemas = {
       name: { type: 'string' },
       description: { type: ['string', 'null'] },
       priceMinorUnits: minorUnits,
-      currency: { type: 'string', enum: ['VES', 'USD', 'EUR'] }
+      currency: { type: 'string', enum: ['VES', 'USD', 'EUR'] },
+      categoryId: {
+        type: ['string', 'null'], format: 'uuid',
+        description: 'The section this sits under. Null is uncategorised — a real state, not a missing value.'
+      },
+      categoryName: { type: ['string', 'null'], description: 'Flattened on so a client can group without a second request.' }
     }
   },
 
@@ -806,6 +849,7 @@ const schemas = {
       name: { type: 'string', minLength: 1, maxLength: 160 },
       description: { type: ['string', 'null'], maxLength: 500 },
       priceMinorUnits: minorUnits,
+      categoryId: { type: ['string', 'null'], format: 'uuid', description: 'The section it belongs under. Null or omitted is uncategorised.' },
       active: { type: 'boolean', default: true }
     },
     description: 'The currency is taken from the restaurant menu currency and is not accepted here.'
@@ -818,6 +862,10 @@ const schemas = {
       name: { type: 'string', minLength: 1, maxLength: 160 },
       description: { type: ['string', 'null'], maxLength: 500 },
       priceMinorUnits: minorUnits,
+      categoryId: {
+        type: ['string', 'null'], format: 'uuid',
+        description: 'Explicit null moves the product out of every section. Omitting the field leaves it where it is — the two are different.'
+      },
       active: { type: 'boolean' }
     }
   },
@@ -826,6 +874,10 @@ const schemas = {
     type: 'object',
     properties: {
       restaurant: ref('MenuSettings'),
+      categories: {
+        type: 'array', items: ref('MenuCategory'),
+        description: 'Active sections in order. Sent alongside the products rather than nested, so a client renders the headers in the menu\'s order instead of inferring it from whichever products came back.'
+      },
       products: { type: 'array', items: ref('PublicProduct') }
     }
   },
@@ -2939,16 +2991,51 @@ const paths = {
     }
   },
 
+  '/api/v1/menu/categories': {
+    get: {
+      tags: ['Menu'],
+      summary: 'List menu sections',
+      description: [
+        'Any authenticated staff role.',
+        '',
+        'Its own endpoint rather than a shape nested inside the product list, because the two are',
+        'paginated differently: a client renders every section header at once and pages through the',
+        'food underneath. Deriving the headers from one page of products would hide any section',
+        'whose items fell past the limit.',
+        '',
+        '`uncategorisedCount` counts products filed under no section. They have no row here to',
+        'appear under, and are precisely the ones somebody needs to notice.'
+      ].join('\n'),
+      security: staff,
+      responses: {
+        200: { description: 'Sections in menu order.', content: { 'application/json': { schema: ref('MenuCategoryList') } } },
+        ...commonErrors
+      }
+    }
+  },
+
   '/api/v1/menu/products': {
     get: {
       tags: ['Menu'],
       summary: 'List menu products',
-      description: 'Any authenticated staff role.',
+      description: [
+        'Any authenticated staff role.',
+        '',
+        'Ordered as the menu reads: section position, then the product\'s position within it, then',
+        'name. Uncategorised products sort last. Name is the tie-break rather than the sort —',
+        'everything imported at once shares a position, and alphabetical-within-a-section is a',
+        'reasonable default until somebody reorders it.'
+      ].join('\n'),
       security: staff,
       parameters: [
         { $ref: '#/components/parameters/Limit' },
         { $ref: '#/components/parameters/Offset' },
-        { name: 'active', in: 'query', schema: { type: 'boolean' } }
+        { name: 'active', in: 'query', schema: { type: 'boolean' } },
+        {
+          name: 'categoryId', in: 'query',
+          schema: { oneOf: [{ type: 'string', format: 'uuid' }, { type: 'string', enum: ['none'] }] },
+          description: 'Narrow to one section. `none` is the uncategorised bucket, which has no id and would otherwise be unreachable.'
+        }
       ],
       responses: {
         200: { description: 'Products.', content: { 'application/json': { schema: ref('ProductList') } } },

@@ -39,7 +39,36 @@ const upload = multer({
 const router = express.Router();
 
 const PRODUCT_COLUMNS = `id, name, description, price_minor_units,
-                         currency, active, created_at, updated_at`;
+                         currency, category_id, position, active,
+                         created_at, updated_at`;
+
+/**
+ * The order a menu is read in.
+ *
+ * Section first, then the item's place inside it, then name. Name is the
+ * tie-break rather than the sort: everything imported at once shares position
+ * 0, and alphabetical-within-a-section is a reasonable default until somebody
+ * reorders it. NULLS LAST puts uncategorised products after every named
+ * section, which is where a reviewer expects to find the ones still to be
+ * filed rather than scattered through the list.
+ */
+const MENU_ORDER = `c.position NULLS LAST, c.name NULLS LAST, p.position, p.name`;
+
+/**
+ * A write that answers with the same product shape a read does.
+ *
+ * RETURNING cannot join, so a bare INSERT would hand back category_id and no
+ * category_name -- and `dto.product` would report the section as null on the
+ * very request that set it. One statement rather than a second round trip.
+ */
+const withCategoryName = inner => `
+  WITH written AS (${inner})
+  SELECT w.id, w.name, w.description, w.price_minor_units, w.currency,
+         w.category_id, w.position, w.active, w.created_at, w.updated_at,
+         c.name AS category_name
+    FROM written w
+    LEFT JOIN menu_categories c
+      ON c.id = w.category_id AND c.restaurant_id = w.restaurant_id`;
 
 /**
  * Public menu for a restaurant.
@@ -59,15 +88,37 @@ router.get(
       );
       if (!restaurant.rows.length) throw new ApiError('RESTAURANT_NOT_FOUND', 'Restaurant not found');
 
+      // A section that has been switched off hides its food from diners without
+      // deactivating each product: the kitchen ran out of fish, and the whole
+      // pescados block goes off the menu for the evening.
       const { rows } = await db.query(
-        `SELECT id, name, description, price_minor_units, currency
-           FROM menu_products
-          WHERE restaurant_id = $1 AND active = true
-          ORDER BY name`,
+        `SELECT p.id, p.name, p.description, p.price_minor_units, p.currency,
+                p.category_id, c.name AS category_name
+           FROM menu_products p
+           LEFT JOIN menu_categories c
+             ON c.id = p.category_id AND c.restaurant_id = p.restaurant_id AND c.active = true
+          WHERE p.restaurant_id = $1
+            AND p.active = true
+            AND (p.category_id IS NULL OR c.id IS NOT NULL)
+          ORDER BY ${MENU_ORDER}`,
         [req.params.restaurantId]
       );
 
-      res.json({ restaurant: dto.menuSettings(restaurant.rows[0]), products: rows.map(dto.publicProduct) });
+      const categories = await db.query(
+        `SELECT id, name, position, active FROM menu_categories
+          WHERE restaurant_id = $1 AND active = true
+          ORDER BY position, name`,
+        [req.params.restaurantId]
+      );
+
+      res.json({
+        restaurant: dto.menuSettings(restaurant.rows[0]),
+        // Sent alongside rather than nested, so a client can render the section
+        // headers in order -- including an empty one -- without inferring the
+        // order from whichever products happened to come back.
+        categories: categories.rows.map(dto.menuCategory),
+        products: rows.map(dto.publicProduct)
+      });
     } catch (err) { next(err); }
   }
 );
@@ -198,20 +249,70 @@ router.patch(
   }
 );
 
+/**
+ * The sections, with how much is in each.
+ *
+ * Its own endpoint rather than a shape nested inside `/products`, because the
+ * two are paginated differently: a client renders every section header at once
+ * and pages through the food underneath. Deriving the headers from a page of
+ * products would hide any section whose items fell past the limit.
+ */
+router.get('/categories', async (req, res, next) => {
+  try {
+    const { rows } = await db.query(
+      `SELECT c.id, c.name, c.position, c.active,
+              count(p.id) AS product_count
+         FROM menu_categories c
+         LEFT JOIN menu_products p
+           ON p.category_id = c.id AND p.restaurant_id = c.restaurant_id
+        WHERE c.restaurant_id = $1
+        GROUP BY c.id
+        ORDER BY c.position, c.name`,
+      [req.user.restaurantId]
+    );
+
+    // The uncategorised bucket is counted too. It has no row in
+    // menu_categories and so cannot appear above, but a screen that groups by
+    // section still has to show it -- and a product filed nowhere is precisely
+    // the one somebody needs to notice.
+    const loose = await db.query(
+      `SELECT count(*) AS product_count FROM menu_products
+        WHERE restaurant_id = $1 AND category_id IS NULL`,
+      [req.user.restaurantId]
+    );
+
+    res.json({
+      data: rows.map(dto.menuCategory),
+      uncategorisedCount: Number(loose.rows[0].product_count)
+    });
+  } catch (err) { next(err); }
+});
+
 router.get('/products', validateQuery(listProductsQuerySchema), async (req, res, next) => {
   try {
     const params = [req.user.restaurantId];
-    let where = 'restaurant_id = $1';
+    let where = 'p.restaurant_id = $1';
     if (req.query.active !== undefined) {
       params.push(req.query.active);
-      where += ` AND active = $${params.length}`;
+      where += ` AND p.active = $${params.length}`;
+    }
+    if (req.query.categoryId === 'none') {
+      where += ' AND p.category_id IS NULL';
+    } else if (req.query.categoryId !== undefined) {
+      params.push(req.query.categoryId);
+      where += ` AND p.category_id = $${params.length}`;
     }
 
     params.push(req.query.limit, req.query.offset);
     const { rows } = await db.query(
-      `SELECT ${PRODUCT_COLUMNS} FROM menu_products
+      `SELECT p.id, p.name, p.description, p.price_minor_units, p.currency,
+              p.category_id, p.position, p.active, p.created_at, p.updated_at,
+              c.name AS category_name
+         FROM menu_products p
+         LEFT JOIN menu_categories c
+           ON c.id = p.category_id AND c.restaurant_id = p.restaurant_id
         WHERE ${where}
-        ORDER BY name
+        ORDER BY ${MENU_ORDER}
         LIMIT $${params.length - 1} OFFSET $${params.length}`,
       params
     );
@@ -235,15 +336,18 @@ router.post(
       if (!restaurant.rows.length) throw new ApiError('RESTAURANT_NOT_FOUND', 'Restaurant not found');
 
       const { rows } = await db.query(
-        `INSERT INTO menu_products (restaurant_id, name, description, price_minor_units, currency, active)
-         VALUES ($1, $2, $3, $4, $5, $6)
-         RETURNING ${PRODUCT_COLUMNS}`,
+        withCategoryName(`
+          INSERT INTO menu_products
+            (restaurant_id, name, description, price_minor_units, currency, category_id, active)
+          VALUES ($1, $2, $3, $4, $5, $6, $7)
+          RETURNING *`),
         [
           req.user.restaurantId,
           req.body.name,
           req.body.description || null,
           req.body.priceMinorUnits,
           restaurant.rows[0].menu_currency,
+          req.body.categoryId ?? null,
           req.body.active
         ]
       );
@@ -275,19 +379,27 @@ router.patch(
     try {
       // COALESCE keeps this a partial update; the currency is deliberately not
       // updatable, since it is owned by the restaurant's menu currency.
+      // categoryId cannot ride on COALESCE like the rest: null is a value here,
+      // meaning "out of every section", and COALESCE cannot tell that from an
+      // omitted field. A separate flag says whether the caller mentioned it.
+      const setsCategory = Object.prototype.hasOwnProperty.call(req.body, 'categoryId');
       const { rows } = await db.query(
-        `UPDATE menu_products
-            SET name = COALESCE($1, name),
-                description = COALESCE($2, description),
-                price_minor_units = COALESCE($3, price_minor_units),
-                active = COALESCE($4, active)
-          WHERE id = $5 AND restaurant_id = $6
-        RETURNING ${PRODUCT_COLUMNS}`,
+        withCategoryName(`
+          UPDATE menu_products
+             SET name = COALESCE($1, name),
+                 description = COALESCE($2, description),
+                 price_minor_units = COALESCE($3, price_minor_units),
+                 active = COALESCE($4, active),
+                 category_id = CASE WHEN $5::boolean THEN $6::uuid ELSE category_id END
+           WHERE id = $7 AND restaurant_id = $8
+          RETURNING *`),
         [
           req.body.name ?? null,
           req.body.description === undefined ? null : (req.body.description || null),
           req.body.priceMinorUnits ?? null,
           req.body.active ?? null,
+          setsCategory,
+          req.body.categoryId ?? null,
           req.params.id,
           req.user.restaurantId
         ]
@@ -449,19 +561,68 @@ router.post(
       if (!rows.length) throw new ApiError('RESTAURANT_NOT_FOUND', 'Restaurant not found');
       const currency = rows[0].menu_currency;
 
-      const { imported, errors } = await db.withTransaction(async client => {
+      const { imported, errors, createdCategories } = await db.withTransaction(async client => {
         const inserted = [];
         const failures = [];
+
+        /**
+         * The sections, resolved in the order they were printed.
+         *
+         * Position comes from where a section first appears in the payload,
+         * not from its name: the reader walks the page top to bottom, so
+         * first-seen is the menu's own sequence -- Entradas before Postres,
+         * which alphabetical ordering would reverse.
+         *
+         * Existing sections keep the position they already have. A second
+         * import must not renumber a menu somebody has since reordered by
+         * hand, and ON CONFLICT DO NOTHING says so; the SELECT afterwards is
+         * what returns the row either way.
+         */
+        const categoryIds = new Map();
+        const before = await client.query(
+          'SELECT COALESCE(MAX(position), -1) AS max FROM menu_categories WHERE restaurant_id = $1',
+          [restaurantId]
+        );
+        let nextPosition = Number(before.rows[0].max) + 1;
+        const madeCategories = [];
+
+        for (const item of req.body.items) {
+          const section = (item.section || '').trim();
+          if (!section || categoryIds.has(section)) continue;
+
+          const found = await client.query(
+            'SELECT id FROM menu_categories WHERE restaurant_id = $1 AND name = $2',
+            [restaurantId, section]
+          );
+          if (found.rows.length) {
+            categoryIds.set(section, found.rows[0].id);
+            continue;
+          }
+
+          const made = await client.query(
+            `INSERT INTO menu_categories (restaurant_id, name, position)
+             VALUES ($1, $2, $3) RETURNING id, name, position, active`,
+            [restaurantId, section, nextPosition++]
+          );
+          categoryIds.set(section, made.rows[0].id);
+          madeCategories.push(made.rows[0]);
+        }
 
         for (const [index, item] of req.body.items.entries()) {
           await client.query('SAVEPOINT item');
           try {
             const result = await client.query(
               `INSERT INTO menu_products
-                 (restaurant_id, name, description, price_minor_units, currency, active)
-               VALUES ($1, $2, $3, $4, $5, true)
+                 (restaurant_id, name, description, price_minor_units, currency, category_id, position, active)
+               VALUES ($1, $2, $3, $4, $5, $6, $7, true)
                RETURNING ${PRODUCT_COLUMNS}`,
-              [restaurantId, item.name, item.description || null, item.priceMinorUnits, currency]
+              [
+                restaurantId, item.name, item.description || null, item.priceMinorUnits, currency,
+                categoryIds.get((item.section || '').trim()) ?? null,
+                // Its place on the page, so the menu reads in the order it was
+                // printed rather than alphabetically inside each section.
+                index
+              ]
             );
             await client.query('RELEASE SAVEPOINT item');
             inserted.push(result.rows[0]);
@@ -480,7 +641,7 @@ router.post(
           }
         }
 
-        return { imported: inserted, errors: failures };
+        return { imported: inserted, errors: failures, createdCategories: madeCategories };
       });
 
       await logAudit({
@@ -488,11 +649,20 @@ router.post(
         action: 'MENU_OCR_IMPORTED',
         resourceType: 'restaurant',
         resourceId: restaurantId,
-        details: { imported: imported.length, rejected: errors.length }
+        details: {
+          imported: imported.length,
+          rejected: errors.length,
+          categoriesCreated: createdCategories.length
+        }
       });
 
       res.status(201).json({
         importedCount: imported.length,
+        // What the import decided about structure, reported rather than left
+        // to be discovered: a reviewer who sees six new sections named after
+        // their own menu knows it worked, and one who sees none knows the
+        // photo had no headings the reader could find.
+        categoriesCreated: createdCategories.map(dto.menuCategory),
         items: imported.map(dto.product),
         errors
       });

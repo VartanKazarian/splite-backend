@@ -382,6 +382,54 @@ that already references it has to stay readable.
 `GET /api/v1/menu/public/:restaurantId/products` is the one unauthenticated
 endpoint here: a guest scanning a table QR has no staff credentials.
 
+### Sections
+
+A menu is not a list, it is sections in an order, and `menu_categories` holds
+them. A section rather than a `category` column on the product for one reason:
+**order**. A text column can only sort alphabetically — Bebidas, Entradas,
+Postres, Principales — which is wrong everywhere and cannot be corrected.
+`position` is the point, and it belongs to the section rather than being
+repeated on every product in it.
+
+`GET /api/v1/menu/categories` lists them with a count each, plus
+`uncategorisedCount`. Its own endpoint rather than a shape nested inside the
+product list, because the two are paginated differently: a client renders every
+header at once and pages through the food underneath, and headers derived from
+one page of products would hide any section whose items fell past the limit.
+
+Both product listings — staff and public — order by section position, then the
+product's position within it, then name. Name is the tie-break rather than the
+sort: everything imported at once shares a position, and
+alphabetical-within-a-section is a reasonable default until somebody reorders.
+
+**`category_id` is nullable and stays that way.** Products created before
+sections existed have none, and a menu photo with no printed headings yields
+none either. Both are *uncategorised*, which is a real state rather than a
+missing value to be backfilled with a guess — so it sorts last and is reachable
+as `?categoryId=none`. Without that filter the bucket has no id and would be the
+one group a section-by-section client could not show.
+
+Two constraint decisions worth knowing:
+
+- The foreign key is **composite**, `(category_id, restaurant_id)` against
+  `menu_categories (id, restaurant_id)`. A plain `REFERENCES menu_categories(id)`
+  would let one restaurant file its food under another's section: the id exists,
+  and nothing in the constraint says whose it is. Same correction
+  `016_payment_tenant_integrity` made to payments.
+- `ON DELETE SET NULL (category_id)` **names its column**, and must. On a
+  composite key the unqualified form nulls every referencing column, which here
+  would blank `menu_products.restaurant_id` — the tenant off the product —
+  whenever a section was deleted. `030_bill_served_by` hit exactly that. Deleting
+  a section leaves its food uncategorised and still sellable.
+
+Deactivating a section hides its products from the public menu without touching
+each one: the kitchen ran out of fish, and the whole block goes off for the
+evening.
+
+Still open: nothing reorders sections or renames them yet. `position` is set
+from the order sections first appear in an import, and there is no endpoint to
+change it — so the order a menu is imported in is the order it keeps.
+
 ## Wire format
 
 The public API is **camelCase**; PostgreSQL is snake_case. `src/dto.js` is the
@@ -822,8 +870,17 @@ behind a flag would mean reading that flag wrongly exactly once, silently.
 ### Operating it
 
 Off unless configured: without `MENU_OCR_API_KEY` the endpoint answers 503
-`MENU_OCR_NOT_CONFIGURED` rather than failing oddly at upload. `MENU_OCR_BASE_URL`
-selects the provider — the request is the OpenAI-compatible chat-completions
+`MENU_OCR_NOT_CONFIGURED` rather than failing oddly at upload.
+
+The reader returns a `section` per item — the heading it appeared under — and
+the import creates any section it has not seen, at the end of the menu, in the
+order sections first appear in the payload. That is the printed order: the model
+walks the page top to bottom. An existing section keeps the position it already
+has, so a second import cannot renumber a menu somebody has since reordered.
+`categoriesCreated` reports what it decided, because six sections named after
+their own menu is how a reviewer knows it worked.
+
+`MENU_OCR_BASE_URL` selects the provider — the request is the OpenAI-compatible chat-completions
 shape several vendors serve, so switching is configuration rather than code.
 
 **The base URL includes the version path**; only `/chat/completions` is appended
