@@ -92,11 +92,15 @@ describe('guest QR context over HTTP', { skip }, () => {
   });
 
   it('reports an open bill once there is one, without the amount', async () => {
-    await db.query(
-      `INSERT INTO bills (restaurant_id, table_id, status, currency)
-       VALUES ($1, $2, 'OPEN', 'VES')`,
-      [restaurant.id, table.id]
-    );
+    // Through the fixture, not a hand-written INSERT. `bills` has NOT NULL
+    // columns and a CHECK tying total_due to its parts, so the short statement
+    // this used to be was rejected outright -- and the unit suite never noticed,
+    // because `npm test` globs test/*.test.js and never reaches this directory.
+    await fixtures.createBill({
+      restaurantId: restaurant.id,
+      tableId: table.id,
+      totalDue: 20000
+    });
 
     const res = await post('/api/v1/guest/qr/context', { qrToken: qrFor() });
 
