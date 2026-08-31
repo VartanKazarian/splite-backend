@@ -439,7 +439,10 @@ module.exports = {
      * configuration rather than code.
      */
     apiKey: process.env.MENU_OCR_API_KEY || '',
-    baseUrl: process.env.MENU_OCR_BASE_URL || 'https://api.openai.com',
+    // Includes the version path, because vendors put it in different places:
+    // OpenAI /v1, Gemini /v1beta/openai, Groq /openai/v1, OpenRouter /api/v1.
+    // Only /chat/completions is appended to it.
+    baseUrl: process.env.MENU_OCR_BASE_URL || 'https://api.openai.com/v1',
     model: process.env.MENU_OCR_MODEL || 'gpt-4o',
     timeoutMs: integer('MENU_OCR_TIMEOUT_MS', 60000),
     maxTokens: integer('MENU_OCR_MAX_TOKENS', 4000),

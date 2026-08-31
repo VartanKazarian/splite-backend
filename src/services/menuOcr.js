@@ -111,6 +111,23 @@ async function toImages({ buffer, contentType }) {
 }
 
 /**
+ * Where the request goes.
+ *
+ * `MENU_OCR_BASE_URL` carries the version path, and this appends only
+ * `/chat/completions`. It used to resolve `/v1/chat/completions` against the
+ * base, which -- because a leading slash is absolute -- silently threw away any
+ * path the base had. That made the promise above true for OpenAI and false for
+ * most of the vendors it was written for: Gemini serves the compatible surface
+ * at /v1beta/openai, Groq at /openai/v1, OpenRouter at /api/v1, and each of
+ * those became a 404 at the origin root. A 404 here is reported as
+ * MENU_OCR_UNAVAILABLE, so a base URL that was merely misconfigured looked
+ * exactly like a provider outage.
+ */
+function completionsUrl(baseUrl = config.menuOcr.baseUrl) {
+  return `${String(baseUrl).replace(/\/+$/, '')}/chat/completions`;
+}
+
+/**
  * Asks the vision model to read the pages.
  *
  * Isolated behind one function so the provider is a configuration choice rather
@@ -126,7 +143,8 @@ async function callVisionModel(images) {
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), config.menuOcr.timeoutMs);
   try {
-    const response = await fetch(new URL('/v1/chat/completions', config.menuOcr.baseUrl), {
+    const endpoint = completionsUrl();
+    const response = await fetch(endpoint, {
       method: 'POST',
       headers: {
         'content-type': 'application/json',
@@ -154,7 +172,10 @@ async function callVisionModel(images) {
     if (!response.ok) {
       // The body may quote the request back; it is a menu, not a secret, but it
       // is also large, so only the status travels into the log.
-      logger.warn({ event: 'MENU_OCR_PROVIDER_REJECTED', status: response.status },
+      // The endpoint travels with the status. A 404 from a provider that is up
+      // means the base URL is wrong, and without the URL in the log that is
+      // indistinguishable from the provider being down.
+      logger.warn({ event: 'MENU_OCR_PROVIDER_REJECTED', status: response.status, endpoint },
         'Vision provider rejected the request');
       throw new ApiError('MENU_OCR_UNAVAILABLE', 'The menu reader is unavailable; try again', {
         retryAfterSeconds: 30
@@ -257,6 +278,9 @@ async function extractMenu({ buffer, contentType, currency, visionClient = callV
 }
 
 module.exports = {
+  // Exported for tests: which URL a given base produces is the whole of this
+  // module's provider portability, and it is not visible from the outside.
+  completionsUrl,
   extractMenu, toDraftItems, toImages, isConfigured,
   SUPPORTED_IMAGE_TYPES, PDF_TYPE, PROMPT
 };

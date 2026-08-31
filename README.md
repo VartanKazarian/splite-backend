@@ -826,6 +826,22 @@ Off unless configured: without `MENU_OCR_API_KEY` the endpoint answers 503
 selects the provider — the request is the OpenAI-compatible chat-completions
 shape several vendors serve, so switching is configuration rather than code.
 
+**The base URL includes the version path**; only `/chat/completions` is appended
+to it, because vendors put the version in different places:
+
+| Provider | `MENU_OCR_BASE_URL` | A vision model |
+| --- | --- | --- |
+| OpenAI | `https://api.openai.com/v1` | `gpt-4o` |
+| Google Gemini | `https://generativelanguage.googleapis.com/v1beta/openai` | `gemini-2.0-flash` |
+| Groq | `https://api.groq.com/openai/v1` | |
+| OpenRouter | `https://openrouter.ai/api/v1` | |
+| Mistral | `https://api.mistral.ai/v1` | `pixtral-12b-2409` |
+
+A base URL without its version path produces a 404, which this endpoint reports
+as `MENU_OCR_UNAVAILABLE` — the same answer it gives for a provider that is
+genuinely down. The resolved endpoint is logged with `MENU_OCR_PROVIDER_REJECTED`
+so the two can be told apart.
+
 **Ask before offering it.** `GET /api/v1/menu/settings` carries
 `menuOcrAvailable`, and a client should hide the photo import when it is false
 rather than discovering the answer the hard way. Without it the only way to find
