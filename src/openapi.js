@@ -897,10 +897,28 @@ const schemas = {
     }
   },
 
+  MenuDocument: {
+    type: 'object',
+    description:
+      'The menu the restaurant uploaded, described rather than sent. No bytes: the file has its own route, and a DTO that could serialise 20 MB into a JSON body eventually would.',
+    properties: {
+      filename: { type: 'string', description: 'The restaurant\'s own name for the file. Basename only.' },
+      contentType: { type: 'string', example: 'application/pdf' },
+      sizeBytes: { type: 'integer', description: 'Kept in step with the bytes by a CHECK, so a listing can report it without reading the file.' },
+      updatedAt: { type: 'string', format: 'date-time' },
+      url: { type: 'string', description: 'The public path the file is served from. Given rather than assembled, so a client cannot build it subtly wrong.' }
+    }
+  },
+
   PublicMenu: {
     type: 'object',
     properties: {
       restaurant: ref('MenuSettings'),
+      menuPdf: {
+        allOf: [ref('MenuDocument')],
+        nullable: true,
+        description: 'The uploaded menu, or null. Lets a client decide between embedding and linking, and gives a menu that is only a PDF something to show when `products` is empty.'
+      },
       categories: {
         type: 'array', items: ref('MenuCategory'),
         description: 'Active sections in order. Sent alongside the products rather than nested, so a client renders the headers in the menu\'s order instead of inferring it from whichever products came back.'
@@ -2861,6 +2879,34 @@ const paths = {
     }
   },
 
+  '/api/v1/menu/public/{restaurantId}/pdf': {
+    parameters: [{ $ref: '#/components/parameters/RestaurantId' }],
+    get: {
+      tags: ['Menu'],
+      summary: 'The uploaded menu, to a diner',
+      description: [
+        'Unauthenticated, like the public product list beside it and for the same reason: a diner',
+        'scanning a table QR holds no staff credentials, and what this serves is a file the',
+        'restaurant chose to publish.',
+        '',
+        'Served `inline` so a phone opens it rather than downloading it, with the restaurant\'s own',
+        'filename so a diner who does save it gets something readable. `nosniff` is set: a stored',
+        'file is served as what it says it is and nothing else.'
+      ].join('\n'),
+      security: [],
+      responses: {
+        200: {
+          description: 'The file.',
+          content: { 'application/pdf': { schema: { type: 'string', format: 'binary' } } }
+        },
+        404: { description: 'Nothing uploaded, or no such restaurant.', content: { 'application/json': { schema: ref('Error') } } },
+        400: { description: 'Malformed restaurant id.', content: { 'application/json': { schema: ref('Error') } } },
+        429: { $ref: '#/components/responses/TooManyRequests' },
+        500: { $ref: '#/components/responses/ServerError' }
+      }
+    }
+  },
+
   '/api/v1/menu/public/{restaurantId}/products': {
     get: {
       tags: ['Menu'],
@@ -3072,6 +3118,190 @@ const paths = {
       security: staff,
       responses: {
         200: { description: 'Sections in menu order.', content: { 'application/json': { schema: ref('MenuCategoryList') } } },
+        ...commonErrors
+      }
+    },
+    post: {
+      tags: ['Menu'],
+      summary: 'Create a menu section',
+      description: [
+        'OWNER and MANAGER.',
+        '',
+        'Until this existed the only way to get a section was an OCR import inventing them from the',
+        'headings it read off a photograph — fine for a first menu, no use afterwards. A restaurant',
+        'adding a dessert list had nowhere to say so.',
+        '',
+        'Omitting `position` files the section at the end of the menu, which is worked out here.',
+        'Defaulting it to 0 instead would put every new section first and let the name tie-break',
+        'decide the order.',
+        '',
+        'Names are unique per restaurant, and the collision is caught on the insert rather than',
+        'pre-checked: SELECT-then-INSERT is a race, and two managers adding "Postres" at the same',
+        'moment would both pass the check.'
+      ].join('\n'),
+      security: staff,
+      requestBody: {
+        required: true,
+        content: { 'application/json': { schema: {
+          type: 'object',
+          required: ['name'],
+          properties: {
+            name: { type: 'string', minLength: 1, maxLength: 80 },
+            position: { type: 'integer', minimum: 0, maximum: 9999, description: 'Omit for the end of the menu.' },
+            active: { type: 'boolean', default: true }
+          }
+        } } }
+      },
+      responses: {
+        201: { description: 'Created.', content: { 'application/json': { schema: ref('MenuCategory') } } },
+        409: { description: 'A section with that name already exists.', content: { 'application/json': { schema: ref('Error') } } },
+        ...commonErrors
+      }
+    }
+  },
+
+  '/api/v1/menu/categories/order': {
+    put: {
+      tags: ['Menu'],
+      summary: 'Reorder the menu sections',
+      description: [
+        'OWNER and MANAGER. The array *is* the order: `position` becomes the index.',
+        '',
+        'The whole order at once rather than one move at a time. Sending positions individually',
+        'makes every intermediate state a state somebody could read — two sections both claiming',
+        'position 3 while the next request is in flight — and a dropped request would leave the menu',
+        'in one permanently.',
+        '',
+        'Applied inside a transaction. The statement matches only this restaurant\'s rows, so a list',
+        'padded with another tenant\'s ids would reorder the rest and *then* fail; rolling back is',
+        'what makes the 404 mean nothing happened.'
+      ].join('\n'),
+      security: staff,
+      requestBody: {
+        required: true,
+        content: { 'application/json': { schema: {
+          type: 'object',
+          required: ['ids'],
+          properties: {
+            ids: {
+              type: 'array', minItems: 1, maxItems: 200, uniqueItems: true,
+              items: { type: 'string', format: 'uuid' },
+              description: 'Every section, in the order they should appear.'
+            }
+          }
+        } } }
+      },
+      responses: {
+        204: { description: 'Reordered.' },
+        404: { description: 'One or more sections do not exist. Nothing was changed.', content: { 'application/json': { schema: ref('Error') } } },
+        ...commonErrors
+      }
+    }
+  },
+
+  '/api/v1/menu/categories/{id}': {
+    parameters: [{ name: 'id', in: 'path', required: true, schema: { type: 'string', format: 'uuid' } }],
+    patch: {
+      tags: ['Menu'],
+      summary: 'Rename, move or deactivate a section',
+      description: [
+        'OWNER and MANAGER. At least one field.',
+        '',
+        '`active: false` takes the whole section off the public menu with its products intact — the',
+        'kitchen ran out of fish and the pescados block goes dark for the evening.'
+      ].join('\n'),
+      security: staff,
+      requestBody: {
+        required: true,
+        content: { 'application/json': { schema: {
+          type: 'object',
+          minProperties: 1,
+          properties: {
+            name: { type: 'string', minLength: 1, maxLength: 80 },
+            position: { type: 'integer', minimum: 0, maximum: 9999 },
+            active: { type: 'boolean' }
+          }
+        } } }
+      },
+      responses: {
+        200: { description: 'Updated.', content: { 'application/json': { schema: ref('MenuCategory') } } },
+        404: { description: 'No such section for this restaurant.', content: { 'application/json': { schema: ref('Error') } } },
+        409: { description: 'A section with that name already exists.', content: { 'application/json': { schema: ref('Error') } } },
+        ...commonErrors
+      }
+    },
+    delete: {
+      tags: ['Menu'],
+      summary: 'Delete a menu section',
+      description: [
+        'OWNER and MANAGER.',
+        '',
+        '**Deleting a section does not delete its food.** The foreign key is',
+        '`ON DELETE SET NULL (category_id)`, so its products fall back into the uncategorised bucket,',
+        'still active and still sellable. Taking the dishes with the heading would be a way to lose a',
+        'menu by tidying it.'
+      ].join('\n'),
+      security: staff,
+      responses: {
+        204: { description: 'Deleted. Its products are now uncategorised.' },
+        404: { description: 'No such section for this restaurant.', content: { 'application/json': { schema: ref('Error') } } },
+        ...commonErrors
+      }
+    }
+  },
+
+  '/api/v1/menu/pdf': {
+    get: {
+      tags: ['Menu'],
+      summary: 'The uploaded menu file, described',
+      description: 'Any authenticated staff role. Metadata only — the panel needs to describe the file, not download it.',
+      security: staff,
+      responses: {
+        200: { description: 'The stored file.', content: { 'application/json': { schema: ref('MenuDocument') } } },
+        404: { description: 'Nothing uploaded.', content: { 'application/json': { schema: ref('Error') } } },
+        ...commonErrors
+      }
+    },
+    put: {
+      tags: ['Menu'],
+      summary: 'Upload the menu file shown to diners',
+      description: [
+        'OWNER and MANAGER. `multipart/form-data`, field `file`.',
+        '',
+        'Distinct from `/menu/ocr-extract`, which reads a menu in order to throw the file away and',
+        'keep the prices. This keeps the file and shows it: a restaurant whose menu is a designed PDF',
+        'gets something in front of a diner immediately, before anybody has typed in a price.',
+        '',
+        'It does not replace `menu_products`. A bill is built from priced rows, and nothing here can',
+        'be added to one — the PDF is for reading.',
+        '',
+        'An upload replaces whatever was there; there is one file per restaurant. The bytes are',
+        'checked for the `%PDF-` header as well as the declared type, which mostly catches somebody',
+        'uploading a photo of the menu to the wrong route and says so plainly.'
+      ].join('\n'),
+      security: staff,
+      requestBody: {
+        required: true,
+        content: { 'multipart/form-data': { schema: {
+          type: 'object',
+          required: ['file'],
+          properties: { file: { type: 'string', format: 'binary', description: 'A PDF, up to MENU_PDF_MAX_UPLOAD_BYTES (20 MB by default).' } }
+        } } }
+      },
+      responses: {
+        200: { description: 'Stored.', content: { 'application/json': { schema: ref('MenuDocument') } } },
+        400: { description: 'Not a PDF, no file, or too large.', content: { 'application/json': { schema: ref('Error') } } },
+        ...commonErrors
+      }
+    },
+    delete: {
+      tags: ['Menu'],
+      summary: 'Remove the uploaded menu file',
+      description: 'OWNER and MANAGER. The structured menu is untouched.',
+      security: staff,
+      responses: {
+        204: { description: 'Removed.' },
+        404: { description: 'Nothing uploaded.', content: { 'application/json': { schema: ref('Error') } } },
         ...commonErrors
       }
     }

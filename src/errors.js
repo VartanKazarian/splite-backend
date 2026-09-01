@@ -39,6 +39,9 @@ const CODES = {
   // it again, or photograph the page -- so it is a 400, not a server fault.
   MENU_OCR_PDF_UNREADABLE: 400,
   MENU_OCR_FILE_TOO_LARGE: 400,
+  MENU_PDF_UNSUPPORTED_MEDIA: 400,
+  MENU_PDF_FILE_REQUIRED: 400,
+  MENU_PDF_FILE_TOO_LARGE: 400,
   SPLIT_PARTICIPANTS_INVALID: 400,
   SPLIT_CLAIMS_INCOMPLETE: 400,
   SPLIT_CLAIM_UNKNOWN: 400,
@@ -81,6 +84,8 @@ const CODES = {
   BILL_ITEM_NOT_FOUND: 404,
   TABLE_NOT_FOUND: 404,
   PRODUCT_NOT_FOUND: 404,
+  CATEGORY_NOT_FOUND: 404,
+  MENU_PDF_NOT_FOUND: 404,
   RESTAURANT_NOT_FOUND: 404,
   OPEN_BILL_NOT_FOUND: 404,
   PAYMENT_CLAIM_NOT_FOUND: 404,
@@ -114,6 +119,7 @@ const CODES = {
   TABLE_NAME_TAKEN: 409,
   PRODUCT_NAME_TAKEN: 409,
   MENU_CURRENCY_MISMATCH: 409,
+  CATEGORY_NAME_TAKEN: 409,
   WEBHOOK_ALREADY_PROCESSED: 409,
   // Raised only when a *verified* signup loses a race to an identical one --
   // never by the public registration endpoint, which must not reveal whether an
@@ -238,6 +244,9 @@ const DETAILS = {
   SPLIT_STALE: { billTotalVes: 'string -- what the bill now totals, which the split no longer covers' },
   MENU_OCR_UNSUPPORTED_MEDIA: { contentType: 'string -- what was uploaded' },
   MENU_OCR_FILE_TOO_LARGE: { maxBytes: 'integer -- the upload ceiling' },
+  MENU_PDF_FILE_TOO_LARGE: { maxBytes: 'integer -- the upload ceiling' },
+  MENU_PDF_UNSUPPORTED_MEDIA: { contentType: 'string -- what was uploaded' },
+  CATEGORY_NAME_TAKEN: { name: 'string -- the section that already exists' },
   MENU_OCR_UNAVAILABLE: { retryAfterSeconds: 'integer -- how long to wait before retrying' },
   SPLIT_SHARE_OVERPAID: { shareRemainingVes: 'string -- minor units still owed on that share' },
   PAYMENT_PROVIDER_MISCONFIGURED: { provider: 'string -- the rail that is configured but not usable' },
