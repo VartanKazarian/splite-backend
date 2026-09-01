@@ -110,16 +110,16 @@ describe('menu sections and the uploaded menu', { skip }, () => {
     const res = await api('PUT', '/api/v1/menu/categories/order', { body: { ids: [...ids].reverse() } });
     assert.equal(res.status, 204);
 
-    const after = await api('GET', '/api/v1/menu/categories');
-    assert.deepEqual(after.body.data.map(c => c.position), [0, 1]);
-    assert.deepEqual(after.body.data.map(c => c.id), [...ids].reverse());
+    const reordered = await api('GET', '/api/v1/menu/categories');
+    assert.deepEqual(reordered.body.data.map(c => c.position), [0, 1]);
+    assert.deepEqual(reordered.body.data.map(c => c.id), [...ids].reverse());
   });
 
   it('rolls a partial reorder back rather than half applying it', async () => {
     // The UPDATE matches only this tenant's rows, so without the transaction
     // the real ids would be reordered and the request answered 404 anyway.
-    const before = await api('GET', '/api/v1/menu/categories');
-    const ids = before.body.data.map(c => c.id);
+    const original = await api('GET', '/api/v1/menu/categories');
+    const ids = original.body.data.map(c => c.id);
 
     const res = await api('PUT', '/api/v1/menu/categories/order', {
       body: { ids: [ids[1], ids[0], '11111111-2222-4333-8444-555555555555'] }
@@ -127,8 +127,8 @@ describe('menu sections and the uploaded menu', { skip }, () => {
     assert.equal(res.status, 404);
     assert.equal(res.body.error.code, 'CATEGORY_NOT_FOUND');
 
-    const after = await api('GET', '/api/v1/menu/categories');
-    assert.deepEqual(after.body.data.map(c => c.id), ids, 'nothing may have moved');
+    const unchanged = await api('GET', '/api/v1/menu/categories');
+    assert.deepEqual(unchanged.body.data.map(c => c.id), ids, 'nothing may have moved');
   });
 
   it('will not rename another restaurant\'s section', async () => {
