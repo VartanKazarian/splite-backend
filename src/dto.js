@@ -335,6 +335,26 @@ function qrContext(row, { hasOpenBill }) {
   };
 }
 
+/**
+ * The uploaded menu file, described rather than sent.
+ *
+ * No bytes: every caller of this either lists the file or decides whether to
+ * fetch it, and a DTO that could accidentally serialise a 20 MB buffer into a
+ * JSON body is a DTO that eventually will. The file itself has its own route.
+ *
+ * `url` is the public path, so a client does not assemble it from the id and
+ * get it subtly wrong.
+ */
+function menuDocument(row) {
+  return {
+    filename: row.filename,
+    contentType: row.content_type,
+    sizeBytes: Number(row.size_bytes),
+    updatedAt: row.updated_at,
+    url: `/api/v1/menu/public/${row.restaurant_id}/pdf`
+  };
+}
+
 function menuCategory(row) {
   return {
     id: row.id,
@@ -600,5 +620,5 @@ function staffMember(row) {
 module.exports = {
   isoDate, isoTimestamp, staffMember,
   bill, billItem, billWithItems, guestBill,
-  table, floorTable, product, publicProduct, menuCategory, qrContext, menuSettings, menuCharges, account, payout, guestPayee, paymentProviderConfig, paymentClaim, staffPaymentClaim, c2pCharge, billSplit
+  table, floorTable, product, publicProduct, menuCategory, menuDocument, qrContext, menuSettings, menuCharges, account, payout, guestPayee, paymentProviderConfig, paymentClaim, staffPaymentClaim, c2pCharge, billSplit
 };

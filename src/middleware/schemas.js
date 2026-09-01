@@ -618,6 +618,35 @@ const updateProductSchema = Joi.object({
   active: Joi.boolean()
 }).min(1);
 
+const createCategorySchema = Joi.object({
+  name: Joi.string().trim().min(1).max(80).required(),
+  // Where it sits on the menu. Omitted means "at the end", which the route
+  // works out -- a client adding a section should not have to know how many
+  // there already are.
+  position: Joi.number().integer().min(0).max(9999),
+  active: Joi.boolean().default(true)
+});
+
+const updateCategorySchema = Joi.object({
+  name: Joi.string().trim().min(1).max(80),
+  position: Joi.number().integer().min(0).max(9999),
+  // Off the menu without deleting it: the kitchen has run out of fish, and the
+  // pescados block goes dark for the evening with its products intact.
+  active: Joi.boolean()
+}).min(1);
+
+/**
+ * A drag-and-drop reorder, as the whole new order rather than one move.
+ *
+ * Sending positions one at a time makes every intermediate state a real state
+ * somebody could read -- two sections claiming position 3 while the second
+ * request is in flight. The list is applied in one statement, and the order of
+ * the array *is* the order of the menu.
+ */
+const reorderCategoriesSchema = Joi.object({
+  ids: Joi.array().items(uuid.required()).min(1).max(200).unique().required()
+});
+
 const listProductsQuerySchema = Joi.object({
   ...paginationKeys,
   active: Joi.boolean(),
@@ -631,6 +660,7 @@ const billIdParamSchema = Joi.object({ id: uuid.required() });
 const splitIdParamSchema = Joi.object({ id: uuid.required(), splitId: uuid.required() });
 const tableIdParamSchema = Joi.object({ tableId: uuid.required() });
 const productIdParamSchema = Joi.object({ id: uuid.required() });
+const categoryIdParamSchema = Joi.object({ id: uuid.required() });
 const restaurantIdParamSchema = Joi.object({ restaurantId: uuid.required() });
 
 function validate(schema, property) {
@@ -707,6 +737,10 @@ module.exports = {
   updateProductSchema,
   listProductsQuerySchema,
   productIdParamSchema,
+  createCategorySchema,
+  updateCategorySchema,
+  reorderCategoriesSchema,
+  categoryIdParamSchema,
   restaurantIdParamSchema,
   billIdParamSchema,
   splitIdParamSchema,

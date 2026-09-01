@@ -451,6 +451,18 @@ module.exports = {
     maxPdfPages: integer('MENU_OCR_MAX_PDF_PAGES', 6),
     pdfTimeoutMs: integer('MENU_OCR_PDF_TIMEOUT_MS', 20000)
   },
+  /**
+   * The menu a restaurant uploads to show diners as-is.
+   *
+   * A larger ceiling than the OCR upload, and for the opposite reason: that one
+   * is bounded by what a vision model should be asked to read, this one by what
+   * a diner on mobile data should be asked to download. A designed menu with
+   * photographs runs to a few megabytes; 20 is generous and still refuses a
+   * mistake.
+   */
+  menuPdf: {
+    maxUploadBytes: integer('MENU_PDF_MAX_UPLOAD_BYTES', 20 * 1024 * 1024)
+  },
   reconcile: {
     /**
      * How long a C2P charge may sit unresolved before the reconciler mentions

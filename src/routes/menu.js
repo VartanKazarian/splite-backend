@@ -13,7 +13,11 @@ const {
   listProductsQuerySchema,
   productIdParamSchema,
   restaurantIdParamSchema,
-  menuOcrImportSchema
+  menuOcrImportSchema,
+  createCategorySchema,
+  updateCategorySchema,
+  reorderCategoriesSchema,
+  categoryIdParamSchema
 } = require('../middleware/schemas');
 const { logAudit, auditContext } = require('../services/audit');
 const dto = require('../dto');
@@ -35,6 +39,34 @@ const upload = multer({
   storage: multer.memoryStorage(),
   limits: { fileSize: config.menuOcr.maxUploadBytes, files: 1 }
 });
+
+/**
+ * The uploaded menu, which is a different kind of file from the OCR one.
+ *
+ * Its own limit because the two are bounded by different things: what a vision
+ * model should be asked to read, against what a diner on mobile data should be
+ * asked to download.
+ */
+const pdfUpload = multer({
+  storage: multer.memoryStorage(),
+  limits: { fileSize: config.menuPdf.maxUploadBytes, files: 1 }
+});
+
+/**
+ * Multer's own rejections, translated.
+ *
+ * Left alone they surface as a 500 on a request whose only fault is an
+ * oversized file, and the caller is told nothing it can act on.
+ */
+function handleUpload(handler, tooLargeCode, maxBytes) {
+  return (req, res, next) => handler(req, res, err => {
+    if (err && err.code === 'LIMIT_FILE_SIZE') {
+      return next(new ApiError(tooLargeCode, 'File is too large', { maxBytes }));
+    }
+    if (err) return next(err);
+    return next();
+  });
+}
 
 const router = express.Router();
 
@@ -77,6 +109,50 @@ const withCategoryName = inner => `
  * endpoint here that must not require a token: a guest scanning a table QR has
  * no staff credentials.
  */
+/**
+ * The uploaded menu, to a diner who scanned the table QR.
+ *
+ * Unauthenticated, like the products route beside it and for the same reason.
+ * What it serves is a file the restaurant chose to publish; there is nothing in
+ * it that staff credentials would gate.
+ *
+ * Inline rather than as an attachment: a phone should open it, not download it.
+ * The filename is still sent so a diner who does save it gets the restaurant's
+ * own name for it rather than a uuid.
+ */
+router.get(
+  '/public/:restaurantId/pdf',
+  validateParams(restaurantIdParamSchema),
+  rateLimit({ windowSeconds: 60, max: 60, keyPrefix: 'menu:pdfpub' }),
+  async (req, res, next) => {
+    try {
+      const { rows } = await db.query(
+        `SELECT d.bytes, d.content_type, d.filename, d.size_bytes, d.updated_at
+           FROM menu_documents d
+           JOIN restaurants r ON r.id = d.restaurant_id
+          WHERE d.restaurant_id = $1 AND r.active = true`,
+        [req.params.restaurantId]
+      );
+      const doc = rows[0];
+      if (!doc) throw new ApiError('MENU_PDF_NOT_FOUND', 'No menu file uploaded');
+
+      res.set({
+        'Content-Type': doc.content_type,
+        'Content-Length': String(doc.size_bytes),
+        // A menu changes rarely and is fetched by every diner in the room.
+        // Revalidated against the upload time so a corrected menu still lands.
+        'Cache-Control': 'public, max-age=300',
+        'Last-Modified': new Date(doc.updated_at).toUTCString(),
+        // Stops a stored file from being interpreted as anything but what it
+        // says it is, and keeps it out of a frame on another origin.
+        'X-Content-Type-Options': 'nosniff',
+        'Content-Disposition': `inline; filename="${doc.filename.replace(/["\\]/g, '')}"`
+      });
+      res.send(doc.bytes);
+    } catch (err) { next(err); }
+  }
+);
+
 router.get(
   '/public/:restaurantId/products',
   validateParams(restaurantIdParamSchema),
@@ -111,8 +187,19 @@ router.get(
         [req.params.restaurantId]
       );
 
+      // Whether there is a file to offer, and how big it is, without reading
+      // the bytes: a client decides between embedding it and linking to it, and
+      // a menu that is only a PDF still has something to show when `products`
+      // comes back empty.
+      const document = await db.query(
+        `SELECT restaurant_id, content_type, filename, size_bytes, updated_at
+           FROM menu_documents WHERE restaurant_id = $1`,
+        [req.params.restaurantId]
+      );
+
       res.json({
         restaurant: dto.menuSettings(restaurant.rows[0]),
+        menuPdf: document.rows[0] ? dto.menuDocument(document.rows[0]) : null,
         // Sent alongside rather than nested, so a client can render the section
         // headers in order -- including an empty one -- without inferring the
         // order from whichever products happened to come back.
@@ -285,6 +372,304 @@ router.get('/categories', async (req, res, next) => {
       data: rows.map(dto.menuCategory),
       uncategorisedCount: Number(loose.rows[0].product_count)
     });
+  } catch (err) { next(err); }
+});
+
+/**
+ * Sections a restaurant maintains by hand.
+ *
+ * Until now the only way to get one was an OCR import inventing them from the
+ * headings it read off a photograph, which is fine for the first menu and no
+ * use at all afterwards: a restaurant that adds a dessert list, renames
+ * "Bebidas" to "Para beber", or wants the drinks to stop appearing first had
+ * nowhere to say so.
+ *
+ * Every route below is tenant-scoped in its WHERE clause rather than trusting
+ * the id it was handed. The composite foreign key on menu_products makes a
+ * cross-tenant *assignment* impossible, but nothing stops a caller naming
+ * another restaurant's category id here, and a rename is a write.
+ */
+router.post(
+  '/categories',
+  requireRole('OWNER', 'MANAGER'),
+  validateBody(createCategorySchema),
+  async (req, res, next) => {
+    try {
+      // Omitted position means the end of the menu. Computed here rather than
+      // defaulted to 0 in the schema, which would silently file every new
+      // section first and make the order depend on the name tie-break.
+      let position = req.body.position;
+      if (position === undefined) {
+        const { rows } = await db.query(
+          'SELECT COALESCE(MAX(position), -1) + 1 AS next FROM menu_categories WHERE restaurant_id = $1',
+          [req.user.restaurantId]
+        );
+        position = Number(rows[0].next);
+      }
+
+      let created;
+      try {
+        const { rows } = await db.query(
+          `INSERT INTO menu_categories (restaurant_id, name, position, active)
+           VALUES ($1, $2, $3, $4)
+           RETURNING id, name, position, active`,
+          [req.user.restaurantId, req.body.name, position, req.body.active]
+        );
+        created = rows[0];
+      } catch (err) {
+        // UNIQUE (restaurant_id, name). Caught rather than pre-checked: a
+        // SELECT then INSERT is a race, and two managers adding "Postres" at
+        // once would both pass the check.
+        if (err.code === '23505') {
+          throw new ApiError('CATEGORY_NAME_TAKEN', 'A section with that name already exists', {
+            name: req.body.name
+          });
+        }
+        throw err;
+      }
+
+      await logAudit({
+        ...auditContext(req),
+        action: 'MENU_CATEGORY_CREATED',
+        resourceType: 'menu_category',
+        resourceId: created.id
+      });
+
+      res.status(201).json(dto.menuCategory(created));
+    } catch (err) { next(err); }
+  }
+);
+
+router.patch(
+  '/categories/:id',
+  requireRole('OWNER', 'MANAGER'),
+  validateParams(categoryIdParamSchema),
+  validateBody(updateCategorySchema),
+  async (req, res, next) => {
+    try {
+      let updated;
+      try {
+        const { rows } = await db.query(
+          `UPDATE menu_categories
+              SET name = COALESCE($3, name),
+                  position = COALESCE($4, position),
+                  active = COALESCE($5, active)
+            WHERE id = $1 AND restaurant_id = $2
+            RETURNING id, name, position, active`,
+          [
+            req.params.id, req.user.restaurantId,
+            req.body.name ?? null,
+            req.body.position ?? null,
+            // COALESCE works for `active` because the schema has no null: the
+            // field is either a boolean or absent.
+            req.body.active === undefined ? null : req.body.active
+          ]
+        );
+        updated = rows[0];
+      } catch (err) {
+        if (err.code === '23505') {
+          throw new ApiError('CATEGORY_NAME_TAKEN', 'A section with that name already exists', {
+            name: req.body.name
+          });
+        }
+        throw err;
+      }
+      if (!updated) throw new ApiError('CATEGORY_NOT_FOUND', 'Section not found');
+
+      await logAudit({
+        ...auditContext(req),
+        action: 'MENU_CATEGORY_UPDATED',
+        resourceType: 'menu_category',
+        resourceId: updated.id
+      });
+
+      res.json(dto.menuCategory(updated));
+    } catch (err) { next(err); }
+  }
+);
+
+/**
+ * The whole order at once.
+ *
+ * A drag-and-drop sends the list it ended up with, and it is applied in one
+ * statement: position becomes the index in the array. Doing it as N separate
+ * PATCHes would make every half-applied ordering a state a concurrent reader
+ * could see, and a dropped request would leave the menu in it permanently.
+ *
+ * Ids belonging to another restaurant simply do not match the WHERE clause, so
+ * a list padded with somebody else's sections reorders nothing of theirs. The
+ * count is compared afterwards so the caller is told rather than left guessing.
+ */
+router.put(
+  '/categories/order',
+  requireRole('OWNER', 'MANAGER'),
+  validateBody(reorderCategoriesSchema),
+  async (req, res, next) => {
+    try {
+      // In a transaction, because the check is part of the write. The UPDATE
+      // matches only this tenant's rows, so a list padded with somebody else's
+      // ids reorders the rest and *then* fails -- leaving the menu half
+      // reordered by a request that was answered 404. Rolling back makes the
+      // refusal mean what it says.
+      await db.withTransaction(async client => {
+        const { rows } = await client.query(
+          `UPDATE menu_categories AS c
+              SET position = o.ordinality - 1
+             FROM unnest($2::uuid[]) WITH ORDINALITY AS o(id, ordinality)
+            WHERE c.id = o.id AND c.restaurant_id = $1
+            RETURNING c.id`,
+          [req.user.restaurantId, req.body.ids]
+        );
+
+        if (rows.length !== req.body.ids.length) {
+          throw new ApiError('CATEGORY_NOT_FOUND', 'One or more sections do not exist');
+        }
+      });
+
+      await logAudit({
+        ...auditContext(req),
+        action: 'MENU_CATEGORIES_REORDERED',
+        resourceType: 'menu_category',
+        resourceId: null
+      });
+
+      res.status(204).end();
+    } catch (err) { next(err); }
+  }
+);
+
+/**
+ * Deleting a section does not delete its food.
+ *
+ * The foreign key is ON DELETE SET NULL (category_id), so the products fall
+ * back into the uncategorised bucket, still active and still sellable. That is
+ * the behaviour a restaurant expects from removing a heading, and the
+ * alternative -- taking the dishes with it -- would be a way to lose a menu by
+ * tidying it.
+ */
+router.delete(
+  '/categories/:id',
+  requireRole('OWNER', 'MANAGER'),
+  validateParams(categoryIdParamSchema),
+  async (req, res, next) => {
+    try {
+      const { rows } = await db.query(
+        'DELETE FROM menu_categories WHERE id = $1 AND restaurant_id = $2 RETURNING id',
+        [req.params.id, req.user.restaurantId]
+      );
+      if (!rows.length) throw new ApiError('CATEGORY_NOT_FOUND', 'Section not found');
+
+      await logAudit({
+        ...auditContext(req),
+        action: 'MENU_CATEGORY_DELETED',
+        resourceType: 'menu_category',
+        resourceId: req.params.id
+      });
+
+      res.status(204).end();
+    } catch (err) { next(err); }
+  }
+);
+
+/**
+ * The restaurant's own menu file, kept as-is.
+ *
+ * Distinct from `/ocr-extract`, which reads a menu in order to throw the file
+ * away and keep the prices. This one keeps the file and shows it: a restaurant
+ * whose menu is a designed PDF gets something in front of a diner immediately,
+ * without anybody transcribing it first.
+ *
+ * It does not replace `menu_products`. A bill is built from priced rows, and
+ * nothing here can be added to one -- the PDF is for reading.
+ */
+const PDF_MEDIA = 'application/pdf';
+
+/** Metadata only. The bytes are large and the panel only needs to describe them. */
+router.get('/pdf', async (req, res, next) => {
+  try {
+    const { rows } = await db.query(
+      `SELECT restaurant_id, content_type, filename, size_bytes, updated_at
+         FROM menu_documents WHERE restaurant_id = $1`,
+      [req.user.restaurantId]
+    );
+    if (!rows.length) throw new ApiError('MENU_PDF_NOT_FOUND', 'No menu file uploaded');
+    res.json(dto.menuDocument(rows[0]));
+  } catch (err) { next(err); }
+});
+
+router.put(
+  '/pdf',
+  requireRole('OWNER', 'MANAGER'),
+  rateLimit({ windowSeconds: 300, max: 20, keyPrefix: 'menu:pdf' }),
+  handleUpload(
+    pdfUpload.single('file'), 'MENU_PDF_FILE_TOO_LARGE', config.menuPdf.maxUploadBytes
+  ),
+  async (req, res, next) => {
+    try {
+      if (!req.file) throw new ApiError('MENU_PDF_FILE_REQUIRED', 'A file is required');
+
+      // The declared type is a claim by the client, so the bytes are checked
+      // too: every PDF begins %PDF-. This is not a security boundary -- the
+      // file is served back with its own Content-Type and never executed -- but
+      // it catches the common mistake of uploading a photo of the menu here
+      // rather than to the OCR route, and says so plainly.
+      const declared = String(req.file.mimetype || '').split(';')[0].trim().toLowerCase();
+      const looksPdf = req.file.buffer.subarray(0, 5).toString('latin1') === '%PDF-';
+      if (declared !== PDF_MEDIA || !looksPdf) {
+        throw new ApiError('MENU_PDF_UNSUPPORTED_MEDIA', 'Only PDF files are accepted', {
+          contentType: declared || 'unknown'
+        });
+      }
+
+      const { rows } = await db.query(
+        `INSERT INTO menu_documents (restaurant_id, bytes, content_type, filename, size_bytes)
+         VALUES ($1, $2, $3, $4, $5)
+         ON CONFLICT (restaurant_id) DO UPDATE
+           SET bytes = EXCLUDED.bytes,
+               content_type = EXCLUDED.content_type,
+               filename = EXCLUDED.filename,
+               size_bytes = EXCLUDED.size_bytes
+         RETURNING restaurant_id, content_type, filename, size_bytes, updated_at`,
+        [
+          req.user.restaurantId,
+          req.file.buffer,
+          PDF_MEDIA,
+          // A filename from a stranger, used only as a label and as the
+          // download name. Stripped to its basename so nothing resembling a
+          // path survives, and bounded so it cannot be a payload.
+          String(req.file.originalname || 'carta.pdf').replace(/^.*[\\/]/, '').slice(0, 160),
+          req.file.size
+        ]
+      );
+
+      await logAudit({
+        ...auditContext(req),
+        action: 'MENU_PDF_UPLOADED',
+        resourceType: 'menu_document',
+        resourceId: req.user.restaurantId
+      });
+
+      res.json(dto.menuDocument(rows[0]));
+    } catch (err) { next(err); }
+  }
+);
+
+router.delete('/pdf', requireRole('OWNER', 'MANAGER'), async (req, res, next) => {
+  try {
+    const { rows } = await db.query(
+      'DELETE FROM menu_documents WHERE restaurant_id = $1 RETURNING restaurant_id',
+      [req.user.restaurantId]
+    );
+    if (!rows.length) throw new ApiError('MENU_PDF_NOT_FOUND', 'No menu file uploaded');
+
+    await logAudit({
+      ...auditContext(req),
+      action: 'MENU_PDF_DELETED',
+      resourceType: 'menu_document',
+      resourceId: req.user.restaurantId
+    });
+
+    res.status(204).end();
   } catch (err) { next(err); }
 });
 

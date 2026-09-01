@@ -984,6 +984,83 @@ answers 400 `MENU_OCR_PDF_UNREADABLE` rather than failing obscurely. The
 integration test for that path skips when the binary is absent, so a developer
 without poppler sees a skip rather than a spurious failure.
 
+## Menu sections
+
+A menu is not a list. It runs starters, mains, desserts, and a text column can
+only sort alphabetically — Bebidas, Entradas, Postres, Principales — which is
+wrong everywhere and cannot be corrected. So sections are rows, with a
+`position`, and the order belongs to the section rather than being repeated on
+every product in it.
+
+```
+POST   /api/v1/menu/categories        create, at the end unless told otherwise
+PATCH  /api/v1/menu/categories/{id}   rename, move, or take off the menu
+PUT    /api/v1/menu/categories/order  the whole new order, as an array of ids
+DELETE /api/v1/menu/categories/{id}   remove the heading, keep the food
+GET    /api/v1/menu/categories        with a count per section, and the loose ones
+```
+
+An OCR import creates sections from the headings it read, in first-appearance
+order, which is the printed order — the reader walks the page top to bottom.
+That is right for a first menu and no use afterwards, which is what these are
+for.
+
+**Reordering sends the whole order, not one move.** The array *is* the order:
+`position` becomes the index. One PATCH per section would make every
+intermediate state a state somebody could read — two sections both claiming
+position 3 while the next request is in flight — and a dropped request would
+leave the menu in one permanently. It runs in a transaction, because the
+statement matches only the caller's own rows: a list padded with another
+tenant's ids would reorder the rest and *then* fail, so rolling back is what
+makes the 404 mean nothing happened.
+
+**Deleting a section does not delete its food.** The foreign key is `ON DELETE
+SET NULL (category_id)` — naming the column, because the unqualified form on a
+composite key would blank `restaurant_id` too and take the tenant off the
+product. Its dishes fall back to uncategorised, still active and still
+sellable. Taking them with the heading would be a way to lose a menu by tidying
+it.
+
+`active: false` is the other removal: the whole section goes off the public menu
+with its products intact, because the kitchen ran out of fish.
+
+## The menu as a file
+
+Not every restaurant wants to transcribe a menu. Plenty have a PDF their
+designer sent them that changes twice a year, and asking them to type it in
+before Splite shows a diner anything is asking for the wrong thing first.
+
+```
+PUT    /api/v1/menu/pdf                       upload (multipart, field `file`)
+GET    /api/v1/menu/pdf                       what is stored, described
+DELETE /api/v1/menu/pdf                       remove it
+GET    /api/v1/menu/public/{restaurantId}/pdf the diner's copy, unauthenticated
+```
+
+One file per restaurant — the primary key is the tenant, so replacing the menu
+is an upsert rather than a second row and a rule about which one wins.
+
+**This is not the OCR route.** `/menu/ocr-extract` reads a menu in order to
+throw the file away and keep the prices; this keeps the file and shows it. A
+bill is still built from priced rows in `menu_products`, and nothing uploaded
+here can be added to one. The PDF is for reading.
+
+The bytes live in Postgres, in a table of their own rather than columns on
+`restaurants`: a `bytea` on the restaurant row travels with every query that
+forgets to name its columns, and that row is read on nearly every request. A
+`CHECK` keeps `size_bytes` equal to `octet_length(bytes)`, so a listing can
+report the size without reading the file.
+
+Uploads are checked for the `%PDF-` header as well as the declared content type.
+That is not a security boundary — the file is served back as what it says it is,
+with `nosniff`, and never executed — but it catches somebody uploading a
+photograph of their menu to the wrong route, and says so.
+
+`GET /menu/public/{restaurantId}/products` carries `menuPdf` (or `null`)
+alongside the products, so a client can decide between embedding and linking,
+and a menu that is *only* a PDF still has something to show when `products`
+comes back empty.
+
 ## Charges: IVA and servicio
 
 A bill total is not just the sum of its lines. Both charges are configured per

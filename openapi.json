@@ -63,6 +63,15 @@
       "MENU_OCR_FILE_TOO_LARGE": {
         "maxBytes": "integer -- the upload ceiling"
       },
+      "MENU_PDF_FILE_TOO_LARGE": {
+        "maxBytes": "integer -- the upload ceiling"
+      },
+      "MENU_PDF_UNSUPPORTED_MEDIA": {
+        "contentType": "string -- what was uploaded"
+      },
+      "CATEGORY_NAME_TAKEN": {
+        "name": "string -- the section that already exists"
+      },
       "MENU_OCR_UNAVAILABLE": {
         "retryAfterSeconds": "integer -- how long to wait before retrying"
       },
@@ -312,6 +321,9 @@
                   "MENU_OCR_FILE_REQUIRED",
                   "MENU_OCR_PDF_UNREADABLE",
                   "MENU_OCR_FILE_TOO_LARGE",
+                  "MENU_PDF_UNSUPPORTED_MEDIA",
+                  "MENU_PDF_FILE_REQUIRED",
+                  "MENU_PDF_FILE_TOO_LARGE",
                   "SPLIT_PARTICIPANTS_INVALID",
                   "SPLIT_CLAIMS_INCOMPLETE",
                   "SPLIT_CLAIM_UNKNOWN",
@@ -339,6 +351,8 @@
                   "BILL_ITEM_NOT_FOUND",
                   "TABLE_NOT_FOUND",
                   "PRODUCT_NOT_FOUND",
+                  "CATEGORY_NOT_FOUND",
+                  "MENU_PDF_NOT_FOUND",
                   "RESTAURANT_NOT_FOUND",
                   "OPEN_BILL_NOT_FOUND",
                   "PAYMENT_CLAIM_NOT_FOUND",
@@ -366,6 +380,7 @@
                   "TABLE_NAME_TAKEN",
                   "PRODUCT_NAME_TAKEN",
                   "MENU_CURRENCY_MISMATCH",
+                  "CATEGORY_NAME_TAKEN",
                   "WEBHOOK_ALREADY_PROCESSED",
                   "EMAIL_ALREADY_REGISTERED",
                   "RIF_ALREADY_REGISTERED",
@@ -2334,11 +2349,46 @@
           }
         }
       },
+      "MenuDocument": {
+        "type": "object",
+        "description": "The menu the restaurant uploaded, described rather than sent. No bytes: the file has its own route, and a DTO that could serialise 20 MB into a JSON body eventually would.",
+        "properties": {
+          "filename": {
+            "type": "string",
+            "description": "The restaurant's own name for the file. Basename only."
+          },
+          "contentType": {
+            "type": "string",
+            "example": "application/pdf"
+          },
+          "sizeBytes": {
+            "type": "integer",
+            "description": "Kept in step with the bytes by a CHECK, so a listing can report it without reading the file."
+          },
+          "updatedAt": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "url": {
+            "type": "string",
+            "description": "The public path the file is served from. Given rather than assembled, so a client cannot build it subtly wrong."
+          }
+        }
+      },
       "PublicMenu": {
         "type": "object",
         "properties": {
           "restaurant": {
             "$ref": "#/components/schemas/MenuSettings"
+          },
+          "menuPdf": {
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/MenuDocument"
+              }
+            ],
+            "nullable": true,
+            "description": "The uploaded menu, or null. Lets a client decide between embedding and linking, and gives a menu that is only a PDF something to show when `products` is empty."
           },
           "categories": {
             "type": "array",
@@ -6307,6 +6357,60 @@
         }
       }
     },
+    "/api/v1/menu/public/{restaurantId}/pdf": {
+      "parameters": [
+        {
+          "$ref": "#/components/parameters/RestaurantId"
+        }
+      ],
+      "get": {
+        "tags": [
+          "Menu"
+        ],
+        "summary": "The uploaded menu, to a diner",
+        "description": "Unauthenticated, like the public product list beside it and for the same reason: a diner\nscanning a table QR holds no staff credentials, and what this serves is a file the\nrestaurant chose to publish.\n\nServed `inline` so a phone opens it rather than downloading it, with the restaurant's own\nfilename so a diner who does save it gets something readable. `nosniff` is set: a stored\nfile is served as what it says it is and nothing else.",
+        "security": [],
+        "responses": {
+          "200": {
+            "description": "The file.",
+            "content": {
+              "application/pdf": {
+                "schema": {
+                  "type": "string",
+                  "format": "binary"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Malformed restaurant id.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Nothing uploaded, or no such restaurant.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "429": {
+            "$ref": "#/components/responses/TooManyRequests"
+          },
+          "500": {
+            "$ref": "#/components/responses/ServerError"
+          }
+        }
+      }
+    },
     "/api/v1/menu/public/{restaurantId}/products": {
       "get": {
         "tags": [
@@ -6683,6 +6787,426 @@
           },
           "401": {
             "$ref": "#/components/responses/Unauthorized"
+          },
+          "429": {
+            "$ref": "#/components/responses/TooManyRequests"
+          },
+          "500": {
+            "$ref": "#/components/responses/ServerError"
+          }
+        }
+      },
+      "post": {
+        "tags": [
+          "Menu"
+        ],
+        "summary": "Create a menu section",
+        "description": "OWNER and MANAGER.\n\nUntil this existed the only way to get a section was an OCR import inventing them from the\nheadings it read off a photograph — fine for a first menu, no use afterwards. A restaurant\nadding a dessert list had nowhere to say so.\n\nOmitting `position` files the section at the end of the menu, which is worked out here.\nDefaulting it to 0 instead would put every new section first and let the name tie-break\ndecide the order.\n\nNames are unique per restaurant, and the collision is caught on the insert rather than\npre-checked: SELECT-then-INSERT is a race, and two managers adding \"Postres\" at the same\nmoment would both pass the check.",
+        "security": [
+          {
+            "staffAuth": []
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "required": [
+                  "name"
+                ],
+                "properties": {
+                  "name": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 80
+                  },
+                  "position": {
+                    "type": "integer",
+                    "minimum": 0,
+                    "maximum": 9999,
+                    "description": "Omit for the end of the menu."
+                  },
+                  "active": {
+                    "type": "boolean",
+                    "default": true
+                  }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "Created.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/MenuCategory"
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "409": {
+            "description": "A section with that name already exists.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "429": {
+            "$ref": "#/components/responses/TooManyRequests"
+          },
+          "500": {
+            "$ref": "#/components/responses/ServerError"
+          }
+        }
+      }
+    },
+    "/api/v1/menu/categories/order": {
+      "put": {
+        "tags": [
+          "Menu"
+        ],
+        "summary": "Reorder the menu sections",
+        "description": "OWNER and MANAGER. The array *is* the order: `position` becomes the index.\n\nThe whole order at once rather than one move at a time. Sending positions individually\nmakes every intermediate state a state somebody could read — two sections both claiming\nposition 3 while the next request is in flight — and a dropped request would leave the menu\nin one permanently.\n\nApplied inside a transaction. The statement matches only this restaurant's rows, so a list\npadded with another tenant's ids would reorder the rest and *then* fail; rolling back is\nwhat makes the 404 mean nothing happened.",
+        "security": [
+          {
+            "staffAuth": []
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "required": [
+                  "ids"
+                ],
+                "properties": {
+                  "ids": {
+                    "type": "array",
+                    "minItems": 1,
+                    "maxItems": 200,
+                    "uniqueItems": true,
+                    "items": {
+                      "type": "string",
+                      "format": "uuid"
+                    },
+                    "description": "Every section, in the order they should appear."
+                  }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "204": {
+            "description": "Reordered."
+          },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "404": {
+            "description": "One or more sections do not exist. Nothing was changed.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "429": {
+            "$ref": "#/components/responses/TooManyRequests"
+          },
+          "500": {
+            "$ref": "#/components/responses/ServerError"
+          }
+        }
+      }
+    },
+    "/api/v1/menu/categories/{id}": {
+      "parameters": [
+        {
+          "name": "id",
+          "in": "path",
+          "required": true,
+          "schema": {
+            "type": "string",
+            "format": "uuid"
+          }
+        }
+      ],
+      "patch": {
+        "tags": [
+          "Menu"
+        ],
+        "summary": "Rename, move or deactivate a section",
+        "description": "OWNER and MANAGER. At least one field.\n\n`active: false` takes the whole section off the public menu with its products intact — the\nkitchen ran out of fish and the pescados block goes dark for the evening.",
+        "security": [
+          {
+            "staffAuth": []
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "minProperties": 1,
+                "properties": {
+                  "name": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 80
+                  },
+                  "position": {
+                    "type": "integer",
+                    "minimum": 0,
+                    "maximum": 9999
+                  },
+                  "active": {
+                    "type": "boolean"
+                  }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Updated.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/MenuCategory"
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "404": {
+            "description": "No such section for this restaurant.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "A section with that name already exists.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "429": {
+            "$ref": "#/components/responses/TooManyRequests"
+          },
+          "500": {
+            "$ref": "#/components/responses/ServerError"
+          }
+        }
+      },
+      "delete": {
+        "tags": [
+          "Menu"
+        ],
+        "summary": "Delete a menu section",
+        "description": "OWNER and MANAGER.\n\n**Deleting a section does not delete its food.** The foreign key is\n`ON DELETE SET NULL (category_id)`, so its products fall back into the uncategorised bucket,\nstill active and still sellable. Taking the dishes with the heading would be a way to lose a\nmenu by tidying it.",
+        "security": [
+          {
+            "staffAuth": []
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "Deleted. Its products are now uncategorised."
+          },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "404": {
+            "description": "No such section for this restaurant.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "429": {
+            "$ref": "#/components/responses/TooManyRequests"
+          },
+          "500": {
+            "$ref": "#/components/responses/ServerError"
+          }
+        }
+      }
+    },
+    "/api/v1/menu/pdf": {
+      "get": {
+        "tags": [
+          "Menu"
+        ],
+        "summary": "The uploaded menu file, described",
+        "description": "Any authenticated staff role. Metadata only — the panel needs to describe the file, not download it.",
+        "security": [
+          {
+            "staffAuth": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The stored file.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/MenuDocument"
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "404": {
+            "description": "Nothing uploaded.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "429": {
+            "$ref": "#/components/responses/TooManyRequests"
+          },
+          "500": {
+            "$ref": "#/components/responses/ServerError"
+          }
+        }
+      },
+      "put": {
+        "tags": [
+          "Menu"
+        ],
+        "summary": "Upload the menu file shown to diners",
+        "description": "OWNER and MANAGER. `multipart/form-data`, field `file`.\n\nDistinct from `/menu/ocr-extract`, which reads a menu in order to throw the file away and\nkeep the prices. This keeps the file and shows it: a restaurant whose menu is a designed PDF\ngets something in front of a diner immediately, before anybody has typed in a price.\n\nIt does not replace `menu_products`. A bill is built from priced rows, and nothing here can\nbe added to one — the PDF is for reading.\n\nAn upload replaces whatever was there; there is one file per restaurant. The bytes are\nchecked for the `%PDF-` header as well as the declared type, which mostly catches somebody\nuploading a photo of the menu to the wrong route and says so plainly.",
+        "security": [
+          {
+            "staffAuth": []
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "multipart/form-data": {
+              "schema": {
+                "type": "object",
+                "required": [
+                  "file"
+                ],
+                "properties": {
+                  "file": {
+                    "type": "string",
+                    "format": "binary",
+                    "description": "A PDF, up to MENU_PDF_MAX_UPLOAD_BYTES (20 MB by default)."
+                  }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Stored.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/MenuDocument"
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "429": {
+            "$ref": "#/components/responses/TooManyRequests"
+          },
+          "500": {
+            "$ref": "#/components/responses/ServerError"
+          }
+        }
+      },
+      "delete": {
+        "tags": [
+          "Menu"
+        ],
+        "summary": "Remove the uploaded menu file",
+        "description": "OWNER and MANAGER. The structured menu is untouched.",
+        "security": [
+          {
+            "staffAuth": []
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "Removed."
+          },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "404": {
+            "description": "Nothing uploaded.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
           },
           "429": {
             "$ref": "#/components/responses/TooManyRequests"
