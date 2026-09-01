@@ -460,6 +460,16 @@ module.exports = {
    * photographs runs to a few megabytes; 20 is generous and still refuses a
    * mistake.
    */
+  /**
+   * The methods a browser is allowed to preflight.
+   *
+   * Kept here rather than inline in app.js so the contract test can compare it
+   * against the spec: a route added with a verb missing from this list is
+   * reachable by curl and by the integration suite -- which sends no Origin, so
+   * CORS never engages -- and silently unreachable from the actual product.
+   * That is exactly how PUT was missed.
+   */
+  corsMethods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],
   menuPdf: {
     maxUploadBytes: integer('MENU_PDF_MAX_UPLOAD_BYTES', 20 * 1024 * 1024)
   },
