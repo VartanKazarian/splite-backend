@@ -395,3 +395,27 @@ test('a flag-gated operation is served exactly when its flag is on', () => {
     assert.ok(mounted.includes(route), `${route} is documented and ONBOARDING_ENABLED is on, but it is not mounted`);
   }
 });
+
+test('every method the API exposes can survive a browser preflight', () => {
+  // The bug this closes: PUT was not in the CORS methods list, so
+  // `PUT /menu/categories/order` and `PUT /menu/pdf` answered curl and the
+  // integration suite perfectly and were unreachable from the product. Nothing
+  // caught it, because a server-side fetch sends no Origin header and CORS
+  // never engages -- only a real browser does, and only in a real browser did
+  // it fail.
+  //
+  // Derived from the spec rather than a hand-kept list, so a route added with a
+  // new verb fails here rather than in somebody's console.
+  const verbs = new Set();
+  for (const item of Object.values(document.paths)) {
+    for (const key of Object.keys(item)) {
+      if (['get', 'put', 'post', 'delete', 'patch', 'head', 'options'].includes(key)) {
+        verbs.add(key.toUpperCase());
+      }
+    }
+  }
+
+  const allowed = new Set(config.corsMethods);
+  const missing = [...verbs].filter(v => !allowed.has(v)).sort();
+  assert.deepEqual(missing, [], `methods the API serves but a browser cannot preflight: ${missing.join(', ')}`);
+});
