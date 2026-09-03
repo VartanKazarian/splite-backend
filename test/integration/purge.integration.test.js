@@ -4,6 +4,7 @@ const crypto = require('node:crypto');
 
 const { skip } = require('./helpers/env');
 const db = require('../../src/connectors/base');
+const fixtures = require('./helpers/fixtures');
 const config = require('../../src/config');
 const { purgeAll } = require('../../src/services/purge');
 
@@ -20,8 +21,18 @@ describe('purge', { skip }, () => {
 
   const ago = days => new Date(Date.now() - days * 86400000).toISOString();
 
+  // A tenant of its own. The idempotency-key case below used to take whichever
+  // restaurant `SELECT id FROM restaurants LIMIT 1` happened to return, which
+  // is another suite's tenant: the integration files run in parallel, so that
+  // suite's `after` hook could destroy it between the SELECT and the INSERT,
+  // and the foreign key failed with 23503 on a test that had nothing to do
+  // with it. Borrowing shared state across suites is the bug; owning a row is
+  // the fix.
+  let restaurant;
+
   before(async () => {
     await db.query("DELETE FROM fx_rates WHERE base = 'XTS'");
+    restaurant = await fixtures.createRestaurant({ name: `Purge ${Date.now()}` });
   });
 
   beforeEach(async () => {
@@ -34,6 +45,8 @@ describe('purge', { skip }, () => {
     await db.query("DELETE FROM fx_rates WHERE base = 'XTS'");
     await db.query('DELETE FROM webhook_events_processed WHERE provider = $1', [marker]);
     await db.query('DELETE FROM webhook_deliveries WHERE provider = $1', [marker]);
+    if (restaurant) await db.query('DELETE FROM idempotency_keys WHERE restaurant_id = $1', [restaurant.id]);
+    await fixtures.destroyRestaurant(restaurant?.id);
     await db.close();
   });
 
@@ -109,16 +122,13 @@ describe('purge', { skip }, () => {
   });
 
   it('removes expired idempotency keys and leaves live ones', async () => {
-    const { rows: r } = await db.query('SELECT id FROM restaurants LIMIT 1');
-    if (!r.length) return; // nothing to hang a tenant-scoped row off
-
     const live = crypto.randomUUID();
     const dead = crypto.randomUUID();
     await db.query(
       `INSERT INTO idempotency_keys (restaurant_id, key, request_hash, expires_at)
        VALUES ($1, $2, repeat('a', 64), NOW() + INTERVAL '1 hour'),
               ($1, $3, repeat('b', 64), NOW() - INTERVAL '1 hour')`,
-      [r[0].id, live, dead]
+      [restaurant.id, live, dead]
     );
 
     await purgeAll();
