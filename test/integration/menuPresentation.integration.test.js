@@ -129,6 +129,13 @@ describe('what a diner sees: the restaurant name and its dish photos', { skip },
     assert.equal(got.headers.get('content-type'), 'image/png');
     assert.deepEqual(got.bytes, PNG, 'the bytes survived the round trip through bytea');
     assert.equal(got.headers.get('x-content-type-options'), 'nosniff');
+
+    // The panel and the API are different sites in every deployment we have,
+    // so the app-wide `same-site` policy has to be overridden here or the
+    // browser fetches the photo and then refuses to render it. It fails as a
+    // blocked subresource rather than an HTTP error, which is why only a real
+    // browser catches it -- this line is what stops it coming back.
+    assert.equal(got.headers.get('cross-origin-resource-policy'), 'cross-origin');
   });
 
   it('changes the URL when the photo is replaced', async () => {

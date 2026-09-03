@@ -299,6 +299,19 @@ router.get(
         'Content-Type': image.content_type,
         ETag: etag,
         'Last-Modified': new Date(image.updated_at).toUTCString(),
+        // Overrides the app-wide `same-site` from helmet, and it has to: the
+        // panel and the API are different sites in every deployment we have --
+        // splite.lovable.app against the Railway host -- so with `same-site`
+        // the browser refuses to *render* this image even though it fetched it
+        // fine. It fails as a blocked subresource, not as an HTTP error, which
+        // is why nothing but a real browser catches it: the request succeeds,
+        // the picture just never appears.
+        //
+        // Safe here in a way it would not be app-wide. This is an
+        // unauthenticated picture the restaurant chose to publish, carrying no
+        // credentials and revealing nothing a diner in the room cannot see.
+        // The JSON API keeps `same-site`.
+        'Cross-Origin-Resource-Policy': 'cross-origin',
         // A year, because the address changes when the picture does. Without
         // the versioned URL this would have to be minutes, and a table of six
         // would re-download the whole menu between courses.
