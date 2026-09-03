@@ -380,9 +380,30 @@ function product(row) {
     categoryName: row.category_name ?? null,
     position: row.position ?? 0,
     active: row.active,
+    // The photo, as a path rather than bytes. `has_image` comes from a join
+    // that never selects the file itself, so a menu listing stays a listing --
+    // see migration 033 for why the bytes live in their own table.
+    //
+    // The checksum is on the query string so that replacing a photo changes the
+    // URL. Without it a phone that cached the old one keeps showing the old
+    // dish, and the restaurant's only recourse is telling diners to clear
+    // their browser.
+    imageUrl: row.has_image ? productImageUrl(row) : null,
     createdAt: isoTimestamp(row.created_at),
     updatedAt: isoTimestamp(row.updated_at)
   };
+}
+
+/**
+ * Where a product's photo is served from.
+ *
+ * Built here rather than by each client, so nobody assembles it from an id and
+ * gets it subtly wrong, and so the cache-busting suffix cannot be forgotten by
+ * one caller and not another.
+ */
+function productImageUrl(row) {
+  const version = row.image_checksum ? `?v=${row.image_checksum.slice(0, 16)}` : '';
+  return `/api/v1/menu/public/${row.restaurant_id}/products/${row.id}/image${version}`;
 }
 
 /**
@@ -403,7 +424,11 @@ function publicProduct(row) {
     // alphabetical list to find a drink, which is worse than the paper menu
     // they are sitting next to.
     categoryId: row.category_id ?? null,
-    categoryName: row.category_name ?? null
+    categoryName: row.category_name ?? null,
+    // Null when the restaurant has not uploaded one, which is the common case
+    // and has to keep looking deliberate: a menu without photographs is a
+    // choice, not an unfinished menu.
+    imageUrl: row.has_image ? productImageUrl(row) : null
   };
 }
 

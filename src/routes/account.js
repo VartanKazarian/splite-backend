@@ -3,6 +3,7 @@ const db = require('../connectors/base');
 const { authenticateToken, requireRole } = require('../middleware/auth');
 const {
   validateBody, validateParams, payoutSchema, paymentProviderParamSchema,
+  restaurantProfileSchema,
   createStaffSchema, updateStaffSchema, resetStaffPasswordSchema, userIdParamSchema
 } = require('../middleware/schemas');
 const staff = require('../services/staff');
@@ -43,6 +44,49 @@ router.get('/', async (req, res, next) => {
     res.json(dto.account(rows[0]));
   } catch (err) { next(err); }
 });
+
+/**
+ * The restaurant's own name.
+ *
+ * OWNER and MANAGER, the same pair that may set the payee: this is the name a
+ * diner reads on their phone the moment they scan the code on the table, above
+ * the table number, so it is a shopfront rather than an internal label.
+ *
+ * It could only be set once, during onboarding, which left whatever was typed
+ * that day -- "Splite Demo", or a mistyped name -- in front of every customer
+ * with no way to correct it. Nothing else in the record is touched here;
+ * currency, charges and the payee each have their own endpoint because each is
+ * a different decision with a different blast radius.
+ */
+router.patch(
+  '/',
+  requireRole('OWNER', 'MANAGER'),
+  validateBody(restaurantProfileSchema),
+  async (req, res, next) => {
+    try {
+      const { rows } = await db.query(
+        `UPDATE restaurants
+            SET name = $2, updated_at = NOW()
+          WHERE id = $1
+        RETURNING id, name, rif, menu_currency, vat_bps, service_charge_bps,
+                  payout_bank_code, payout_account_number, payout_phone, payout_holder_id,
+                  plan_tier, trial_ends_at, created_at`,
+        [req.user.restaurantId, req.body.name]
+      );
+      if (!rows.length) throw new ApiError('RESTAURANT_NOT_FOUND', 'Restaurant not found');
+
+      await logAudit({
+        ...auditContext(req),
+        action: 'RESTAURANT_RENAMED',
+        resourceType: 'restaurant',
+        resourceId: req.user.restaurantId,
+        details: { name: rows[0].name }
+      });
+
+      res.json(dto.account(rows[0]));
+    } catch (err) { next(err); }
+  }
+);
 
 /**
  * The banks a payee can be configured against.
