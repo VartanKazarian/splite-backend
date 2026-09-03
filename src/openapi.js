@@ -747,8 +747,13 @@ const schemas = {
   BulkTablesResult: {
     type: 'object',
     properties: {
-      created: { type: 'integer' },
-      alreadyExisted: { type: 'integer' },
+      created: { type: 'integer', description: 'Tables in the range that did not exist at all.' },
+      reactivated: {
+        type: 'integer',
+        description:
+          'Tables in the range that existed but had been deleted (deactivated) and were brought back. Counted separately from alreadyExisted because something did change for them.'
+      },
+      alreadyExisted: { type: 'integer', description: 'Tables in the range that were already there and already active.' },
       data: { type: 'array', items: ref('Table'), description: 'Every active table afterwards.' }
     }
   },
@@ -2364,12 +2369,30 @@ const paths = {
     },
     post: {
       tags: ['Tables'],
-      summary: 'Create a table',
+      summary: 'Create a table, or bring back the deleted one with that name',
       'x-required-roles': ['OWNER', 'MANAGER'],
-      description: 'Roles: OWNER, MANAGER.',
+      description: [
+        'Roles: OWNER, MANAGER.',
+        '',
+        'Deleting a table is `PATCH { active: false }` \u2014 there is no DELETE, because a table',
+        'carries bills and history. The row therefore keeps its name under UNIQUE (restaurant_id,',
+        'name) while disappearing from every screen that filters on `active`, so creating that',
+        'name again is a conflict with a table nobody can see.',
+        '',
+        'It is therefore reactivated instead of refused, and answers **200** with the original',
+        'table \u2014 same id, same created_at, same QR. A guest QR lookup requires `active = true`,',
+        'so the printed sticker died with the deactivation and comes back with the table; a new',
+        'row would leave that sticker dead.',
+        '',
+        'A name an **active** table is using is still refused with 409 TABLE_NAME_TAKEN.'
+      ].join('\n'),
       security: staff,
       requestBody: { required: true, content: { 'application/json': { schema: ref('CreateTableRequest') } } },
       responses: {
+        200: {
+          description: 'A deleted table with this name was reactivated. Nothing was created.',
+          content: { 'application/json': { schema: ref('Table') } }
+        },
         201: { description: 'Created.', content: { 'application/json': { schema: ref('Table') } } },
         ...commonErrors,
         403: response('Forbidden'),
@@ -2410,7 +2433,12 @@ const paths = {
         '',
         'Idempotent, and it never deletes: raising the count later adds only the new tables, and',
         'lowering it removes nothing — a table that already carries bills is not something a',
-        'number in a form should be able to destroy.'
+        'number in a form should be able to destroy.',
+        '',
+        'A table inside the range that had been deleted (deactivated) comes back, and is reported',
+        'under `reactivated`. Asking for ten tables and being handed nine, with nothing saying',
+        'which is missing, is the deletion surprising the restaurant a second time. A deactivated',
+        'table *outside* the range is left alone.'
       ].join('\n'),
       security: staff,
       requestBody: { required: true, content: { 'application/json': { schema: ref('BulkTablesRequest') } } },
