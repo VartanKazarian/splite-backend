@@ -201,6 +201,18 @@ const splitPreviewSchema = Joi.object({
   // ITEMS only.
   claims: Joi.array().max(500).items(Joi.object({
     itemId: uuid.required(),
+    /**
+     * How many units of that line this claim covers.
+     *
+     * Omitted means the whole line, which is what the shape meant before
+     * quantities existed -- one claim, everyone on it sharing it evenly -- so
+     * a client that never sends it keeps its old meaning exactly.
+     *
+     * It is what lets two people divide one line by units: three empanadas,
+     * one mine and two yours. Until this was accepted the field was stripped
+     * by `stripUnknown` and the request silently meant something else.
+     */
+    quantity: Joi.number().integer().min(1).max(999),
     participantIds: Joi.array().min(1).max(50).required().items(participantId)
   }))
 });

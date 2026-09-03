@@ -1853,7 +1853,7 @@ the same engine, so they are never different numbers.
 |------|-----------|
 | `FULL` | one participant owes the balance |
 | `EQUAL` | divided evenly, largest remainder |
-| `ITEMS` | participants claim lines; a shared line splits between its claimants |
+| `ITEMS` | participants claim lines, whole or by units; a shared claim splits between its claimants |
 | `CUSTOM` | the client states amounts, which must add up exactly |
 
 **Every mode divides the same figure** — the outstanding VES balance, echoed
@@ -1867,10 +1867,19 @@ asserts it and raises rather than return a quietly wrong bill.
 `totalAllocatedVes` is returned so a client can assert the same thing instead of
 trusting it.
 
-`ITEMS` allocates in two stages, both largest-remainder — the balance across the
-lines by subtotal, then each line's result across whoever claimed it. Every line
-must be claimed, because an unclaimed line is money owed by nobody and the parts
-could not sum. `CUSTOM` refuses amounts that do not add up rather than rounding
+`ITEMS` allocates in three stages, all largest-remainder — the balance across the
+lines by subtotal, then each line's result across the claims on it by units, then
+each claim's result across the people on it, evenly. Every line must be claimed,
+because an unclaimed line is money owed by nobody and the parts could not sum.
+
+A line may be claimed **by units**: `quantity` on a claim says how many of the
+line's units it covers, so *three beers, two on Ana's tab and one on Luis's* is
+two claims on one `itemId`. Where a line is claimed more than once, the
+quantities must add up to the line's own quantity — claiming two of three leaves
+a unit owed by nobody, and the split is refused with `SPLIT_CLAIMS_INCOMPLETE`
+rather than silently short. A claim that omits `quantity` claims the whole line,
+which is what a claim meant before quantities existed, so clients written
+against the older shape keep their meaning exactly. `CUSTOM` refuses amounts that do not add up rather than rounding
 them into shape, which would hide a client bug behind a number that looks right.
 
 There is one *preview* endpoint, not two. An earlier
@@ -1889,7 +1898,9 @@ diner could pay past their share and leave another unable to pay theirs, because
 at the bill level the money was fine.
 
 The stored split is a `bill_splits` row with a `bill_split_participants` share
-per diner and, for `ITEMS`, the whole-line claims in `bill_split_items`. Both of
+per diner and, for `ITEMS`, who is on which line in `bill_split_items` — one row
+per (line, participant), so a person on one line in two claims is one row. The
+money is in the shares, computed per unit; these rows record participation. Both of
 its invariants are the **database's**, not the service's (migration 020), so an
 API path that forgot the rule still cannot break it:
 
@@ -2678,10 +2689,12 @@ From the working copy, onto the current model:
   bill closes, which is a different product decision from a session ending when
   the diner leaves. (Split shares are persisted in their own tables — see
   [Splitting a bill](#splitting-a-bill) — rather than waiting on this.)
-- Per-quantity item claims. `ITEMS` splits a whole line evenly between its
-  claimants; assigning a subset of a line's quantity — two of three beers to Ana,
-  one to Luis — is deliberately deferred, and would add a quantity column to
-  `bill_split_items`.
+- Per-unit claims are not persisted *as* units. The engine divides by
+  `quantity` and the resulting shares are stored exactly, but
+  `bill_split_items` holds one row per (line, participant) and no quantity
+  column, so reading a stored split back tells you who was on a line and what
+  they owe, not how the units were apportioned. Recovering that would be a
+  quantity column and a relaxed uniqueness rule on that table.
 
 ### Phase 2, not started
 

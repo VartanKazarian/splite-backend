@@ -651,4 +651,85 @@ describe('persistent bill splits against a real Postgres', { skip }, () => {
     assert.equal(done.participants.find(p => p.ext_ref === 'a').amount_paid_ves, '12000', 'confirming credits the share');
     assert.equal((await fixtures.readBill(bill.id)).amount_paid_ves, '12000');
   });
+
+  it('splits one line by units, and persists who is on it once per person', async () => {
+    // Three beers, two on Ana's tab and one on Luis's: one line, two claims.
+    // The engine used to key claims by itemId, so the second claim replaced the
+    // first and Ana was handed nothing -- money vanishing without an error.
+    const bill = await freshBill(30000);
+    const beers = await addItem(bill.id, { price: 10000, qty: 3, name: 'Beer' });
+
+    const split = await splits.createSplit({
+      restaurantId: restaurant.id, bill,
+      items: await billItems.listForBill({ restaurantId: restaurant.id, billId: bill.id }),
+      request: {
+        mode: 'ITEMS',
+        participants: [{ id: 'a', name: 'Ana' }, { id: 'b', name: 'Luis' }],
+        claims: [
+          { itemId: beers.id, quantity: 2, participantIds: ['a'] },
+          { itemId: beers.id, quantity: 1, participantIds: ['b'] }
+        ]
+      },
+      createdBy: staff
+    });
+
+    assert.equal(split.participants.find(p => p.ext_ref === 'a').amount_ves, '20000');
+    assert.equal(split.participants.find(p => p.ext_ref === 'b').amount_ves, '10000');
+    assert.equal(split.claims.length, 2, 'one row per person on the line');
+  });
+
+  it('lets one person hold units on a line twice without colliding on the claim row', async () => {
+    // Ana has two beers to herself and shares the third with Luis. She is on the
+    // line in two claims, but `bill_split_items` holds one row per (line,
+    // participant) -- the second insert would collide, and a legitimate split
+    // would come back a 500.
+    const bill = await freshBill(30000);
+    const beers = await addItem(bill.id, { price: 10000, qty: 3, name: 'Beer' });
+
+    const split = await splits.createSplit({
+      restaurantId: restaurant.id, bill,
+      items: await billItems.listForBill({ restaurantId: restaurant.id, billId: bill.id }),
+      request: {
+        mode: 'ITEMS',
+        participants: [{ id: 'a', name: 'Ana' }, { id: 'b', name: 'Luis' }],
+        claims: [
+          { itemId: beers.id, quantity: 2, participantIds: ['a'] },
+          { itemId: beers.id, quantity: 1, participantIds: ['a', 'b'] }
+        ]
+      },
+      createdBy: staff
+    });
+
+    assert.equal(split.participants.find(p => p.ext_ref === 'a').amount_ves, '25000');
+    assert.equal(split.participants.find(p => p.ext_ref === 'b').amount_ves, '5000');
+    assert.equal(split.claims.length, 2, 'Ana is on the line once, not twice');
+  });
+
+  it('refuses a line whose claimed units do not add up to it', async () => {
+    // Two of three claimed leaves a beer owed by nobody. Short by a third and
+    // silent is exactly the failure the sum constraint exists to prevent, so it
+    // is refused at the door rather than stored.
+    const bill = await freshBill(30000);
+    const beers = await addItem(bill.id, { price: 10000, qty: 3, name: 'Beer' });
+
+    await assert.rejects(
+      async () => splits.createSplit({
+        restaurantId: restaurant.id, bill,
+        items: await billItems.listForBill({ restaurantId: restaurant.id, billId: bill.id }),
+        request: {
+          mode: 'ITEMS',
+          participants: [{ id: 'a' }, { id: 'b' }],
+          claims: [{ itemId: beers.id, quantity: 2, participantIds: ['a'] }]
+        },
+        createdBy: staff
+      }),
+      err => err.code === 'SPLIT_CLAIMS_INCOMPLETE'
+    );
+
+    assert.equal(
+      (await db.query('SELECT COUNT(*)::int AS n FROM bill_splits WHERE bill_id = $1', [bill.id])).rows[0].n,
+      0,
+      'nothing was stored'
+    );
+  });
 });

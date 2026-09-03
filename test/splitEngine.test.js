@@ -325,3 +325,83 @@ test('no rate means no reference, not a wrong one', () => {
   });
   assert.equal(result.allocations[0].usdReference, null);
 });
+
+/**
+ * Dividing one line by units.
+ *
+ * The bug this closes: claims were keyed into a Map by itemId, so two claims on
+ * the same line kept only the last one and the first claimant was handed
+ * nothing. A diner picking one of three empanadas saw zero and the other party
+ * saw the whole line -- money vanishing with no error at all.
+ *
+ * The guest screen had been sending per-unit claims the whole time; `quantity`
+ * was stripped by validation before the engine could see it, so the request
+ * quietly meant something else than what was on screen.
+ */
+test('ITEMS divides one line between claimants by units', () => {
+  const result = assertExact(preview({
+    bill: { total_due_ves: '3750000', amount_paid_ves: '0', currency: 'VES', fx_rate_ves_per_unit: '1' },
+    items: [{ id: 'i1', subtotal_minor: '3750000', quantity: 3, name_snapshot: 'Pabellón' }],
+    request: {
+      mode: 'ITEMS',
+      participants: [{ id: 'me' }, { id: 'others' }],
+      claims: [
+        { itemId: 'i1', quantity: 1, participantIds: ['me'] },
+        { itemId: 'i1', quantity: 2, participantIds: ['others'] }
+      ]
+    }
+  }));
+  assert.deepEqual(result.allocations.map(a => a.amountVes), ['1250000', '2500000']);
+});
+
+test('a claim without a quantity still means the whole line', () => {
+  // The shape before quantities existed. A client that never sends the field
+  // has to keep meaning exactly what it meant.
+  const result = assertExact(preview({
+    bill: { total_due_ves: '3000', amount_paid_ves: '0', currency: 'VES', fx_rate_ves_per_unit: '1' },
+    items: [{ id: 'i1', subtotal_minor: '3000', quantity: 3, name_snapshot: 'x' }],
+    request: {
+      mode: 'ITEMS',
+      participants: [{ id: 'ana' }, { id: 'bea' }],
+      claims: [{ itemId: 'i1', participantIds: ['ana'] }]
+    }
+  }));
+  assert.deepEqual(result.allocations.map(a => a.amountVes), ['3000', '0']);
+});
+
+test('units that do not add up to the line are refused', () => {
+  // Claiming two of three leaves one owed by nobody, and the allocation would
+  // not sum to the bill. Refused rather than quietly rounded into shape.
+  assert.throws(
+    () => preview({
+      bill: { total_due_ves: '3000', amount_paid_ves: '0', currency: 'VES', fx_rate_ves_per_unit: '1' },
+      items: [{ id: 'i1', subtotal_minor: '3000', quantity: 3, name_snapshot: 'x' }],
+      request: {
+        mode: 'ITEMS',
+        participants: [{ id: 'me' }, { id: 'others' }],
+        claims: [{ itemId: 'i1', quantity: 2, participantIds: ['me'] }]
+      }
+    }),
+    err => err.code === 'SPLIT_CLAIMS_INCOMPLETE'
+  );
+});
+
+test('units split between claimants stay exact on an odd line', () => {
+  // 1000 over 3 units is 333.33 each: the two-stage largest-remainder has to
+  // place every céntimo or the split stops summing to the bill.
+  const result = assertExact(preview({
+    bill: { total_due_ves: '1000', amount_paid_ves: '0', currency: 'VES', fx_rate_ves_per_unit: '1' },
+    items: [{ id: 'i1', subtotal_minor: '1000', quantity: 3, name_snapshot: 'x' }],
+    request: {
+      mode: 'ITEMS',
+      participants: [{ id: 'a' }, { id: 'b' }, { id: 'c' }],
+      claims: [
+        { itemId: 'i1', quantity: 1, participantIds: ['a'] },
+        { itemId: 'i1', quantity: 1, participantIds: ['b'] },
+        { itemId: 'i1', quantity: 1, participantIds: ['c'] }
+      ]
+    }
+  }));
+  const total = result.allocations.reduce((s, a) => s + BigInt(a.amountVes), 0n);
+  assert.equal(total, 1000n, 'every céntimo has to land somewhere');
+});
