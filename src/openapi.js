@@ -377,15 +377,21 @@ const schemas = {
       },
       claims: {
         type: 'array', maxItems: 500,
-        description: 'ITEMS only. Every line on the bill must appear, or the split is refused.',
+        description:
+          'ITEMS only. Every line on the bill must appear, or the split is refused. A line may appear more than once, once per group of units claimed, in which case every claim on it carries a quantity and they must add up to the units on the line.',
         items: {
           type: 'object',
           required: ['itemId', 'participantIds'],
           properties: {
             itemId: { type: 'string', format: 'uuid' },
+            quantity: {
+              type: 'integer', minimum: 1, maximum: 999,
+              description:
+                'How many of the line\u2019s units this claim covers. Omit to claim the whole line, which is the only meaning available before quantities existed. When a line is claimed more than once, the quantities across its claims must sum to the line\u2019s quantity.'
+            },
             participantIds: {
               type: 'array', minItems: 1, items: { type: 'string' },
-              description: 'More than one splits that line evenly between them.'
+              description: 'More than one splits this claim evenly between them.'
             }
           }
         }
@@ -453,7 +459,8 @@ const schemas = {
       },
       claims: {
         type: 'array',
-        description: 'ITEMS only. Which persisted participant claimed which line.',
+        description:
+          'ITEMS only. Who is on which line \u2014 one entry per (line, participant), even where the request claimed the line by units across several claims. What each of them owes is in `participants`.',
         items: {
           type: 'object',
           properties: {

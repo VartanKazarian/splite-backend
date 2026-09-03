@@ -312,7 +312,7 @@ stored server-side yet.
 |---|---|
 | `FULL` | exactly one participant |
 | `EQUAL` | none |
-| `ITEMS` | `claims: [{ itemId, participantIds: [...] }]` — **every line must be claimed**; more than one claimant splits that line between them |
+| `ITEMS` | `claims: [{ itemId, quantity?, participantIds: [...] }]` — **every line must be claimed**; more than one claimant on a claim splits it between them. Claim a line by units by sending it more than once with a `quantity` on each — *three beers, two on Ana's tab and one on Luis's* — and those quantities must add up to the line's own quantity. Omit `quantity` to claim the whole line. |
 | `CUSTOM` | `amountVes` on each participant; they must sum to `outstandingVes` **exactly** |
 
 Response:

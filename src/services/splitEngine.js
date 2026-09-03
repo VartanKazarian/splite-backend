@@ -120,17 +120,53 @@ function allocateByItems({ outstanding, items, participants, claims }) {
   );
 
   // Stage 2: each line's share across whoever claimed it.
+  //
+  // Grouped, not keyed. This used to be
+  //   new Map(claims.map(c => [c.itemId, c.participantIds]))
+  // which silently keeps only the *last* claim for a line: two people splitting
+  // one line by units -- me one of three, you the other two -- collapsed to one
+  // entry and the first claimant was handed nothing. It was money disappearing
+  // without an error, which is the worst way for this to be wrong.
   const owed = new Map(participants.map(p => [p.id, 0n]));
-  const claimsByItem = new Map(claims.map(c => [c.itemId, c.participantIds]));
+  const claimsByItem = new Map(items.map(i => [i.id, []]));
+  for (const claim of claims) {
+    if (claim.participantIds.length > 0) claimsByItem.get(claim.itemId).push(claim);
+  }
 
   items.forEach((item, index) => {
-    const claimants = claimsByItem.get(item.id) ?? [];
+    const itemClaims = claimsByItem.get(item.id) ?? [];
     const itemVes = toMinor(perItemVes[index]);
-    // Split evenly between claimants: a shared bottle is halved, not weighted
-    // by anything the client could assert about who drank more.
-    const shares = allocateWithZeros(itemVes, claimants.map(() => 1n));
-    claimants.forEach((participantId, i) => {
-      owed.set(participantId, owed.get(participantId) + toMinor(shares[i]));
+    const units = BigInt(item.quantity ?? 1);
+
+    // A claim without a quantity is a claim on the whole line, which is what
+    // the shape meant before quantities existed: one claim, everyone on it
+    // sharing the line evenly. Existing clients keep their meaning.
+    const claimed = itemClaims.map(c => (c.quantity === undefined ? units : BigInt(c.quantity)));
+    const totalClaimed = claimed.reduce((a, b) => a + b, 0n);
+
+    // The parts have to be the whole. Claiming two of three units leaves one
+    // owed by nobody, and the allocation would not sum to the bill.
+    if (itemClaims.length > 0 && totalClaimed !== units) {
+      throw new ApiError(
+        'SPLIT_CLAIMS_INCOMPLETE',
+        'The units claimed on a line have to add up to the units on it',
+        { itemId: item.id, unitsOnLine: Number(units), unitsClaimed: Number(totalClaimed) }
+      );
+    }
+
+    // The line's money across the claims, by units; then each claim's money
+    // across the people on it, evenly. Both largest-remainder, so the line is
+    // exact at each step and therefore exact overall.
+    const perClaim = allocateWithZeros(itemVes, claimed);
+    itemClaims.forEach((claim, ci) => {
+      const claimVes = toMinor(perClaim[ci]);
+      // Split evenly between the people on one claim: a shared bottle is
+      // halved, not weighted by anything the client could assert about who
+      // drank more.
+      const shares = allocateWithZeros(claimVes, claim.participantIds.map(() => 1n));
+      claim.participantIds.forEach((participantId, i) => {
+        owed.set(participantId, owed.get(participantId) + toMinor(shares[i]));
+      });
     });
   });
 

@@ -81,14 +81,24 @@ async function createSplit({ restaurantId, bill, items, request, createdBy }) {
         byExtRef.set(participant.ext_ref, participant.id);
       }
 
-      // ITEMS: record the whole-line claims, translated from the request's
+      // ITEMS: record who is on which line, translated from the request's
       // participant labels to the persisted participant ids.
+      //
+      // A line may now be claimed by units -- two of three beers to Ana, one to
+      // Luis -- which means the same person can appear on one line in more than
+      // one claim. The table holds one row per (line, participant), so those
+      // are the same row and the second insert would otherwise collide with
+      // `bill_split_items_unique` and surface as a 500. The exact money is in
+      // `bill_split_participants`, computed per unit by the engine and enforced
+      // by the split's own sum constraint; these rows say who is on the line,
+      // and saying it twice adds nothing.
       if (request.mode === 'ITEMS') {
         for (const claim of request.claims ?? []) {
           for (const extRef of claim.participantIds) {
             await client.query(
               `INSERT INTO bill_split_items (restaurant_id, split_id, bill_item_id, participant_id)
-               VALUES ($1, $2, $3, $4)`,
+               VALUES ($1, $2, $3, $4)
+               ON CONFLICT ON CONSTRAINT bill_split_items_unique DO NOTHING`,
               [restaurantId, splitRow.id, claim.itemId, byExtRef.get(extRef)]
             );
           }

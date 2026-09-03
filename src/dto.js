@@ -587,7 +587,9 @@ function billSplit({ split, participants, claims = [], fxRate = null }) {
         usdReference: usdReference(amount.toString(), fxRate)
       };
     }),
-    // ITEMS only. Which persisted participant claimed which line.
+    // ITEMS only. Who is on which line -- one entry per (line, participant),
+    // even where the request claimed the line by units in several claims.
+    // The money each of them owes is in `participants` above.
     claims: claims.map(c => ({ billItemId: c.bill_item_id, participantId: c.participant_id })),
     createdAt: isoTimestamp(split.created_at),
     updatedAt: isoTimestamp(split.updated_at)
