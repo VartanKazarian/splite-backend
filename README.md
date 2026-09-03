@@ -363,6 +363,40 @@ Closing or voiding a bill releases the table for the next one; the partial index
 only covers `OPEN`, so history is retained. Migration 004 also adds a composite
 foreign key so a bill's table must belong to the same restaurant as the bill.
 
+### Deleting a table, and creating it again
+
+There is no `DELETE /api/v1/tables/{id}`. Deleting a table in the panel is
+`PATCH { active: false }`, because the table carries bills, payments and audit
+history that a button in a form has no business destroying.
+
+That soft delete had a trap in it. The row survives holding its name under
+`UNIQUE (restaurant_id, name)`, while dropping off the panel entirely — it
+renders from `GET /api/v1/tables/floor`, which is active-only. Creating
+*Mesa 5* again was then refused as already taken, by a table nobody could see
+and nothing in the panel could bring back. A dead end reachable in two clicks.
+(`GET /api/v1/tables?active=false` does list them, so the fact was reachable
+over the API — just not from anything a restaurant looks at.)
+
+So `POST /api/v1/tables` reactivates a deactivated row with that name instead
+of refusing it, and answers `200` with the original table rather than `201`:
+same id, same `created_at`, its bills still attached. Reviving the row is also
+what keeps the **printed QR** working — a guest lookup requires `active = true`
+(`src/routes/guest.js`), so the sticker on that table went dead when it was
+deactivated and comes back with it. Minting a new row would leave that sticker
+pointing at a table that no longer exists, with nothing on screen to explain
+why the code stopped working. `POST /api/v1/tables/bulk` does the same for
+names inside the range it was asked for, reported as `reactivated`; a
+deactivated table outside the range is left alone.
+
+A name an **active** table holds is still refused, which is a conflict the
+panel can actually see. Renaming onto a deactivated name stays refused too —
+reviving there would leave two tables wanting one name — but the error names
+the table in the way and says it is deactivated, since that is the one case
+where the blocker is invisible.
+
+The audit log separates the two events: `TABLE_CREATED` for a table opened for
+the first time, `TABLE_REACTIVATED` for one that came back.
+
 ## Menu and menu currency
 
 A restaurant prices its menu in `VES`, `USD` or `EUR`. This says only what the

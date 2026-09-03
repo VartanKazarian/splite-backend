@@ -239,6 +239,10 @@ traced in the server logs.
 
 1. **Login** — `POST /auth/login`, store the session, then `GET /auth/me` on every subsequent boot.
 2. **Tables** — `GET /api/v1/tables`. Create and rename via `POST` / `PATCH` (OWNER, MANAGER only).
+   Deleting is `PATCH { active: false }` — there is no DELETE. Creating that name again brings
+   the same table back (**200**, not 201: same id, same QR, its bills still attached), so a
+   deletion is undoable from the panel. `409 TABLE_NAME_TAKEN` now means a table that is
+   actually in use; on a rename the error carries `details.tableId` and `details.active`.
 3. **Menu** — `GET|POST|PATCH|DELETE /api/v1/menu/products`, and `GET|PATCH /api/v1/menu/settings`. Deleting is a soft deactivate.
 4. **Open a bill** — `POST /api/v1/bills` with `{ tableId, totalDueMinorUnits }`.
    Send **`"0"`** for an itemised bill. A non-zero fixed total permanently blocks line items on that bill.

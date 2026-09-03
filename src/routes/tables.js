@@ -47,28 +47,62 @@ router.get('/', validateQuery(listTablesQuerySchema), async (req, res, next) => 
   } catch (err) { next(err); }
 });
 
+/**
+ * Creates a table, or brings back the deactivated one that holds the name.
+ *
+ * Deleting a table in the panel is `PATCH { active: false }` -- there is no
+ * DELETE, because a table carries bills and history that must not vanish. The
+ * row therefore survives, still holding its name under
+ * `UNIQUE (restaurant_id, name)`, while disappearing from every screen that
+ * filters on `active`. Creating that name again used to be refused as taken,
+ * by a table nobody could see: a dead end with no way out of it from the panel.
+ *
+ * So a conflict with an *inactive* row reactivates it instead of refusing. The
+ * name is the restaurant's word for a physical table, and asking for it back is
+ * asking for that table back. Reviving the same row -- rather than minting a
+ * new one -- is also what keeps the printed QR sticker working: guest lookups
+ * require `active = true` (src/routes/guest.js), so the code on the table went
+ * dead when it was deactivated and comes back with it. A new row would have a
+ * new id and a new nonce, and the sticker on that table would stay dead.
+ *
+ * A conflict with an *active* row is still refused. That is a name genuinely in
+ * use, and the panel can see it.
+ *
+ * One statement, so two staff creating the same name at once cannot both
+ * succeed: the unique index decides, and the loser takes the ON CONFLICT path.
+ * `xmax = 0` is true only for a tuple this statement inserted, which is how an
+ * upsert tells "created" from "revived" without a second read.
+ */
 router.post('/', requireRole('OWNER', 'MANAGER'), validateBody(createTableSchema), async (req, res, next) => {
   try {
-    // UNIQUE (restaurant_id, name) makes this a no-op on a duplicate rather
-    // than a 500 from a constraint violation.
     const { rows } = await db.query(
       `INSERT INTO tables (restaurant_id, name)
        VALUES ($1, $2)
-       ON CONFLICT (restaurant_id, name) DO NOTHING
-       RETURNING ${TABLE_COLUMNS}`,
+       ON CONFLICT (restaurant_id, name) DO UPDATE
+         SET active = true
+         WHERE tables.active = false
+       RETURNING ${TABLE_COLUMNS}, (xmax = 0) AS created`,
       [req.user.restaurantId, req.body.name]
     );
-    if (!rows.length) throw new ApiError('TABLE_NAME_TAKEN', 'A table with that name already exists');
+    if (!rows.length) {
+      throw new ApiError('TABLE_NAME_TAKEN', 'A table with that name already exists');
+    }
 
+    const created = rows[0].created;
     await logAudit({
       ...auditContext(req),
-      action: 'TABLE_CREATED',
+      // Distinct actions: a table coming back is not the same event as a table
+      // being opened for the first time, and the audit log is where the
+      // difference is legible -- the row carries its original created_at.
+      action: created ? 'TABLE_CREATED' : 'TABLE_REACTIVATED',
       resourceType: 'table',
       resourceId: rows[0].id,
       details: { name: rows[0].name }
     });
 
-    res.status(201).json(dto.table(rows[0]));
+    // 201 for a new table, 200 for one that already existed and was reactivated:
+    // nothing was created in that case, and the id in the body is not new.
+    res.status(created ? 201 : 200).json(dto.table(rows[0]));
   } catch (err) { next(err); }
 });
 
@@ -122,6 +156,12 @@ router.get('/floor', async (req, res, next) => {
  * and raising the count later adds only the new ones. It never deletes -- a
  * table that already carries bills is not something a number in a form should
  * be able to remove.
+ *
+ * A deactivated table in the range comes back, for the same reason POST does
+ * it: asking for ten tables and being handed nine, with no way to say which
+ * one is missing or why, is the deletion surprising the restaurant a second
+ * time. Only the tables named by the range are touched -- one deactivated
+ * outside it stays deactivated.
  */
 router.post(
   '/bulk',
@@ -134,17 +174,22 @@ router.post(
       const { rows } = await db.query(
         `INSERT INTO tables (restaurant_id, name)
          SELECT $1, name FROM unnest($2::text[]) AS name
-         ON CONFLICT (restaurant_id, name) DO NOTHING
-         RETURNING ${TABLE_COLUMNS}`,
+         ON CONFLICT (restaurant_id, name) DO UPDATE
+           SET active = true
+           WHERE tables.active = false
+         RETURNING ${TABLE_COLUMNS}, (xmax = 0) AS created`,
         [req.user.restaurantId, names]
       );
+
+      const created = rows.filter(row => row.created).length;
+      const reactivated = rows.length - created;
 
       await logAudit({
         ...auditContext(req),
         action: 'TABLES_BULK_CREATED',
         resourceType: 'restaurant',
         resourceId: req.user.restaurantId,
-        details: { requested: req.body.count, created: rows.length, prefix: req.body.prefix }
+        details: { requested: req.body.count, created, reactivated, prefix: req.body.prefix }
       });
 
       const all = await db.query(
@@ -154,7 +199,11 @@ router.post(
       );
 
       res.status(201).json({
-        created: rows.length,
+        created,
+        reactivated,
+        // What was already there and already active, so this call left it
+        // alone. Reactivated tables are counted on their own rather than
+        // folded in here: something did change for them.
         alreadyExisted: req.body.count - rows.length,
         data: all.rows.map(dto.table)
       });
@@ -191,9 +240,25 @@ router.patch(
 
       res.json(dto.table(rows[0]));
     } catch (err) {
-      // Renaming onto an existing name trips the unique index.
+      // Renaming onto an existing name trips the unique index. Unlike POST,
+      // this one cannot resolve itself by reviving the other row -- that would
+      // leave two tables wanting one name -- so it stays a refusal. What it
+      // does say is *which* table is in the way, because the blocker may be
+      // deactivated and therefore invisible on every screen the person
+      // renaming is looking at. Same tenant, so this discloses nothing they
+      // could not already list.
       if (err.code === '23505') {
-        return next(new ApiError('TABLE_NAME_TAKEN', 'A table with that name already exists'));
+        const holder = (await db.query(
+          'SELECT id, active FROM tables WHERE restaurant_id = $1 AND name = $2',
+          [req.user.restaurantId, req.body.name]
+        )).rows[0];
+        return next(new ApiError(
+          'TABLE_NAME_TAKEN',
+          holder && !holder.active
+            ? 'A deactivated table already has that name; reactivate it instead of renaming onto it'
+            : 'A table with that name already exists',
+          holder ? { tableId: holder.id, active: holder.active } : undefined
+        ));
       }
       next(err);
     }
