@@ -1095,6 +1095,62 @@ alongside the products, so a client can decide between embedding and linking,
 and a menu that is *only* a PDF still has something to show when `products`
 comes back empty.
 
+## A photograph of the dish
+
+A menu that is a list of names and prices asks a diner to already know what
+*cachapa con cochino* looks like. Photos are optional, one per product, and
+always the restaurant's choice — a menu without them has to keep looking
+deliberate rather than unfinished, because most start that way and some stay
+that way.
+
+| | |
+|---|---|
+| `PUT /api/v1/menu/products/{id}/image` | OWNER, MANAGER. `multipart/form-data`, field `file`. JPEG, PNG or WebP |
+| `DELETE /api/v1/menu/products/{id}/image` | removes the photo, leaves the dish |
+| `GET /api/v1/menu/public/{restaurantId}/products/{productId}/image` | unauthenticated, what a phone loads |
+
+Stored in Postgres like the menu file, in `menu_product_images` (migration 033)
+rather than on `menu_products`. The reason is the bytes: a `bytea` on the
+product row rides along with every `SELECT *` and every menu listing — the exact
+query a diner's phone makes — and one forgotten column list would put a megabyte
+per dish on the wire. Out here it is touched only by the routes that want it.
+Listings select `(pi.product_id IS NOT NULL)` and the checksum, never the file.
+
+**The ceiling is 2 MB, not the PDF's 20.** A PDF is fetched once by a diner who
+chose to open it; a dish photo is fetched by everyone at the table at once, on a
+phone with one bar of signal.
+
+**A replaced photo is a new address.** `imageUrl` carries `?v=` taken from the
+file's SHA-256, so uploading a new picture changes the URL. That is what makes
+the new dish appear instead of the one the phone cached, and it is why the
+response can be `immutable` for a year rather than revalidating every few
+minutes. The checksum is computed once at upload rather than per request —
+hashing a megabyte to decide whether to send it costs more than sending it — and
+doubles as the `ETag` for a client that arrives without the suffix.
+
+The declared type is checked against the file's own signature (`ffd8ff`,
+`\x89PNG`, `RIFF….WEBP`). Not a security boundary — the file is served as what
+it says it is, with `nosniff`, and never executed — but it catches a HEIC
+straight off an iPhone and says so instead of storing something no browser will
+render.
+
+Scoped by restaurant *and* product, both from the path, and the photo carries
+its own `restaurant_id` so that check is a `WHERE` rather than a join somebody
+has to remember. A product from another tenant is a 404 rather than a picture,
+and a deactivated product takes its photo off the menu with it.
+
+## The restaurant's own name
+
+`PATCH /api/v1/account` (OWNER, MANAGER) sets it. It is the first thing a diner
+reads after scanning the code on the table, above the table number — a shopfront
+rather than an internal label — and until this endpoint existed it could only be
+set once during onboarding. A restaurant that signed up as "Splite Demo", or
+simply mistyped, had that in front of every customer with no way to correct it.
+
+Nothing else in the record is touched here. Menu currency, charges and the payee
+each have their own endpoint, because each is a different decision with a
+different reach.
+
 ## Charges: IVA and servicio
 
 A bill total is not just the sum of its lines. Both charges are configured per

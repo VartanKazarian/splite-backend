@@ -1,3 +1,4 @@
+const crypto = require('node:crypto');
 const express = require('express');
 const db = require('../connectors/base');
 const { authenticateToken, requireRole } = require('../middleware/auth');
@@ -13,6 +14,7 @@ const {
   listProductsQuerySchema,
   productIdParamSchema,
   restaurantIdParamSchema,
+  productImageParamSchema,
   menuOcrImportSchema,
   createCategorySchema,
   updateCategorySchema,
@@ -53,6 +55,34 @@ const pdfUpload = multer({
 });
 
 /**
+ * A dish photo. Its own limit again, and the smallest of the three: this file
+ * is fetched by every diner at the table rather than by one person who chose to
+ * open it.
+ */
+const imageUpload = multer({
+  storage: multer.memoryStorage(),
+  limits: { fileSize: config.productImage.maxUploadBytes, files: 1 }
+});
+
+/**
+ * What a photo may be, and how to recognise one.
+ *
+ * The declared type is a claim by the client, so the bytes are checked as well:
+ * each of these formats begins with a signature that a mislabelled file will
+ * not have. This is not a security boundary -- the file is served back with its
+ * own Content-Type, `nosniff`, and is never executed -- but it catches a HEIC
+ * straight off an iPhone, or a PDF dropped in the wrong box, and says so
+ * plainly instead of storing something no browser will render.
+ */
+const IMAGE_MEDIA = {
+  'image/jpeg': buffer => buffer.subarray(0, 3).toString('hex') === 'ffd8ff',
+  'image/png': buffer => buffer.subarray(0, 8).toString('hex') === '89504e470d0a1a0a',
+  'image/webp': buffer =>
+    buffer.subarray(0, 4).toString('latin1') === 'RIFF' &&
+    buffer.subarray(8, 12).toString('latin1') === 'WEBP'
+};
+
+/**
  * Multer's own rejections, translated.
  *
  * Left alone they surface as a 500 on a request whose only fault is an
@@ -87,6 +117,19 @@ const PRODUCT_COLUMNS = `id, name, description, price_minor_units,
 const MENU_ORDER = `c.position NULLS LAST, c.name NULLS LAST, p.position, p.name`;
 
 /**
+ * Whether a product has a photo, and which one, without touching the bytes.
+ *
+ * Selected as two scalars off a LEFT JOIN rather than by fetching the file: a
+ * menu listing is the query a diner's phone makes, and it must not carry a
+ * megabyte per dish. `dto.product` turns the pair into a URL -- the checksum
+ * rides on the query string so that replacing a photo changes the address and a
+ * cached phone stops showing the old dish.
+ */
+const IMAGE_COLUMNS = `(pi.product_id IS NOT NULL) AS has_image, pi.checksum AS image_checksum`;
+const IMAGE_JOIN = `LEFT JOIN menu_product_images pi
+             ON pi.product_id = p.id AND pi.restaurant_id = p.restaurant_id`;
+
+/**
  * A write that answers with the same product shape a read does.
  *
  * RETURNING cannot join, so a bare INSERT would hand back category_id and no
@@ -95,12 +138,15 @@ const MENU_ORDER = `c.position NULLS LAST, c.name NULLS LAST, p.position, p.name
  */
 const withCategoryName = inner => `
   WITH written AS (${inner})
-  SELECT w.id, w.name, w.description, w.price_minor_units, w.currency,
+  SELECT w.id, w.restaurant_id, w.name, w.description, w.price_minor_units, w.currency,
          w.category_id, w.position, w.active, w.created_at, w.updated_at,
-         c.name AS category_name
+         c.name AS category_name,
+         (pi.product_id IS NOT NULL) AS has_image, pi.checksum AS image_checksum
     FROM written w
     LEFT JOIN menu_categories c
-      ON c.id = w.category_id AND c.restaurant_id = w.restaurant_id`;
+      ON c.id = w.category_id AND c.restaurant_id = w.restaurant_id
+    LEFT JOIN menu_product_images pi
+      ON pi.product_id = w.id AND pi.restaurant_id = w.restaurant_id`;
 
 /**
  * Public menu for a restaurant.
@@ -168,11 +214,12 @@ router.get(
       // deactivating each product: the kitchen ran out of fish, and the whole
       // pescados block goes off the menu for the evening.
       const { rows } = await db.query(
-        `SELECT p.id, p.name, p.description, p.price_minor_units, p.currency,
-                p.category_id, c.name AS category_name
+        `SELECT p.id, p.restaurant_id, p.name, p.description, p.price_minor_units, p.currency,
+                p.category_id, c.name AS category_name, ${IMAGE_COLUMNS}
            FROM menu_products p
            LEFT JOIN menu_categories c
              ON c.id = p.category_id AND c.restaurant_id = p.restaurant_id AND c.active = true
+           ${IMAGE_JOIN}
           WHERE p.restaurant_id = $1
             AND p.active = true
             AND (p.category_id IS NULL OR c.id IS NOT NULL)
@@ -206,6 +253,65 @@ router.get(
         categories: categories.rows.map(dto.menuCategory),
         products: rows.map(dto.publicProduct)
       });
+    } catch (err) { next(err); }
+  }
+);
+
+/**
+ * A dish photo, to whoever is holding the QR menu.
+ *
+ * Unauthenticated for the same reason as the products beside it: a diner
+ * scanning a table has no staff credentials, and what this serves is a picture
+ * the restaurant chose to publish.
+ *
+ * Scoped by restaurant *and* product, both from the path. The photo carries its
+ * own `restaurant_id` (migration 033) so the check is a WHERE rather than a
+ * join somebody has to remember: a product id from another tenant is a 404 here
+ * whatever else is true.
+ *
+ * Cached hard, and safely. The URL that `dto.product` hands out carries the
+ * checksum, so a given address always answers with the same bytes and may be
+ * kept for a year; replacing the photo changes the checksum, which changes the
+ * URL, which is what makes the new dish appear rather than the old one. The
+ * ETag is still sent for a client that arrives without the suffix.
+ */
+router.get(
+  '/public/:restaurantId/products/:productId/image',
+  validateParams(productImageParamSchema),
+  rateLimit({ windowSeconds: 60, max: 240, keyPrefix: 'menu:imgpub' }),
+  async (req, res, next) => {
+    try {
+      const { rows } = await db.query(
+        `SELECT i.bytes, i.content_type, i.size_bytes, i.checksum, i.updated_at
+           FROM menu_product_images i
+           JOIN menu_products p
+             ON p.id = i.product_id AND p.restaurant_id = i.restaurant_id
+           JOIN restaurants r ON r.id = i.restaurant_id
+          WHERE i.product_id = $1 AND i.restaurant_id = $2
+            AND p.active = true AND r.active = true`,
+        [req.params.productId, req.params.restaurantId]
+      );
+      const image = rows[0];
+      if (!image) throw new ApiError('PRODUCT_IMAGE_NOT_FOUND', 'This product has no photo');
+
+      const etag = `"${image.checksum}"`;
+      res.set({
+        'Content-Type': image.content_type,
+        ETag: etag,
+        'Last-Modified': new Date(image.updated_at).toUTCString(),
+        // A year, because the address changes when the picture does. Without
+        // the versioned URL this would have to be minutes, and a table of six
+        // would re-download the whole menu between courses.
+        'Cache-Control': 'public, max-age=31536000, immutable',
+        'X-Content-Type-Options': 'nosniff'
+      });
+
+      // The point of the ETag: a phone that already has this photo is told so
+      // in a few bytes instead of being sent the file again.
+      if (req.headers['if-none-match'] === etag) return res.status(304).end();
+
+      res.set('Content-Length', String(image.size_bytes));
+      return res.send(image.bytes);
     } catch (err) { next(err); }
   }
 );
@@ -690,12 +796,13 @@ router.get('/products', validateQuery(listProductsQuerySchema), async (req, res,
 
     params.push(req.query.limit, req.query.offset);
     const { rows } = await db.query(
-      `SELECT p.id, p.name, p.description, p.price_minor_units, p.currency,
+      `SELECT p.id, p.restaurant_id, p.name, p.description, p.price_minor_units, p.currency,
               p.category_id, p.position, p.active, p.created_at, p.updated_at,
-              c.name AS category_name
+              c.name AS category_name, ${IMAGE_COLUMNS}
          FROM menu_products p
          LEFT JOIN menu_categories c
            ON c.id = p.category_id AND c.restaurant_id = p.restaurant_id
+         ${IMAGE_JOIN}
         WHERE ${where}
         ORDER BY ${MENU_ORDER}
         LIMIT $${params.length - 1} OFFSET $${params.length}`,
@@ -844,6 +951,124 @@ router.delete(
         action: req.query.permanent ? 'MENU_PRODUCT_DELETED' : 'MENU_PRODUCT_DEACTIVATED',
         resourceType: 'menu_product',
         resourceId: rows[0].id
+      });
+
+      res.status(204).end();
+    } catch (err) { next(err); }
+  }
+);
+
+/**
+ * The photograph of a dish.
+ *
+ * OWNER and MANAGER, the same pair that may write the product itself: a photo
+ * is part of what a diner is sold, so it belongs with whoever sets the price
+ * rather than with whoever carries the plates.
+ *
+ * An upsert, so replacing a photo is one request and there is never a second
+ * row with a rule about which one wins. The product is looked up first and in
+ * the same tenant, so an id from another restaurant is a 404 before any bytes
+ * are read.
+ */
+router.put(
+  '/products/:id/image',
+  requireRole('OWNER', 'MANAGER'),
+  validateParams(productIdParamSchema),
+  rateLimit({ windowSeconds: 300, max: 60, keyPrefix: 'menu:image' }),
+  handleUpload(
+    imageUpload.single('file'), 'PRODUCT_IMAGE_FILE_TOO_LARGE', config.productImage.maxUploadBytes
+  ),
+  async (req, res, next) => {
+    try {
+      if (!req.file) throw new ApiError('PRODUCT_IMAGE_FILE_REQUIRED', 'A file is required');
+
+      const declared = String(req.file.mimetype || '').split(';')[0].trim().toLowerCase();
+      const looksRight = IMAGE_MEDIA[declared];
+      if (!looksRight || !looksRight(req.file.buffer)) {
+        throw new ApiError('PRODUCT_IMAGE_UNSUPPORTED_MEDIA', 'A photo must be JPEG, PNG or WebP', {
+          contentType: declared || 'unknown',
+          accepted: Object.keys(IMAGE_MEDIA)
+        });
+      }
+
+      const product = await db.query(
+        'SELECT id FROM menu_products WHERE id = $1 AND restaurant_id = $2',
+        [req.params.id, req.user.restaurantId]
+      );
+      if (!product.rows.length) throw new ApiError('PRODUCT_NOT_FOUND', 'Product not found');
+
+      // Hashed once, here, rather than on every request that serves the file --
+      // see migration 033. It is both the ETag and the cache-busting suffix on
+      // the URL, so replacing a photo replaces the address as well.
+      const checksum = crypto.createHash('sha256').update(req.file.buffer).digest('hex');
+
+      // The write and the read that answers it, in one statement: the caller
+      // needs the product back with `imageUrl` filled in, and RETURNING alone
+      // cannot join to the section name or to the product row.
+      const { rows } = await db.query(
+        `WITH upserted AS (
+           INSERT INTO menu_product_images
+             (product_id, restaurant_id, bytes, content_type, size_bytes, checksum)
+           VALUES ($1, $2, $3, $4, $5, $6)
+           ON CONFLICT (product_id) DO UPDATE
+             SET bytes = EXCLUDED.bytes,
+                 content_type = EXCLUDED.content_type,
+                 size_bytes = EXCLUDED.size_bytes,
+                 checksum = EXCLUDED.checksum
+           RETURNING product_id, restaurant_id, checksum
+         )
+         SELECT p.id, p.restaurant_id, p.name, p.description, p.price_minor_units,
+                p.currency, p.category_id, p.position, p.active,
+                p.created_at, p.updated_at,
+                c.name AS category_name,
+                true AS has_image, u.checksum AS image_checksum
+           FROM upserted u
+           JOIN menu_products p
+             ON p.id = u.product_id AND p.restaurant_id = u.restaurant_id
+           LEFT JOIN menu_categories c
+             ON c.id = p.category_id AND c.restaurant_id = p.restaurant_id`,
+        [
+          req.params.id, req.user.restaurantId, req.file.buffer,
+          declared, req.file.size, checksum
+        ]
+      );
+
+      await logAudit({
+        ...auditContext(req),
+        action: 'MENU_PRODUCT_IMAGE_UPLOADED',
+        resourceType: 'menu_product',
+        resourceId: req.params.id,
+        details: { contentType: declared, sizeBytes: req.file.size }
+      });
+
+      // The product, not the file: the caller has the file already, and what it
+      // needs back is the row with `imageUrl` filled in so the screen can show
+      // the new photo without a second request.
+      res.json(dto.product(rows[0]));
+    } catch (err) { next(err); }
+  }
+);
+
+/** Removes the photo and leaves the product alone. */
+router.delete(
+  '/products/:id/image',
+  requireRole('OWNER', 'MANAGER'),
+  validateParams(productIdParamSchema),
+  async (req, res, next) => {
+    try {
+      const { rows } = await db.query(
+        `DELETE FROM menu_product_images
+          WHERE product_id = $1 AND restaurant_id = $2
+        RETURNING product_id`,
+        [req.params.id, req.user.restaurantId]
+      );
+      if (!rows.length) throw new ApiError('PRODUCT_IMAGE_NOT_FOUND', 'This product has no photo');
+
+      await logAudit({
+        ...auditContext(req),
+        action: 'MENU_PRODUCT_IMAGE_DELETED',
+        resourceType: 'menu_product',
+        resourceId: req.params.id
       });
 
       res.status(204).end();

@@ -104,9 +104,32 @@ test('the public product carries the section a diner needs to navigate', () => {
     category_id: 'cat-2', category_name: 'Bebidas'
   });
   assert.equal(p.categoryName, 'Bebidas');
+  // No photo uploaded is null, not an absent key: a client must not have to tell
+  // "this dish has no picture" from "this response forgot to say".
+  assert.equal(p.imageUrl, null);
   // Still narrower than the staff shape: no active flag, no timestamps.
   assert.deepEqual(Object.keys(p).sort(),
-    ['categoryId', 'categoryName', 'currency', 'description', 'id', 'name', 'priceMinorUnits']);
+    ['categoryId', 'categoryName', 'currency', 'description', 'id', 'imageUrl', 'name', 'priceMinorUnits']);
+});
+
+test('a public product with a photo points at it, and a new photo is a new address', () => {
+  // The suffix is the whole point: without it a phone that cached the first
+  // picture keeps showing it, and the restaurant's only recourse is telling
+  // diners to clear their browser.
+  const row = {
+    id: 'prod-1', restaurant_id: 'rest-1', name: 'Cachapa',
+    price_minor_units: '200', currency: 'VES',
+    has_image: true, image_checksum: 'abc123def456789012345678'
+  };
+  const withPhoto = dto.publicProduct(row);
+  assert.equal(withPhoto.imageUrl, '/api/v1/menu/public/rest-1/products/prod-1/image?v=abc123def4567890');
+
+  const replaced = dto.publicProduct({ ...row, image_checksum: 'ffffffffffffffffffffffff' });
+  assert.notEqual(replaced.imageUrl, withPhoto.imageUrl);
+
+  // The staff shape agrees with the diner's, so the panel shows what the table
+  // will see rather than its own idea of it.
+  assert.equal(dto.product(row).imageUrl, withPhoto.imageUrl);
 });
 
 test('a category omits productCount unless the query counted', () => {

@@ -821,6 +821,12 @@ const schemas = {
       categoryName: { type: ['string', 'null'], description: 'Flattened on so a client can group without a second request.' },
       position: { type: 'integer', description: 'Order within its section.' },
       active: { type: 'boolean' },
+      imageUrl: {
+        type: ['string', 'null'],
+        description:
+          'Path to the dish photo, or null when the restaurant has not uploaded one \u2014 null is the common case and has to keep looking deliberate. Carries a `v=` suffix from the file\u2019s checksum, so a replaced photo is a new address and a phone stops showing the old dish. Use it as given; do not assemble it.',
+        examples: ['/api/v1/menu/public/9f1c.../products/2b7e.../image?v=c414cd0e204de974']
+      },
       createdAt: { type: 'string', format: 'date-time' },
       updatedAt: { type: 'string', format: 'date-time' }
     }
@@ -841,7 +847,13 @@ const schemas = {
         type: ['string', 'null'], format: 'uuid',
         description: 'The section this sits under. Null is uncategorised — a real state, not a missing value.'
       },
-      categoryName: { type: ['string', 'null'], description: 'Flattened on so a client can group without a second request.' }
+      categoryName: { type: ['string', 'null'], description: 'Flattened on so a client can group without a second request.' },
+      imageUrl: {
+        type: ['string', 'null'],
+        description:
+          'Path to the dish photo, or null when the restaurant has not uploaded one \u2014 null is the common case and has to keep looking deliberate. Carries a `v=` suffix from the file\u2019s checksum, so a replaced photo is a new address and a phone stops showing the old dish. Use it as given; do not assemble it.',
+        examples: ['/api/v1/menu/public/9f1c.../products/2b7e.../image?v=c414cd0e204de974']
+      }
     }
   },
 
@@ -1611,6 +1623,16 @@ Object.assign(schemas, {
       bankName: { type: ['string', 'null'] },
       phone: { type: 'string' },
       holderId: { type: 'string' }
+    }
+  },
+
+  UpdateAccountRequest: {
+    type: 'object',
+    required: ['name'],
+    description:
+      "The restaurant's own name, as a diner reads it on the QR landing page. Trimmed; something has to be left after trimming, so a name cannot be blanked into an empty landing page.",
+    properties: {
+      name: { type: 'string', minLength: 1, maxLength: 120, examples: ['Casa 72'] }
     }
   },
 
@@ -3285,6 +3307,107 @@ const paths = {
     }
   },
 
+  '/api/v1/menu/products/{id}/image': {
+    put: {
+      tags: ['Menu'],
+      summary: 'Set a dish photo',
+      operationId: 'setProductImage',
+      'x-required-roles': ['OWNER', 'MANAGER'],
+      description: [
+        'OWNER and MANAGER. `multipart/form-data`, field `file`. JPEG, PNG or WebP.',
+        '',
+        'Optional per product, and always the restaurant\u2019s choice \u2014 a menu with no photographs must',
+        'keep looking deliberate rather than unfinished. The ceiling is deliberately far below the',
+        'menu PDF\u2019s: a PDF is fetched once by a diner who chose to open it, a dish photo by everyone',
+        'at the table at once.',
+        '',
+        'The bytes are checked against the declared type, which catches a HEIC straight off an iPhone',
+        'or a PDF dropped in the wrong box and says so plainly rather than storing something no',
+        'browser will render.',
+        '',
+        'An upload replaces whatever was there; there is one photo per product. The **product** comes',
+        'back, not the file, with `imageUrl` filled in so a screen can show the new photo without a',
+        'second request.'
+      ].join('\n'),
+      security: staff,
+      parameters: [{ name: 'id', in: 'path', required: true, schema: { type: 'string', format: 'uuid' } }],
+      requestBody: {
+        required: true,
+        content: { 'multipart/form-data': { schema: {
+          type: 'object',
+          required: ['file'],
+          properties: {
+            file: {
+              type: 'string', format: 'binary',
+              description: 'JPEG, PNG or WebP, up to PRODUCT_IMAGE_MAX_UPLOAD_BYTES (2 MB by default).'
+            }
+          }
+        } } }
+      },
+      responses: {
+        200: { description: 'Stored. The product, with imageUrl.', content: { 'application/json': { schema: ref('Product') } } },
+        400: { description: 'Not a supported image, no file, or too large.', content: { 'application/json': { schema: ref('Error') } } },
+        ...commonErrors,
+        403: response('Forbidden'),
+        404: response('NotFound')
+      }
+    },
+    delete: {
+      tags: ['Menu'],
+      summary: 'Remove a dish photo',
+      operationId: 'deleteProductImage',
+      'x-required-roles': ['OWNER', 'MANAGER'],
+      description: 'OWNER and MANAGER. Removes the photo and leaves the product alone. 404 if there was none.',
+      security: staff,
+      parameters: [{ name: 'id', in: 'path', required: true, schema: { type: 'string', format: 'uuid' } }],
+      responses: {
+        204: { description: 'Removed.' },
+        ...commonErrors,
+        403: response('Forbidden'),
+        404: response('NotFound')
+      }
+    }
+  },
+
+  '/api/v1/menu/public/{restaurantId}/products/{productId}/image': {
+    get: {
+      tags: ['Menu'],
+      summary: 'A dish photo, to a diner',
+      operationId: 'getPublicProductImage',
+      description: [
+        '**Unauthenticated**, like the public products beside it: a diner scanning a table QR has no',
+        'staff credentials, and this serves a picture the restaurant chose to publish.',
+        '',
+        'Do not build this URL. Use the `imageUrl` on the product, which carries a `v=` suffix taken',
+        'from the file\u2019s checksum \u2014 that is what makes a replaced photo appear instead of the one a',
+        'phone already cached. Because the address changes with the picture, the response is',
+        '`immutable` for a year; an `ETag` is still sent for a client that arrives without the suffix.',
+        '',
+        'Scoped by both ids: a product belonging to another restaurant is a 404 rather than a picture,',
+        'and a deactivated product takes its photo off the menu with it.'
+      ].join('\n'),
+      security: [],
+      parameters: [
+        { name: 'restaurantId', in: 'path', required: true, schema: { type: 'string', format: 'uuid' } },
+        { name: 'productId', in: 'path', required: true, schema: { type: 'string', format: 'uuid' } }
+      ],
+      responses: {
+        200: {
+          description: 'The photo.',
+          content: {
+            'image/jpeg': { schema: { type: 'string', format: 'binary' } },
+            'image/png': { schema: { type: 'string', format: 'binary' } },
+            'image/webp': { schema: { type: 'string', format: 'binary' } }
+          }
+        },
+        304: { description: 'The client already has this photo.' },
+        404: { description: 'No photo, or not this restaurant\u2019s product.', content: { 'application/json': { schema: ref('Error') } } },
+        429: { $ref: '#/components/responses/TooManyRequests' },
+        500: { $ref: '#/components/responses/ServerError' }
+      }
+    }
+  },
+
   '/api/v1/menu/pdf': {
     get: {
       tags: ['Menu'],
@@ -4308,6 +4431,30 @@ const paths = {
       responses: {
         200: { description: 'The restaurant and its plan.', content: { 'application/json': { schema: ref('Account') } } },
         ...commonErrors,
+        404: response('NotFound')
+      }
+    },
+    patch: {
+      tags: ['Account'],
+      summary: "Rename the restaurant",
+      operationId: 'updateAccount',
+      'x-required-roles': ['OWNER', 'MANAGER'],
+      description: [
+        'Roles: OWNER, MANAGER.',
+        '',
+        'The name a diner reads on their phone the moment they scan the code on the table, above',
+        'the table number. It could previously only be set during onboarding, which left whatever',
+        'was typed that day in front of every customer with no way to correct it.',
+        '',
+        'Nothing else in the record is touched here — menu currency, charges and the payee each',
+        'have their own endpoint, because each is a different decision with a different reach.'
+      ].join('\n'),
+      security: staff,
+      requestBody: { required: true, content: { 'application/json': { schema: ref('UpdateAccountRequest') } } },
+      responses: {
+        200: { description: 'The updated restaurant.', content: { 'application/json': { schema: ref('Account') } } },
+        ...commonErrors,
+        403: response('Forbidden'),
         404: response('NotFound')
       }
     }

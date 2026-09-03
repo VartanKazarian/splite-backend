@@ -473,6 +473,16 @@ module.exports = {
   menuPdf: {
     maxUploadBytes: integer('MENU_PDF_MAX_UPLOAD_BYTES', 20 * 1024 * 1024)
   },
+  productImage: {
+    /**
+     * Deliberately far below the menu PDF's ceiling. A PDF is fetched once by a
+     * diner who chose to open it; a dish photo is fetched by everyone at the
+     * table, several of them at once, on a phone with one bar of signal. Two
+     * megabytes is a generous photograph and a tolerable download; twenty would
+     * be a menu that never finishes loading.
+     */
+    maxUploadBytes: integer('PRODUCT_IMAGE_MAX_UPLOAD_BYTES', 2 * 1024 * 1024)
+  },
   reconcile: {
     /**
      * How long a C2P charge may sit unresolved before the reconciler mentions

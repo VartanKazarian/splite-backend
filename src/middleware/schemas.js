@@ -457,6 +457,21 @@ const c2pBankGuideQuerySchema = Joi.object({
  * payee looks configured on screen and cannot receive money, and that failure
  * lands on a diner holding a phone rather than on whoever filled the form in.
  */
+/**
+ * The restaurant's own name.
+ *
+ * It is not decoration: it is the first thing a diner reads after scanning the
+ * code on the table, above the table number, and until now it could only be set
+ * once during onboarding -- so a restaurant that signed up as "Splite Demo", or
+ * simply mistyped, was stuck with it in front of every customer.
+ *
+ * Bounded to the column (VARCHAR(120)) and required to have something in it
+ * after trimming, so a name cannot be blanked into an empty landing page.
+ */
+const restaurantProfileSchema = Joi.object({
+  name: Joi.string().trim().min(1).max(120).required()
+});
+
 const payoutSchema = Joi.object({
   bankCode: Joi.string().trim().pattern(/^[0-9]{4}$/)
     .valid(...banks.CODES)
@@ -675,6 +690,18 @@ const productIdParamSchema = Joi.object({ id: uuid.required() });
 const categoryIdParamSchema = Joi.object({ id: uuid.required() });
 const restaurantIdParamSchema = Joi.object({ restaurantId: uuid.required() });
 
+/**
+ * A product's photo, addressed by both ids.
+ *
+ * The restaurant is in the path as well as the product because the route is
+ * public: scoping the lookup by both means a product id belonging to another
+ * tenant is a 404 rather than a picture.
+ */
+const productImageParamSchema = Joi.object({
+  restaurantId: uuid.required(),
+  productId: uuid.required()
+});
+
 function validate(schema, property) {
   return (req, res, next) => {
     const { error, value } = schema.validate(req[property], { abortEarly: false, stripUnknown: true, convert: true });
@@ -713,6 +740,7 @@ module.exports = {
   signupProfileSchema,
   splitPaymentSchema,
   payoutSchema,
+  restaurantProfileSchema,
   paymentProviderParamSchema,
   declareClaimSchema,
   c2pChargeSchema,
@@ -754,6 +782,7 @@ module.exports = {
   reorderCategoriesSchema,
   categoryIdParamSchema,
   restaurantIdParamSchema,
+  productImageParamSchema,
   billIdParamSchema,
   splitIdParamSchema,
   tableIdParamSchema,
