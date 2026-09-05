@@ -86,6 +86,34 @@ function caracasToday(now = new Date()) {
  * number, have nothing better to compare against, and dropping the price
  * display over a formatting change on BCV's page is the worse trade.
  */
+/**
+ * A `date` column as an ISO calendar date.
+ *
+ * node-postgres maps `date` to a JS Date, and `String(thatDate)` is
+ * "Sat Sep 05 2026 00:00:00 GMT+0000", so taking the first ten characters
+ * produced "Sat Sep 05". That is not a date anything downstream can read:
+ *
+ *   - `Date.parse('Sat Sep 05' + 'T00:00:00Z')` is NaN, so the fallback age
+ *     came out NaN, `NaN > maxFallbackAgeDays` is false, and the guard that
+ *     exists to refuse rather than price on a stale rate never fired. A rate
+ *     a year old was served as though it were today's.
+ *   - `isInForce` compares strings, and "S" sorts above any digit, so a
+ *     historical rate never looked in force either.
+ *   - The API published it as `valueDate`, which its own contract declares as
+ *     `format: date`, and the panel printed it at a Venezuelan restaurant in
+ *     English.
+ *
+ * Built from the local components rather than `toISOString()`: the driver
+ * gives local midnight for a `date`, and converting to UTC can move the day.
+ */
+function isoDate(value) {
+  if (!(value instanceof Date)) return String(value).slice(0, 10);
+  const year = value.getFullYear();
+  const month = String(value.getMonth() + 1).padStart(2, '0');
+  const day = String(value.getDate()).padStart(2, '0');
+  return `${year}-${month}-${day}`;
+}
+
 function isInForce(valueDate, now = new Date()) {
   if (!valueDate) return true;
   return String(valueDate).slice(0, 10) <= caracasToday(now);
@@ -159,7 +187,7 @@ async function inForceFromHistory(currency) {
   return {
     rate: Number(rows[0].rate),
     source: rows[0].source,
-    valueDate: String(rows[0].value_date).slice(0, 10),
+    valueDate: isoDate(rows[0].value_date),
     fetchedAt: new Date()
   };
 }
