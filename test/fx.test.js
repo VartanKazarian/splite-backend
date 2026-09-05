@@ -232,7 +232,15 @@ function historyDated(daysAgo) {
 
   db.query = async sql => {
     if (/FROM fx_rates/.test(sql) && /value_date <=/.test(sql)) {
-      return { rows: [{ rate: '757.54060000', source: 'BCV', value_date: valueDate }] };
+      // A Date, because that is what node-postgres hands back for a `date`
+      // column. Handing back the ISO string instead is what hid a live bug:
+      // the code did `String(value).slice(0, 10)`, which is "2026-09-05" for a
+      // string and "Sat Sep 05" for a Date, and every guard downstream parses
+      // that value. The double has to lie the same way the driver does.
+      const [year, month, day] = valueDate.split('-').map(Number);
+      return {
+        rows: [{ rate: '757.54060000', source: 'BCV', value_date: new Date(year, month - 1, day) }]
+      };
     }
     return { rows: [] };
   };
