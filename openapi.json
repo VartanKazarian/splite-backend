@@ -2785,6 +2785,25 @@
           "restaurantId": {
             "type": "string",
             "format": "uuid"
+          },
+          "displayName": {
+            "type": "string",
+            "nullable": true,
+            "maxLength": 80,
+            "description": "How this person is called, when they have said. Null when they have not, which is every account until somebody fills it in -- the field is optional and nothing depends on it. A client with nothing here should fall back to the email rather than invent a name."
+          }
+        }
+      },
+      "DisplayNameRequest": {
+        "type": "object",
+        "required": [
+          "displayName"
+        ],
+        "properties": {
+          "displayName": {
+            "type": "string",
+            "maxLength": 80,
+            "description": "Trimmed before storing. The empty string clears the name rather than storing a blank one."
           }
         }
       },
@@ -4670,6 +4689,58 @@
                 }
               }
             }
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "429": {
+            "$ref": "#/components/responses/TooManyRequests"
+          },
+          "500": {
+            "$ref": "#/components/responses/ServerError"
+          }
+        }
+      },
+      "patch": {
+        "tags": [
+          "Auth"
+        ],
+        "summary": "Set your own display name",
+        "operationId": "setOwnDisplayName",
+        "description": "Anyone signed in, on their own account only. The user id comes from the token, so there\nis no id to send and no way to rename somebody else from here -- renaming other staff is\n/staff, with its own permissions.\n\nThe empty string clears the name. That is the gesture people expect from emptying the\nfield, and the alternative would be a separate action meaning \"remove my name\".\n\nChanges nothing else: not the role, not the email, and not the sessions. Being called\nsomething different is not a reason to sign anybody out.",
+        "security": [
+          {
+            "staffAuth": []
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/DisplayNameRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "The caller, in the same shape as GET, so a client refreshes what it already stored.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "user": {
+                      "$ref": "#/components/schemas/SessionUser"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
           },
           "401": {
             "$ref": "#/components/responses/Unauthorized"

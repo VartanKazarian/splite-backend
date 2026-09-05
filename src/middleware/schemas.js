@@ -47,6 +47,18 @@ const resetStaffPasswordSchema = Joi.object({
   password: Joi.string().min(12).max(128).required()
 });
 
+/**
+ * El propio nombre.
+ *
+ * `allow('')` a propósito: vaciar la casilla es cómo se borra un nombre, y el
+ * servicio lo convierte en NULL. Sin esto habría que inventar un gesto aparte
+ * para "quitar mi nombre", que es exactamente lo que la gente espera hacer
+ * borrando el texto.
+ */
+const displayNameSchema = Joi.object({
+  displayName: Joi.string().trim().max(80).allow('').required()
+});
+
 const userIdParamSchema = Joi.object({ userId: uuid.required() });
 
 const loginSchema = Joi.object({
@@ -746,6 +758,7 @@ module.exports = {
   updateStaffSchema,
   resetStaffPasswordSchema,
   changePasswordSchema,
+  displayNameSchema,
   userIdParamSchema,
   mfaChallengeSchema,
   mfaCodeSchema,

@@ -1119,7 +1119,29 @@ const schemas = {
       id: { type: 'string', format: 'uuid' },
       email: { type: 'string' },
       role: { type: 'string', enum: ['OWNER', 'MANAGER', 'CASHIER', 'WAITER'] },
-      restaurantId: { type: 'string', format: 'uuid' }
+      restaurantId: { type: 'string', format: 'uuid' },
+      displayName: {
+        type: 'string',
+        nullable: true,
+        maxLength: 80,
+        description: [
+          'How this person is called, when they have said. Null when they have not, which is',
+          'every account until somebody fills it in -- the field is optional and nothing depends',
+          'on it. A client with nothing here should fall back to the email rather than invent a name.'
+        ].join(' ')
+      }
+    }
+  },
+
+  DisplayNameRequest: {
+    type: 'object',
+    required: ['displayName'],
+    properties: {
+      displayName: {
+        type: 'string',
+        maxLength: 80,
+        description: 'Trimmed before storing. The empty string clears the name rather than storing a blank one.'
+      }
     }
   },
 
@@ -2152,6 +2174,39 @@ const paths = {
             }
           }
         },
+        401: response('Unauthorized'),
+        429: response('TooManyRequests'),
+        500: response('ServerError')
+      }
+    },
+
+    patch: {
+      tags: ['Auth'],
+      summary: 'Set your own display name',
+      operationId: 'setOwnDisplayName',
+      description: [
+        'Anyone signed in, on their own account only. The user id comes from the token, so there',
+        'is no id to send and no way to rename somebody else from here -- renaming other staff is',
+        '/staff, with its own permissions.',
+        '',
+        'The empty string clears the name. That is the gesture people expect from emptying the',
+        'field, and the alternative would be a separate action meaning "remove my name".',
+        '',
+        'Changes nothing else: not the role, not the email, and not the sessions. Being called',
+        'something different is not a reason to sign anybody out.'
+      ].join('\n'),
+      security: staff,
+      requestBody: { required: true, content: { 'application/json': { schema: ref('DisplayNameRequest') } } },
+      responses: {
+        200: {
+          description: 'The caller, in the same shape as GET, so a client refreshes what it already stored.',
+          content: {
+            'application/json': {
+              schema: { type: 'object', properties: { user: ref('SessionUser') } }
+            }
+          }
+        },
+        400: response('BadRequest'),
         401: response('Unauthorized'),
         429: response('TooManyRequests'),
         500: response('ServerError')
