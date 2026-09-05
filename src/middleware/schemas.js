@@ -691,6 +691,22 @@ const categoryIdParamSchema = Joi.object({ id: uuid.required() });
 const restaurantIdParamSchema = Joi.object({ restaurantId: uuid.required() });
 
 /**
+ * Which of the restaurant's two images is being addressed.
+ *
+ * Uppercased before the check so `/branding/cover` and `/branding/COVER` are
+ * the same URL: the column is an enum and a case mismatch would be a 404 that
+ * looks like a missing image.
+ */
+const brandingKindParamSchema = Joi.object({
+  kind: Joi.string().uppercase().valid('COVER', 'LOGO').required()
+});
+
+const publicBrandingParamSchema = Joi.object({
+  restaurantId: uuid.required(),
+  kind: Joi.string().uppercase().valid('COVER', 'LOGO').required()
+});
+
+/**
  * A product's photo, addressed by both ids.
  *
  * The restaurant is in the path as well as the product because the route is
@@ -783,6 +799,8 @@ module.exports = {
   categoryIdParamSchema,
   restaurantIdParamSchema,
   productImageParamSchema,
+  brandingKindParamSchema,
+  publicBrandingParamSchema,
   billIdParamSchema,
   splitIdParamSchema,
   tableIdParamSchema,

@@ -76,6 +76,13 @@
         "contentType": "string -- what was uploaded",
         "accepted": "string[] -- the media types a photo may be"
       },
+      "BRANDING_FILE_TOO_LARGE": {
+        "maxBytes": "integer -- the upload ceiling"
+      },
+      "BRANDING_UNSUPPORTED_MEDIA": {
+        "contentType": "string -- what was uploaded",
+        "accepted": "string[] -- the media types an image may be"
+      },
       "CATEGORY_NAME_TAKEN": {
         "name": "string -- the section that already exists"
       },
@@ -330,10 +337,13 @@
                   "MENU_OCR_FILE_TOO_LARGE",
                   "MENU_PDF_UNSUPPORTED_MEDIA",
                   "PRODUCT_IMAGE_UNSUPPORTED_MEDIA",
+                  "BRANDING_UNSUPPORTED_MEDIA",
                   "MENU_PDF_FILE_REQUIRED",
                   "MENU_PDF_FILE_TOO_LARGE",
                   "PRODUCT_IMAGE_FILE_TOO_LARGE",
                   "PRODUCT_IMAGE_FILE_REQUIRED",
+                  "BRANDING_FILE_TOO_LARGE",
+                  "BRANDING_FILE_REQUIRED",
                   "SPLIT_PARTICIPANTS_INVALID",
                   "SPLIT_CLAIMS_INCOMPLETE",
                   "SPLIT_CLAIM_UNKNOWN",
@@ -364,6 +374,7 @@
                   "CATEGORY_NOT_FOUND",
                   "MENU_PDF_NOT_FOUND",
                   "PRODUCT_IMAGE_NOT_FOUND",
+                  "BRANDING_NOT_FOUND",
                   "RESTAURANT_NOT_FOUND",
                   "OPEN_BILL_NOT_FOUND",
                   "PAYMENT_CLAIM_NOT_FOUND",
@@ -2193,6 +2204,29 @@
           }
         }
       },
+      "BrandingImage": {
+        "type": "object",
+        "description": "One of the restaurant's two images, described rather than sent.",
+        "properties": {
+          "kind": {
+            "type": "string",
+            "enum": [
+              "COVER",
+              "LOGO"
+            ]
+          },
+          "contentType": {
+            "type": "string"
+          },
+          "sizeBytes": {
+            "type": "integer"
+          },
+          "url": {
+            "type": "string",
+            "description": "Where a diner fetches it. Use as given; the suffix changes when the image does."
+          }
+        }
+      },
       "PublicProduct": {
         "type": "object",
         "properties": {
@@ -2370,6 +2404,20 @@
                   "USD",
                   "EUR"
                 ]
+              },
+              "coverUrl": {
+                "type": [
+                  "string",
+                  "null"
+                ],
+                "description": "The restaurant's cover photo, or null when it has not uploaded one — null is the common case and should look deliberate rather than broken. Carries a `v=` suffix from the file's checksum, so a replaced image is a new address. Use as given."
+              },
+              "logoUrl": {
+                "type": [
+                  "string",
+                  "null"
+                ],
+                "description": "The logo, on the same terms as `coverUrl`."
               }
             }
           },
@@ -2465,6 +2513,20 @@
               "USD",
               "EUR"
             ]
+          },
+          "coverUrl": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The restaurant's cover photo, or null when it has not uploaded one — null is the common case and should look deliberate rather than broken. Carries a `v=` suffix from the file's checksum, so a replaced image is a new address. Use as given."
+          },
+          "logoUrl": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The logo, on the same terms as `coverUrl`."
           }
         }
       },
@@ -7127,6 +7189,220 @@
           },
           "404": {
             "description": "No such section for this restaurant.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "429": {
+            "$ref": "#/components/responses/TooManyRequests"
+          },
+          "500": {
+            "$ref": "#/components/responses/ServerError"
+          }
+        }
+      }
+    },
+    "/api/v1/menu/branding/{kind}": {
+      "put": {
+        "tags": [
+          "Menu"
+        ],
+        "summary": "Set the restaurant's cover photo or logo",
+        "operationId": "setBranding",
+        "x-required-roles": [
+          "OWNER",
+          "MANAGER"
+        ],
+        "description": "OWNER and MANAGER. `multipart/form-data`, field `file`. JPEG, PNG or WebP.\n\nThe shopfront a diner sees after scanning a table: the cover is wide and sits behind the\nname, the logo is square and sits on top of it. Both optional. Where they appear is the\nclient’s decision; the API stores two images and says where they are.\n\nA larger ceiling than a dish photo (`BRANDING_MAX_UPLOAD_BYTES`, 4 MB by default): a cover\nis a wide shot, and one that has to be cropped down usually ends up not uploaded at all.",
+        "security": [
+          {
+            "staffAuth": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "kind",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "enum": [
+                "COVER",
+                "LOGO"
+              ]
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "multipart/form-data": {
+              "schema": {
+                "type": "object",
+                "required": [
+                  "file"
+                ],
+                "properties": {
+                  "file": {
+                    "type": "string",
+                    "format": "binary"
+                  }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Stored.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BrandingImage"
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "403": {
+            "$ref": "#/components/responses/Forbidden"
+          },
+          "404": {
+            "$ref": "#/components/responses/NotFound"
+          },
+          "429": {
+            "$ref": "#/components/responses/TooManyRequests"
+          },
+          "500": {
+            "$ref": "#/components/responses/ServerError"
+          }
+        }
+      },
+      "delete": {
+        "tags": [
+          "Menu"
+        ],
+        "summary": "Remove the cover photo or logo",
+        "operationId": "deleteBranding",
+        "x-required-roles": [
+          "OWNER",
+          "MANAGER"
+        ],
+        "description": "OWNER and MANAGER. 404 if there was none.",
+        "security": [
+          {
+            "staffAuth": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "kind",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "enum": [
+                "COVER",
+                "LOGO"
+              ]
+            }
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "Removed."
+          },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "403": {
+            "$ref": "#/components/responses/Forbidden"
+          },
+          "404": {
+            "$ref": "#/components/responses/NotFound"
+          },
+          "429": {
+            "$ref": "#/components/responses/TooManyRequests"
+          },
+          "500": {
+            "$ref": "#/components/responses/ServerError"
+          }
+        }
+      }
+    },
+    "/api/v1/menu/public/{restaurantId}/branding/{kind}": {
+      "get": {
+        "tags": [
+          "Menu"
+        ],
+        "summary": "A restaurant's cover photo or logo, to a diner",
+        "operationId": "getPublicBranding",
+        "description": "**Unauthenticated**, like the public products beside it.\n\nDo not build this URL. Use `coverUrl` / `logoUrl` from the QR context or the public menu,\nwhich carry a `v=` suffix from the file’s checksum — that is what makes a replaced image\nappear instead of the one a phone already cached, and what lets this be `immutable` for a\nyear.",
+        "security": [],
+        "parameters": [
+          {
+            "name": "restaurantId",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          },
+          {
+            "name": "kind",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "enum": [
+                "COVER",
+                "LOGO"
+              ]
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The image.",
+            "content": {
+              "image/jpeg": {
+                "schema": {
+                  "type": "string",
+                  "format": "binary"
+                }
+              },
+              "image/png": {
+                "schema": {
+                  "type": "string",
+                  "format": "binary"
+                }
+              },
+              "image/webp": {
+                "schema": {
+                  "type": "string",
+                  "format": "binary"
+                }
+              }
+            }
+          },
+          "304": {
+            "description": "The client already has this image."
+          },
+          "404": {
+            "description": "No image of that kind.",
             "content": {
               "application/json": {
                 "schema": {

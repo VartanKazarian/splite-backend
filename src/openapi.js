@@ -835,6 +835,17 @@ const schemas = {
   // What a guest scanning a QR is shown: what a thing is and what it costs.
   // Inactive products are not listed, so `active` would always be true, and
   // edit timestamps are operational detail no diner needs.
+  BrandingImage: {
+    type: 'object',
+    description: "One of the restaurant's two images, described rather than sent.",
+    properties: {
+      kind: { type: 'string', enum: ['COVER', 'LOGO'] },
+      contentType: { type: 'string' },
+      sizeBytes: { type: 'integer' },
+      url: { type: 'string', description: 'Where a diner fetches it. Use as given; the suffix changes when the image does.' }
+    }
+  },
+
   PublicProduct: {
     type: 'object',
     properties: {
@@ -904,7 +915,12 @@ const schemas = {
         properties: {
           id: { type: 'string', format: 'uuid', description: 'Addresses the public menu.' },
           name: { type: 'string' },
-          menuCurrency: { type: 'string', enum: ['VES', 'USD', 'EUR'] }
+          menuCurrency: { type: 'string', enum: ['VES', 'USD', 'EUR'] },
+          coverUrl: {
+            type: ['string', 'null'],
+            description: "The restaurant's cover photo, or null when it has not uploaded one \u2014 null is the common case and should look deliberate rather than broken. Carries a `v=` suffix from the file's checksum, so a replaced image is a new address. Use as given."
+          },
+          logoUrl: { type: ['string', 'null'], description: 'The logo, on the same terms as `coverUrl`.' }
         }
       },
       table: {
@@ -956,7 +972,12 @@ const schemas = {
     properties: {
       id: { type: 'string', format: 'uuid' },
       name: { type: 'string' },
-      menuCurrency: { type: 'string', enum: ['VES', 'USD', 'EUR'] }
+      menuCurrency: { type: 'string', enum: ['VES', 'USD', 'EUR'] },
+      coverUrl: {
+        type: ['string', 'null'],
+        description: "The restaurant's cover photo, or null when it has not uploaded one \u2014 null is the common case and should look deliberate rather than broken. Carries a `v=` suffix from the file's checksum, so a replaced image is a new address. Use as given."
+      },
+      logoUrl: { type: ['string', 'null'], description: 'The logo, on the same terms as `coverUrl`.' }
     }
   },
 
@@ -3303,6 +3324,92 @@ const paths = {
         204: { description: 'Deleted. Its products are now uncategorised.' },
         404: { description: 'No such section for this restaurant.', content: { 'application/json': { schema: ref('Error') } } },
         ...commonErrors
+      }
+    }
+  },
+
+  '/api/v1/menu/branding/{kind}': {
+    put: {
+      tags: ['Menu'],
+      summary: "Set the restaurant's cover photo or logo",
+      operationId: 'setBranding',
+      'x-required-roles': ['OWNER', 'MANAGER'],
+      description: [
+        'OWNER and MANAGER. `multipart/form-data`, field `file`. JPEG, PNG or WebP.',
+        '',
+        'The shopfront a diner sees after scanning a table: the cover is wide and sits behind the',
+        'name, the logo is square and sits on top of it. Both optional. Where they appear is the',
+        'client\u2019s decision; the API stores two images and says where they are.',
+        '',
+        'A larger ceiling than a dish photo (`BRANDING_MAX_UPLOAD_BYTES`, 4 MB by default): a cover',
+        'is a wide shot, and one that has to be cropped down usually ends up not uploaded at all.'
+      ].join('\n'),
+      security: staff,
+      parameters: [{ name: 'kind', in: 'path', required: true, schema: { type: 'string', enum: ['COVER', 'LOGO'] } }],
+      requestBody: {
+        required: true,
+        content: { 'multipart/form-data': { schema: {
+          type: 'object',
+          required: ['file'],
+          properties: { file: { type: 'string', format: 'binary' } }
+        } } }
+      },
+      responses: {
+        200: { description: 'Stored.', content: { 'application/json': { schema: ref('BrandingImage') } } },
+        400: { description: 'Not a supported image, no file, too large, or an unknown kind.', content: { 'application/json': { schema: ref('Error') } } },
+        ...commonErrors,
+        403: response('Forbidden'),
+        404: response('NotFound')
+      }
+    },
+    delete: {
+      tags: ['Menu'],
+      summary: 'Remove the cover photo or logo',
+      operationId: 'deleteBranding',
+      'x-required-roles': ['OWNER', 'MANAGER'],
+      description: 'OWNER and MANAGER. 404 if there was none.',
+      security: staff,
+      parameters: [{ name: 'kind', in: 'path', required: true, schema: { type: 'string', enum: ['COVER', 'LOGO'] } }],
+      responses: {
+        204: { description: 'Removed.' },
+        ...commonErrors,
+        403: response('Forbidden'),
+        404: response('NotFound')
+      }
+    }
+  },
+
+  '/api/v1/menu/public/{restaurantId}/branding/{kind}': {
+    get: {
+      tags: ['Menu'],
+      summary: "A restaurant's cover photo or logo, to a diner",
+      operationId: 'getPublicBranding',
+      description: [
+        '**Unauthenticated**, like the public products beside it.',
+        '',
+        'Do not build this URL. Use `coverUrl` / `logoUrl` from the QR context or the public menu,',
+        'which carry a `v=` suffix from the file\u2019s checksum \u2014 that is what makes a replaced image',
+        'appear instead of the one a phone already cached, and what lets this be `immutable` for a',
+        'year.'
+      ].join('\n'),
+      security: [],
+      parameters: [
+        { name: 'restaurantId', in: 'path', required: true, schema: { type: 'string', format: 'uuid' } },
+        { name: 'kind', in: 'path', required: true, schema: { type: 'string', enum: ['COVER', 'LOGO'] } }
+      ],
+      responses: {
+        200: {
+          description: 'The image.',
+          content: {
+            'image/jpeg': { schema: { type: 'string', format: 'binary' } },
+            'image/png': { schema: { type: 'string', format: 'binary' } },
+            'image/webp': { schema: { type: 'string', format: 'binary' } }
+          }
+        },
+        304: { description: 'The client already has this image.' },
+        404: { description: 'No image of that kind.', content: { 'application/json': { schema: ref('Error') } } },
+        429: { $ref: '#/components/responses/TooManyRequests' },
+        500: { $ref: '#/components/responses/ServerError' }
       }
     }
   },
