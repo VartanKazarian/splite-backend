@@ -1139,6 +1139,38 @@ its own `restaurant_id` so that check is a `WHERE` rather than a join somebody
 has to remember. A product from another tenant is a 404 rather than a picture,
 and a deactivated product takes its photo off the menu with it.
 
+## The restaurant's own face
+
+A diner who scans a code used to get a page saying the restaurant's name in the
+app's typeface and nothing else. Two images fix that, both optional:
+
+| | |
+|---|---|
+| `PUT /api/v1/menu/branding/{kind}` | OWNER, MANAGER. `multipart/form-data`, field `file`. `kind` is `COVER` or `LOGO` |
+| `DELETE /api/v1/menu/branding/{kind}` | takes it down |
+| `GET /api/v1/menu/public/{restaurantId}/branding/{kind}` | unauthenticated, what a phone loads |
+
+The cover is wide and sits behind the name; the logo is square and sits on top
+of it. Where exactly is the client's decision — the API stores two images and
+says where they are. Both surface as `coverUrl` and `logoUrl` on the QR context
+and on the public menu, or `null`, which is the common case and has to look
+deliberate rather than broken.
+
+Stored in `restaurant_images` (migration 034), keyed on `(restaurant_id, kind)`
+so replacing either is an upsert. Out of `restaurants` for the reason migrations
+032 and 033 gave: `restaurants` is read on nearly every authenticated request,
+and a `bytea` there would ride along with each one. The reads that need them
+join for the **checksum only** — never the bytes.
+
+The ceiling is 4 MB rather than a dish photo's 2. A cover is a wide shot, and
+one that has to be cropped down to fit usually ends up not uploaded at all.
+
+Everything else matches the dish photo: the checksum on the query string so a
+replaced image is a new address, `immutable` for a year because of it, the
+file's own signature checked against the declared type, and
+`Cross-Origin-Resource-Policy: cross-origin` so a browser will actually render
+it from another site.
+
 ## The restaurant's own name
 
 `PATCH /api/v1/account` (OWNER, MANAGER) sets it. It is the first thing a diner

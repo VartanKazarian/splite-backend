@@ -66,11 +66,16 @@ describe('what a diner sees: the restaurant name and its dish photos', { skip },
     };
   };
 
-  const upload = (productId, bytes, { type = 'image/png', filename = 'dish.png' } = {}) => {
+  const formOf = (bytes, type = 'image/png', filename = 'image.png') => {
     const form = new FormData();
     form.append('file', new Blob([bytes], { type }), filename);
-    return request('PUT', `/api/v1/menu/products/${productId}/image`, { form });
+    return form;
   };
+
+  const upload = (productId, bytes, { type = 'image/png', filename = 'dish.png' } = {}) =>
+    request('PUT', `/api/v1/menu/products/${productId}/image`, {
+      form: formOf(bytes, type, filename)
+    });
 
   const newProduct = async (restaurantId = restaurant.id) => {
     const { rows } = await db.query(
@@ -281,6 +286,65 @@ describe('what a diner sees: the restaurant name and its dish photos', { skip },
 
     const blank = await request('PATCH', '/api/v1/account', { body: { name: '   ' } });
     assert.equal(blank.status, 400);
+  });
+
+  it('puts the restaurant\u2019s cover and logo on the screens a diner sees', async () => {
+    // The first screen after a scan said the restaurant\u2019s name in the app\u2019s
+    // own typeface and nothing else. These are what tell somebody the code
+    // they just scanned belongs to the place they are sitting in.
+    const cover = await request('PUT', '/api/v1/menu/branding/cover', { form: formOf(PNG) });
+    assert.equal(cover.status, 200, JSON.stringify(cover.body));
+    assert.equal(cover.body.kind, 'COVER');
+
+    const logo = await request('PUT', '/api/v1/menu/branding/LOGO', {
+      form: formOf(JPEG, 'image/jpeg', 'logo.jpg')
+    });
+    assert.equal(logo.status, 200, JSON.stringify(logo.body));
+
+    // The public menu, which is what the carta screen reads.
+    const menu = await request('GET', `/api/v1/menu/public/${restaurant.id}/products`, { auth: false });
+    assert.ok(menu.body.restaurant.coverUrl, 'the carta knows about the cover');
+    assert.ok(menu.body.restaurant.logoUrl, 'and the logo');
+
+    // And the bytes come back, unauthenticated, renderable cross-site.
+    const got = await request('GET', menu.body.restaurant.coverUrl, { auth: false });
+    assert.equal(got.status, 200);
+    assert.deepEqual(got.bytes, PNG);
+    assert.equal(got.headers.get('cross-origin-resource-policy'), 'cross-origin');
+  });
+
+  it('lets the restaurant take an image down again', async () => {
+    await request('PUT', '/api/v1/menu/branding/cover', { form: formOf(PNG) });
+
+    const removed = await request('DELETE', '/api/v1/menu/branding/cover');
+    assert.equal(removed.status, 204);
+
+    const again = await request('DELETE', '/api/v1/menu/branding/cover');
+    assert.equal(again.status, 404, 'and says so if there was nothing to remove');
+
+    const menu = await request('GET', `/api/v1/menu/public/${restaurant.id}/products`, { auth: false });
+    assert.equal(menu.body.restaurant.coverUrl, null, 'no cover is null, not a broken link');
+  });
+
+  it('refuses a branding file that is not the image it claims to be', async () => {
+    const notAnImage = Buffer.from('%PDF-1.7\nthis is a menu, not a shopfront\n');
+    const put = await request('PUT', '/api/v1/menu/branding/cover', { form: formOf(notAnImage) });
+    assert.equal(put.status, 400);
+    assert.equal(put.body.error.code, 'BRANDING_UNSUPPORTED_MEDIA');
+  });
+
+  it('has no third kind of image', async () => {
+    // The column is an enum; the route refuses before touching it.
+    const put = await request('PUT', '/api/v1/menu/branding/banner', { form: formOf(PNG) });
+    assert.equal(put.status, 400);
+  });
+
+  it('will not serve one restaurant\u2019s cover under another\u2019s id', async () => {
+    await request('PUT', '/api/v1/menu/branding/cover', { form: formOf(PNG) });
+    const crossed = await request(
+      'GET', `/api/v1/menu/public/${other.id}/branding/COVER`, { auth: false }
+    );
+    assert.equal(crossed.status, 404);
   });
 
   it('keeps the stored size and checksum true to the bytes', async () => {

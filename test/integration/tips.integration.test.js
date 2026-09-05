@@ -295,9 +295,15 @@ describe('tips against a real Postgres', { skip }, () => {
     // midnight and the money becomes real after it. Reporting on creation put
     // the tip in Friday's figures, and Friday's figures are what a restaurant
     // hands cash out against -- so one shift was short and the next was over.
+    //
+    // The two days are deliberately in the past, and must stay there. They were
+    // once written as a date that had not arrived yet; when it did, the "next
+    // shift" window started catching every other payment this suite creates
+    // with NOW(), and the assertion read 70800 instead of 1500 for one day.
+    // A window nothing else can fall into is the only one that isolates this.
     const bill = await freshBill({ totalDue: 9000, totalDueVes: 9000 });
-    const declaredAt = new Date('2026-09-04T23:50:00.000Z');
-    const confirmedAt = new Date('2026-09-05T00:30:00.000Z');
+    const declaredAt = new Date('2021-03-05T23:50:00.000Z');
+    const confirmedAt = new Date('2021-03-06T00:30:00.000Z');
 
     const { rows } = await db.query(
       `INSERT INTO payments (restaurant_id, bill_id, amount_ves, tip_ves, status, payment_method, payer_type, created_at)
@@ -313,11 +319,11 @@ describe('tips against a real Postgres', { skip }, () => {
 
     const friday = await tipsReport({
       restaurantId: restaurant.id,
-      from: '2026-09-04T00:00:00.000Z', to: '2026-09-05T00:00:00.000Z'
+      from: '2021-03-05T00:00:00.000Z', to: '2021-03-06T00:00:00.000Z'
     });
     const saturday = await tipsReport({
       restaurantId: restaurant.id,
-      from: '2026-09-05T00:00:00.000Z', to: '2026-09-06T00:00:00.000Z'
+      from: '2021-03-06T00:00:00.000Z', to: '2021-03-07T00:00:00.000Z'
     });
 
     assert.equal(friday.totalTipsVes, '0', 'nothing was owed on Friday: nobody had verified it yet');

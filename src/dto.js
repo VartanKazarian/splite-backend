@@ -323,7 +323,10 @@ function qrContext(row, { hasOpenBill }) {
     restaurant: {
       id: row.restaurant_id,
       name: row.restaurant_name,
-      menuCurrency: row.menu_currency
+      menuCurrency: row.menu_currency,
+      // The cover and the logo: this is the screen that has to say "you are in
+      // the right place" before the diner reads anything.
+      ...brandingUrls({ id: row.restaurant_id, cover_checksum: row.cover_checksum, logo_checksum: row.logo_checksum })
     },
     table: {
       id: row.id,
@@ -542,7 +545,40 @@ function menuSettings(row) {
   return {
     id: row.id,
     name: row.name,
-    menuCurrency: row.menu_currency
+    menuCurrency: row.menu_currency,
+    ...brandingUrls(row)
+  };
+}
+
+/**
+ * Where the restaurant's own images live, or null.
+ *
+ * Null is the common case and has to keep looking deliberate: a menu with no
+ * cover is a restaurant that has not uploaded one, not a broken page.
+ *
+ * The checksum rides on the query string for the reason `productImageUrl`
+ * gives: a replaced image is a new address, so a phone stops showing the old
+ * one. The two checksums are selected by whichever query needs them; a row
+ * without them yields nulls rather than a link to nothing.
+ */
+function brandingUrls(row) {
+  const url = (kind, checksum) =>
+    (checksum
+      ? `/api/v1/menu/public/${row.id ?? row.restaurant_id}/branding/${kind}?v=${checksum.slice(0, 16)}`
+      : null);
+  return {
+    coverUrl: url('COVER', row.cover_checksum),
+    logoUrl: url('LOGO', row.logo_checksum)
+  };
+}
+
+/** One stored branding image, described rather than sent. */
+function brandingImage(row) {
+  return {
+    kind: row.kind,
+    contentType: row.content_type,
+    sizeBytes: row.size_bytes,
+    url: `/api/v1/menu/public/${row.restaurant_id}/branding/${row.kind}?v=${row.checksum.slice(0, 16)}`
   };
 }
 
@@ -647,5 +683,5 @@ function staffMember(row) {
 module.exports = {
   isoDate, isoTimestamp, staffMember,
   bill, billItem, billWithItems, guestBill,
-  table, floorTable, product, publicProduct, menuCategory, menuDocument, qrContext, menuSettings, menuCharges, account, payout, guestPayee, paymentProviderConfig, paymentClaim, staffPaymentClaim, c2pCharge, billSplit
+  table, floorTable, product, publicProduct, menuCategory, menuDocument, brandingImage, qrContext, menuSettings, menuCharges, account, payout, guestPayee, paymentProviderConfig, paymentClaim, staffPaymentClaim, c2pCharge, billSplit
 };

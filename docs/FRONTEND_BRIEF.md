@@ -248,6 +248,8 @@ traced in the server logs.
    Products carry `imageUrl` or `null` — **use it as given**, suffix included: it changes when the photo does, which is what stops a
    phone showing the old dish. Null is the normal case and should look deliberate, not like a broken image.
    The restaurant's own name is `PATCH /api/v1/account` `{ name }` (OWNER, MANAGER) — it is what the QR landing page shows above the table number.
+   Its cover photo and logo are `PUT|DELETE /api/v1/menu/branding/{COVER|LOGO}` (same form field, 4 MB). They come back as `coverUrl`/`logoUrl`
+   on the QR context and the public menu — **used as given**, suffix included — or `null`, which is the normal case and should look deliberate.
 4. **Open a bill** — `POST /api/v1/bills` with `{ tableId, totalDueMinorUnits }`.
    Send **`"0"`** for an itemised bill. A non-zero fixed total permanently blocks line items on that bill.
 5. **Bill detail** — `GET /api/v1/bills/{id}` returns the bill *with* its lines. Add, change and remove lines with `POST|PATCH|DELETE /api/v1/bills/{id}/items`. Each of those returns the recalculated bill, so never re-derive a total.

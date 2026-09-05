@@ -136,9 +136,14 @@ async function tableForQr(qrToken) {
 
   const { rows } = await db.query(
     `SELECT t.id, t.restaurant_id, t.name, t.qr_nonce, t.active,
-            r.name AS restaurant_name, r.menu_currency, r.active AS restaurant_active
+            r.name AS restaurant_name, r.menu_currency, r.active AS restaurant_active,
+            cover.checksum AS cover_checksum, logo.checksum AS logo_checksum
        FROM tables t
        JOIN restaurants r ON r.id = t.restaurant_id
+       LEFT JOIN restaurant_images cover
+         ON cover.restaurant_id = r.id AND cover.kind = 'COVER'
+       LEFT JOIN restaurant_images logo
+         ON logo.restaurant_id = r.id AND logo.kind = 'LOGO'
       WHERE t.id = $1 AND t.restaurant_id = $2`,
     [payload.tableId, payload.restaurantId]
   );

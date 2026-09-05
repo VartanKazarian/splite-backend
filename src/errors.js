@@ -41,10 +41,13 @@ const CODES = {
   MENU_OCR_FILE_TOO_LARGE: 400,
   MENU_PDF_UNSUPPORTED_MEDIA: 400,
   PRODUCT_IMAGE_UNSUPPORTED_MEDIA: 400,
+  BRANDING_UNSUPPORTED_MEDIA: 400,
   MENU_PDF_FILE_REQUIRED: 400,
   MENU_PDF_FILE_TOO_LARGE: 400,
   PRODUCT_IMAGE_FILE_TOO_LARGE: 400,
   PRODUCT_IMAGE_FILE_REQUIRED: 400,
+  BRANDING_FILE_TOO_LARGE: 400,
+  BRANDING_FILE_REQUIRED: 400,
   SPLIT_PARTICIPANTS_INVALID: 400,
   SPLIT_CLAIMS_INCOMPLETE: 400,
   SPLIT_CLAIM_UNKNOWN: 400,
@@ -90,6 +93,7 @@ const CODES = {
   CATEGORY_NOT_FOUND: 404,
   MENU_PDF_NOT_FOUND: 404,
   PRODUCT_IMAGE_NOT_FOUND: 404,
+  BRANDING_NOT_FOUND: 404,
   RESTAURANT_NOT_FOUND: 404,
   OPEN_BILL_NOT_FOUND: 404,
   PAYMENT_CLAIM_NOT_FOUND: 404,
@@ -254,6 +258,11 @@ const DETAILS = {
   PRODUCT_IMAGE_UNSUPPORTED_MEDIA: {
     contentType: 'string -- what was uploaded',
     accepted: 'string[] -- the media types a photo may be'
+  },
+  BRANDING_FILE_TOO_LARGE: { maxBytes: 'integer -- the upload ceiling' },
+  BRANDING_UNSUPPORTED_MEDIA: {
+    contentType: 'string -- what was uploaded',
+    accepted: 'string[] -- the media types an image may be'
   },
   CATEGORY_NAME_TAKEN: { name: 'string -- the section that already exists' },
   MENU_OCR_UNAVAILABLE: { retryAfterSeconds: 'integer -- how long to wait before retrying' },

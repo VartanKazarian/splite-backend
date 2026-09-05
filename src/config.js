@@ -473,6 +473,14 @@ module.exports = {
   menuPdf: {
     maxUploadBytes: integer('MENU_PDF_MAX_UPLOAD_BYTES', 20 * 1024 * 1024)
   },
+  branding: {
+    /**
+     * The cover photo and the logo. A little more headroom than a dish photo:
+     * a cover is a wide shot behind a name, and cropping one to fit two
+     * megabytes is the kind of chore that ends with no cover at all.
+     */
+    maxUploadBytes: integer('BRANDING_MAX_UPLOAD_BYTES', 4 * 1024 * 1024)
+  },
   productImage: {
     /**
      * Deliberately far below the menu PDF's ceiling. A PDF is fetched once by a

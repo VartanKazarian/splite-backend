@@ -25,8 +25,35 @@ test('the context carries what the landing needs and nothing else', () => {
   const context = dto.qrContext(TABLE, { hasOpenBill: true });
 
   assert.deepEqual(Object.keys(context).sort(), ['hasOpenBill', 'restaurant', 'table']);
-  assert.deepEqual(Object.keys(context.restaurant).sort(), ['id', 'menuCurrency', 'name']);
+  assert.deepEqual(Object.keys(context.restaurant).sort(),
+    ['coverUrl', 'id', 'logoUrl', 'menuCurrency', 'name']);
   assert.deepEqual(Object.keys(context.table).sort(), ['id', 'name']);
+
+  // Present and null when nothing has been uploaded, rather than absent: a
+  // client must not have to tell "no cover" from "this response forgot".
+  assert.equal(context.restaurant.coverUrl, null);
+  assert.equal(context.restaurant.logoUrl, null);
+});
+
+test('the cover and the logo are addresses, and a new image is a new address', () => {
+  // The suffix is the point: without it a phone that cached the old cover keeps
+  // showing it, and the restaurant's only recourse is telling diners to clear
+  // their browser.
+  const branded = dto.qrContext(
+    { ...TABLE, cover_checksum: 'abc123def456789012345678', logo_checksum: 'ffffffffffffffffffffffff' },
+    { hasOpenBill: false }
+  );
+  assert.equal(
+    branded.restaurant.coverUrl,
+    `/api/v1/menu/public/${TABLE.restaurant_id}/branding/COVER?v=abc123def4567890`
+  );
+  assert.equal(
+    branded.restaurant.logoUrl,
+    `/api/v1/menu/public/${TABLE.restaurant_id}/branding/LOGO?v=ffffffffffffffff`
+  );
+
+  const replaced = dto.qrContext({ ...TABLE, cover_checksum: '000000000000000011111111' }, { hasOpenBill: false });
+  assert.notEqual(replaced.restaurant.coverUrl, branded.restaurant.coverUrl);
 });
 
 test('the restaurant id is present, because the public menu is addressed by it', () => {

@@ -15,6 +15,8 @@ const {
   productIdParamSchema,
   restaurantIdParamSchema,
   productImageParamSchema,
+  brandingKindParamSchema,
+  publicBrandingParamSchema,
   menuOcrImportSchema,
   createCategorySchema,
   updateCategorySchema,
@@ -62,6 +64,12 @@ const pdfUpload = multer({
 const imageUpload = multer({
   storage: multer.memoryStorage(),
   limits: { fileSize: config.productImage.maxUploadBytes, files: 1 }
+});
+
+/** The cover and the logo. A little more headroom than a dish photo. */
+const brandingUpload = multer({
+  storage: multer.memoryStorage(),
+  limits: { fileSize: config.branding.maxUploadBytes, files: 1 }
 });
 
 /**
@@ -204,8 +212,18 @@ router.get(
   validateParams(restaurantIdParamSchema),
   async (req, res, next) => {
     try {
+      // The branding checksums come along, never the bytes: they only become a
+      // URL. See `brandingUrls` for why the checksum is on the query string.
       const restaurant = await db.query(
-        'SELECT id, name, menu_currency FROM restaurants WHERE id = $1 AND active = true',
+        `SELECT r.id, r.name, r.menu_currency,
+                cover.checksum AS cover_checksum,
+                logo.checksum  AS logo_checksum
+           FROM restaurants r
+           LEFT JOIN restaurant_images cover
+             ON cover.restaurant_id = r.id AND cover.kind = 'COVER'
+           LEFT JOIN restaurant_images logo
+             ON logo.restaurant_id = r.id AND logo.kind = 'LOGO'
+          WHERE r.id = $1 AND r.active = true`,
         [req.params.restaurantId]
       );
       if (!restaurant.rows.length) throw new ApiError('RESTAURANT_NOT_FOUND', 'Restaurant not found');
@@ -321,6 +339,51 @@ router.get(
 
       // The point of the ETag: a phone that already has this photo is told so
       // in a few bytes instead of being sent the file again.
+      if (req.headers['if-none-match'] === etag) return res.status(304).end();
+
+      res.set('Content-Length', String(image.size_bytes));
+      return res.send(image.bytes);
+    } catch (err) { next(err); }
+  }
+);
+
+/**
+ * The restaurant's cover photo or logo, to whoever is holding the QR menu.
+ *
+ * Unauthenticated, like everything else under `/public`: these are the images
+ * the restaurant chose to put on its own front page.
+ *
+ * Cached and served exactly like a dish photo, including the
+ * `Cross-Origin-Resource-Policy` override -- the panel and the API are
+ * different sites in every deployment we have, and without it the browser
+ * fetches the image and then refuses to render it. See the product image route
+ * below for the long version.
+ */
+router.get(
+  '/public/:restaurantId/branding/:kind',
+  validateParams(publicBrandingParamSchema),
+  rateLimit({ windowSeconds: 60, max: 240, keyPrefix: 'menu:brandpub' }),
+  async (req, res, next) => {
+    try {
+      const { rows } = await db.query(
+        `SELECT i.bytes, i.content_type, i.size_bytes, i.checksum, i.updated_at
+           FROM restaurant_images i
+           JOIN restaurants r ON r.id = i.restaurant_id
+          WHERE i.restaurant_id = $1 AND i.kind = $2 AND r.active = true`,
+        [req.params.restaurantId, req.params.kind]
+      );
+      const image = rows[0];
+      if (!image) throw new ApiError('BRANDING_NOT_FOUND', 'This restaurant has no image of that kind');
+
+      const etag = `"${image.checksum}"`;
+      res.set({
+        'Content-Type': image.content_type,
+        ETag: etag,
+        'Last-Modified': new Date(image.updated_at).toUTCString(),
+        'Cache-Control': 'public, max-age=31536000, immutable',
+        'Cross-Origin-Resource-Policy': 'cross-origin',
+        'X-Content-Type-Options': 'nosniff'
+      });
       if (req.headers['if-none-match'] === etag) return res.status(304).end();
 
       res.set('Content-Length', String(image.size_bytes));
@@ -1082,6 +1145,92 @@ router.delete(
         action: 'MENU_PRODUCT_IMAGE_DELETED',
         resourceType: 'menu_product',
         resourceId: req.params.id
+      });
+
+      res.status(204).end();
+    } catch (err) { next(err); }
+  }
+);
+
+/**
+ * The restaurant's cover photo and logo.
+ *
+ * OWNER and MANAGER, the same pair that may rename the restaurant: this is the
+ * shopfront a diner sees after scanning, and it is not a decision for whoever
+ * is carrying plates.
+ *
+ * One route for both kinds rather than two nearly identical ones. They differ
+ * in where a client puts them, not in anything this has to do.
+ */
+router.put(
+  '/branding/:kind',
+  requireRole('OWNER', 'MANAGER'),
+  validateParams(brandingKindParamSchema),
+  rateLimit({ windowSeconds: 300, max: 30, keyPrefix: 'menu:brand' }),
+  handleUpload(
+    brandingUpload.single('file'), 'BRANDING_FILE_TOO_LARGE', config.branding.maxUploadBytes
+  ),
+  async (req, res, next) => {
+    try {
+      if (!req.file) throw new ApiError('BRANDING_FILE_REQUIRED', 'A file is required');
+
+      const declared = String(req.file.mimetype || '').split(';')[0].trim().toLowerCase();
+      const looksRight = IMAGE_MEDIA[declared];
+      if (!looksRight || !looksRight(req.file.buffer)) {
+        throw new ApiError('BRANDING_UNSUPPORTED_MEDIA', 'An image must be JPEG, PNG or WebP', {
+          contentType: declared || 'unknown',
+          accepted: Object.keys(IMAGE_MEDIA)
+        });
+      }
+
+      const checksum = crypto.createHash('sha256').update(req.file.buffer).digest('hex');
+      const { rows } = await db.query(
+        `INSERT INTO restaurant_images
+           (restaurant_id, kind, bytes, content_type, size_bytes, checksum)
+         VALUES ($1, $2, $3, $4, $5, $6)
+         ON CONFLICT (restaurant_id, kind) DO UPDATE
+           SET bytes = EXCLUDED.bytes,
+               content_type = EXCLUDED.content_type,
+               size_bytes = EXCLUDED.size_bytes,
+               checksum = EXCLUDED.checksum
+         RETURNING restaurant_id, kind, content_type, size_bytes, checksum`,
+        [
+          req.user.restaurantId, req.params.kind, req.file.buffer,
+          declared, req.file.size, checksum
+        ]
+      );
+
+      await logAudit({
+        ...auditContext(req),
+        action: 'RESTAURANT_BRANDING_UPLOADED',
+        resourceType: 'restaurant',
+        resourceId: req.user.restaurantId,
+        details: { kind: req.params.kind, contentType: declared, sizeBytes: req.file.size }
+      });
+
+      res.json(dto.brandingImage(rows[0]));
+    } catch (err) { next(err); }
+  }
+);
+
+router.delete(
+  '/branding/:kind',
+  requireRole('OWNER', 'MANAGER'),
+  validateParams(brandingKindParamSchema),
+  async (req, res, next) => {
+    try {
+      const { rows } = await db.query(
+        'DELETE FROM restaurant_images WHERE restaurant_id = $1 AND kind = $2 RETURNING kind',
+        [req.user.restaurantId, req.params.kind]
+      );
+      if (!rows.length) throw new ApiError('BRANDING_NOT_FOUND', 'This restaurant has no image of that kind');
+
+      await logAudit({
+        ...auditContext(req),
+        action: 'RESTAURANT_BRANDING_DELETED',
+        resourceType: 'restaurant',
+        resourceId: req.user.restaurantId,
+        details: { kind: req.params.kind }
       });
 
       res.status(204).end();
