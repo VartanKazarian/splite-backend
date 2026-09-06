@@ -215,7 +215,14 @@ async function serviceSnapshot({ restaurantId, from = null }) {
  *
  * So the cut is made from the new end and the page is turned back around before
  * returning, which keeps one promise for both cases: the array is always oldest
- * first, and its last entry is always the next cursor.
+ * first.
+ *
+ * **The cursor is `asOf`, never an entry's `at`.** Postgres keeps these
+ * timestamps to the microsecond and `toISOString()` only carries milliseconds,
+ * so an `at` handed back as `since` is *earlier* than the row it came from --
+ * `21:07:04.123456 > 21:07:04.123` is true -- and that row arrives again on
+ * every poll, forever. `at` is for showing; `asOf` is for paging, which is what
+ * the published contract tells clients to use.
  */
 async function activitySince({ restaurantId, since = null, limit = 50 }) {
   // Sin cursor, "dame veinte" significa las veinte últimas.
