@@ -82,6 +82,36 @@ describe('the service dashboard', { skip }, () => {
     assert.equal(snap.taken.payments, 2);
   });
 
+  it('splits the takings by how the money arrived', async () => {
+    // La pregunta que contesta este desglose no es dónde está el dinero -- eso
+    // lo dice el informe de propinas -- sino quién lo metió. Un turno en el que
+    // la mitad se tecleó en caja es un turno en el que el QR no funcionó.
+    const { bill } = await openBill(30000);
+    const pay = (amount, paymentMethod) => processSplitPayment({
+      restaurantId: restaurant.id, billId: bill.id,
+      amountPaidMinorUnits: amount, paymentMethod
+    });
+    await pay(5000, 'C2P');
+    await pay(4000, 'PAGO_MOVIL');
+    await pay(3000, 'CASH');
+    await pay(2000, 'CARD');
+    await pay(1000, 'SPLITE');
+
+    const { taken } = await serviceSnapshot({ restaurantId: restaurant.id });
+    assert.equal(taken.byChannel.app.paymentsVes, '9000', 'lo que pagó el comensal solo');
+    assert.equal(taken.byChannel.app.payments, 2);
+    assert.equal(taken.byChannel.till.paymentsVes, '5000', 'lo que tecleó la casa');
+    assert.equal(taken.byChannel.till.payments, 2);
+    // SPLITE no nombra un canal: es lo que grababa caja cuando el cliente no
+    // decía cómo había entrado. Contarlo en cualquiera de los dos sería
+    // adivinar, así que se cuenta como lo que es.
+    assert.equal(taken.byChannel.unclassified.paymentsVes, '1000');
+
+    // Y las tres partes suman el total, que es lo que hace creíble el desglose.
+    assert.equal(taken.paymentsVes, '15000');
+    assert.equal(taken.payments, 5);
+  });
+
   it('counts a declared payment as waiting, not as taken', async () => {
     // The distinction the whole claims rail exists for: a diner saying they
     // paid is not money, and a dashboard that showed it as takings would be

@@ -1360,6 +1360,16 @@ Object.assign(schemas, {
     }
   },
 
+  // Un cubo del desglose de ventas. Compartido por los tres para que no puedan
+  // divergir en forma según cuál se lea.
+  TakingsChannel: {
+    type: 'object',
+    properties: {
+      paymentsVes: { ...minorUnits, description: 'Settled money that arrived this way.' },
+      payments: { type: 'integer', description: 'How many payments that was.' }
+    }
+  },
+
   ServiceSnapshot: {
     type: 'object',
     description: 'The room right now, plus what has been taken over a window. Every money figure is summed server-side.',
@@ -1386,7 +1396,16 @@ Object.assign(schemas, {
         type: 'object',
         description: 'Settled money in the window, read from the transition to SUCCEEDED rather than from when the row was created — a declared payment settles when staff verify it, not when the diner says so.',
         properties: {
-          paymentsVes: minorUnits, tipsVes: minorUnits, payments: { type: 'integer' }
+          paymentsVes: minorUnits, tipsVes: minorUnits, payments: { type: 'integer' },
+          byChannel: {
+            type: 'object',
+            description: 'How the money arrived — not the same question as where it now sits, which the tips report answers. `app` is what diners paid themselves (C2P, Pago Móvil); `till` is what a staff member recorded (cash, card, transfer); `unclassified` is `SPLITE` and `OTHER`, which name no channel and are reported as what they are rather than guessed into one. The three sum to the totals above.',
+            properties: {
+              app: { $ref: '#/components/schemas/TakingsChannel' },
+              till: { $ref: '#/components/schemas/TakingsChannel' },
+              unclassified: { $ref: '#/components/schemas/TakingsChannel' }
+            }
+          }
         }
       },
       claims: {
