@@ -40,6 +40,53 @@ const CARACAS_DAY_START = "date_trunc('day', NOW() AT TIME ZONE 'America/Caracas
  * floor and the queues are always *now*: an open bill is open whatever window
  * somebody asked about.
  */
+/**
+ * Cómo llegó el dinero, que no es lo mismo que dónde está.
+ *
+ * El informe de propinas ya reparte por método, pero responde a otra pregunta
+ * -- si el dinero está en el cajón o se le debe al personal. Aquí la pregunta
+ * es quién lo metió: si el comensal pagó solo desde su teléfono o si alguien
+ * de la casa tuvo que teclearlo. Un turno en el que la mitad de las ventas se
+ * teclearon a mano es un turno en el que el QR no está funcionando, y eso no
+ * se ve en un total.
+ *
+ * Tres cubos y no dos, por lo mismo que en las propinas: `SPLITE` es lo que el
+ * endpoint de caja grababa cuando el cliente no decía cómo había entrado el
+ * dinero, y `OTHER` es explícitamente desconocido. Meterlos en cualquiera de
+ * los dos primeros sería adivinar, así que se cuentan como lo que son.
+ */
+const APP_METHODS = new Set(['C2P', 'PAGO_MOVIL']);
+const TILL_METHODS = new Set(['CASH', 'CARD', 'TRANSFER']);
+
+function takings(rows) {
+  const bucket = () => ({ paymentsVes: 0n, payments: 0 });
+  const app = bucket();
+  const till = bucket();
+  const unclassified = bucket();
+  let tips = 0n;
+
+  for (const row of rows) {
+    const amount = BigInt(row.taken_ves);
+    tips += BigInt(row.tips_ves);
+    const into = APP_METHODS.has(row.method)
+      ? app
+      : TILL_METHODS.has(row.method)
+        ? till
+        : unclassified;
+    into.paymentsVes += amount;
+    into.payments += row.payments;
+  }
+
+  const out = b => ({ paymentsVes: b.paymentsVes.toString(), payments: b.payments });
+  return {
+    // Sumados de los mismos cubos que se devuelven, no de una segunda consulta.
+    paymentsVes: (app.paymentsVes + till.paymentsVes + unclassified.paymentsVes).toString(),
+    tipsVes: tips.toString(),
+    payments: app.payments + till.payments + unclassified.payments,
+    byChannel: { app: out(app), till: out(till), unclassified: out(unclassified) }
+  };
+}
+
 async function serviceSnapshot({ restaurantId, from = null }) {
   const [floor, taken, claims, c2p] = await Promise.all([
     db.query(
@@ -59,8 +106,13 @@ async function serviceSnapshot({ restaurantId, from = null }) {
     // creation, for the reason the tips report is: a declared Pago Movil is
     // created when the diner says they paid and settles when staff verify it,
     // and the takings figure is about money that has become real.
+    //
+    // Grouped by method so the totals can be split by how the money arrived.
+    // The totals themselves are summed from these groups, so the two halves of
+    // the figure cannot drift apart.
     db.query(
-      `SELECT COALESCE(SUM(p.amount_ves), 0)::BIGINT AS taken_ves,
+      `SELECT p.payment_method                       AS method,
+              COALESCE(SUM(p.amount_ves), 0)::BIGINT AS taken_ves,
               COALESCE(SUM(p.tip_ves), 0)::BIGINT    AS tips_ves,
               count(*)::int                          AS payments
          FROM payment_transitions t
@@ -69,7 +121,8 @@ async function serviceSnapshot({ restaurantId, from = null }) {
         WHERE t.restaurant_id = $1
           AND t.to_status = 'SUCCEEDED'
           AND t.created_at >= COALESCE($2::timestamptz, ${CARACAS_DAY_START})
-          AND p.status = 'SUCCEEDED'`,
+          AND p.status = 'SUCCEEDED'
+        GROUP BY p.payment_method`,
       [restaurantId, from]
     ),
 
@@ -89,7 +142,7 @@ async function serviceSnapshot({ restaurantId, from = null }) {
   ]);
 
   const f = floor.rows[0];
-  const t = taken.rows[0];
+  const t = takings(taken.rows);
   const unresolved = Object.fromEntries(c2p.rows.map(r => [r.status, r.count]));
 
   const due = BigInt(f.due_ves);
@@ -114,9 +167,10 @@ async function serviceSnapshot({ restaurantId, from = null }) {
       oldestOpenedAt: f.oldest_open_at ? new Date(f.oldest_open_at).toISOString() : null
     },
     taken: {
-      paymentsVes: t.taken_ves,
-      tipsVes: t.tips_ves,
-      payments: t.payments
+      paymentsVes: t.paymentsVes,
+      tipsVes: t.tipsVes,
+      payments: t.payments,
+      byChannel: t.byChannel
     },
     claims: {
       pending: claims.pending,

@@ -3255,6 +3255,23 @@
           }
         }
       },
+      "TakingsChannel": {
+        "type": "object",
+        "properties": {
+          "paymentsVes": {
+            "type": "string",
+            "pattern": "^[0-9]+$",
+            "description": "Settled money that arrived this way.",
+            "examples": [
+              "756710"
+            ]
+          },
+          "payments": {
+            "type": "integer",
+            "description": "How many payments that was."
+          }
+        }
+      },
       "ServiceSnapshot": {
         "type": "object",
         "description": "The room right now, plus what has been taken over a window. Every money figure is summed server-side.",
@@ -3347,6 +3364,21 @@
               },
               "payments": {
                 "type": "integer"
+              },
+              "byChannel": {
+                "type": "object",
+                "description": "How the money arrived — not the same question as where it now sits, which the tips report answers. `app` is what diners paid themselves (C2P, Pago Móvil); `till` is what a staff member recorded (cash, card, transfer); `unclassified` is `SPLITE` and `OTHER`, which name no channel and are reported as what they are rather than guessed into one. The three sum to the totals above.",
+                "properties": {
+                  "app": {
+                    "$ref": "#/components/schemas/TakingsChannel"
+                  },
+                  "till": {
+                    "$ref": "#/components/schemas/TakingsChannel"
+                  },
+                  "unclassified": {
+                    "$ref": "#/components/schemas/TakingsChannel"
+                  }
+                }
               }
             }
           },
