@@ -5,8 +5,9 @@ const crypto = require('node:crypto');
 const { skip } = require('./helpers/env');
 const db = require('../../src/connectors/base');
 const fixtures = require('./helpers/fixtures');
+const dto = require('../../src/dto');
 const staff = require('../../src/services/staff');
-const { hashPassword, changeOwnPassword } = require('../../src/services/auth');
+const { hashPassword, changeOwnPassword, setOwnDisplayName } = require('../../src/services/auth');
 const { ApiError } = require('../../src/errors');
 
 /**
@@ -285,5 +286,44 @@ describe('staff administration', { skip }, () => {
     const rows = await staff.listStaff({ restaurantId: restaurant.id });
     assert.ok(rows.some(u => u.id === gone.id), 'a deactivated account is still listed');
     assert.equal(rows[rows.length - 1].id, gone.id, 'and sorts after the active ones');
+  });
+
+  /*
+   * The listing is what the panel reads to say who served a table, and until
+   * now the only name it carried was the email address: a bill was "attended by
+   * gerencia@casa72.com". People have set a name on themselves since migration
+   * 035; it just never left this query.
+   *
+   * Null and not the email when unset. Substituting it here would leave no way
+   * to tell a person who has chosen to be called by their address from one who
+   * has chosen nothing, and the fallback is a display decision -- it belongs
+   * where the display is.
+   */
+  it('carries the name each person set on themselves, and null when they have not', async () => {
+    const named = await makeUser('WAITER');
+    await setOwnDisplayName(named.id, 'Ana María');
+
+    // Through the mapper, because that is the composition the route serves and
+    // the column being selected is only half of reaching the client.
+    const rows = (await staff.listStaff({ restaurantId: restaurant.id })).map(dto.staffMember);
+
+    const mine = rows.find(u => u.id === named.id);
+    assert.equal(mine.displayName, 'Ana María');
+
+    const unnamed = rows.find(u => u.id === owner.id);
+    assert.ok('displayName' in unnamed, 'present even when unset');
+    assert.equal(unnamed.displayName, null, 'and null, never the email');
+    assert.equal(unnamed.email, owner.email, 'which is still there separately');
+  });
+
+  it('never carries a password hash, named or not', async () => {
+    // The service does not select the column and the mapper does not name it.
+    // Worth a line because the SELECT just grew one.
+    const named = await makeUser('CASHIER');
+    await setOwnDisplayName(named.id, 'Caja 1');
+    const raw = await staff.listStaff({ restaurantId: restaurant.id });
+    for (const row of [...raw, ...raw.map(dto.staffMember)]) {
+      assert.ok(!('passwordHash' in row) && !('password_hash' in row));
+    }
   });
 });

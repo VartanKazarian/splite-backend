@@ -33,7 +33,7 @@ const { logAudit } = require('./audit');
 
 const RANK = { OWNER: 3, MANAGER: 2, CASHIER: 1, WAITER: 1 };
 
-const STAFF_COLUMNS = 'id, restaurant_id, email, role, active, created_at, updated_at';
+const STAFF_COLUMNS = 'id, restaurant_id, email, display_name, role, active, created_at, updated_at';
 
 /**
  * May `actor` act on a user of role `targetRole`?

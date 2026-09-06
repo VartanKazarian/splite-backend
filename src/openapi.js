@@ -1438,6 +1438,10 @@ Object.assign(schemas, {
     properties: {
       id: { type: 'string', format: 'uuid' },
       email: { type: ['string', 'null'] },
+      displayName: {
+        type: ['string', 'null'],
+        description: 'What this person calls themselves, set by them under their own account. Null when they have not set one — the client decides what to show instead; the server does not substitute the email.'
+      },
       role: { type: 'string', enum: ['OWNER', 'MANAGER', 'CASHIER', 'WAITER'] },
       active: { type: 'boolean' },
       restaurantId: { type: 'string', format: 'uuid' },

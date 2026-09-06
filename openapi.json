@@ -3477,6 +3477,13 @@
               "null"
             ]
           },
+          "displayName": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "What this person calls themselves, set by them under their own account. Null when they have not set one — the client decides what to show instead; the server does not substitute the email."
+          },
           "role": {
             "type": "string",
             "enum": [
