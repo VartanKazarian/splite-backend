@@ -61,7 +61,13 @@ async function issueSession(user, meta = {}, client = db) {
     accessToken: signAccessToken(info),
     refreshToken,
     expiresIn: config.jwt.accessTtl,
-    user: { id: user.id, email: user.email, role: user.role, restaurantId: user.restaurant_id }
+    user: {
+      id: user.id,
+      email: user.email,
+      role: user.role,
+      restaurantId: user.restaurant_id,
+      displayName: user.display_name ?? null
+    }
   };
 }
 
@@ -75,7 +81,7 @@ async function login(email, password, meta = {}) {
   // Staff emails are globally unique (migration 002). LIMIT 1 without that
   // constraint would non-deterministically pick a tenant.
   const { rows } = await db.query(
-    `SELECT id, restaurant_id, email, password_hash, role, active,
+    `SELECT id, restaurant_id, email, password_hash, role, active, display_name,
             mfa_secret, mfa_enabled_at, mfa_last_step
        FROM users
       WHERE lower(email) = lower($1)
@@ -174,7 +180,8 @@ async function completeMfaLogin(challenge, code, meta = {}) {
 
   const session = await db.withTransaction(async client => {
     const { rows } = await client.query(
-      `SELECT id, restaurant_id, email, role, active, mfa_secret, mfa_enabled_at, mfa_last_step
+      `SELECT id, restaurant_id, email, role, active, display_name,
+              mfa_secret, mfa_enabled_at, mfa_last_step
          FROM users
         WHERE id = $1
         FOR UPDATE`,
@@ -247,7 +254,7 @@ async function completeMfaLogin(challenge, code, meta = {}) {
  */
 async function currentUser(userId) {
   const { rows } = await db.query(
-    'SELECT id, restaurant_id, email, role, active FROM users WHERE id = $1',
+    'SELECT id, restaurant_id, email, role, active, display_name FROM users WHERE id = $1',
     [userId]
   );
   const user = rows[0];
@@ -255,7 +262,47 @@ async function currentUser(userId) {
 
   // Deliberately the same shape as `user` in a login or refresh response, so a
   // client stores one type and refreshes it from here.
-  return { id: user.id, email: user.email, role: user.role, restaurantId: user.restaurant_id };
+  return {
+    id: user.id,
+    email: user.email,
+    role: user.role,
+    restaurantId: user.restaurant_id,
+    displayName: user.display_name ?? null
+  };
+}
+
+/**
+ * Cambiar el propio nombre.
+ *
+ * Sólo el suyo: se escribe contra `req.user.sub` y no acepta un id de nadie, así
+ * que no hay forma de renombrar a otra persona desde aquí. No toca el rol, ni el
+ * correo, ni las sesiones -- cambiar cómo te llamas no es motivo para cerrarle la
+ * sesión a nadie.
+ *
+ * Vacío borra el nombre en vez de guardar una cadena de cero caracteres: el
+ * cliente manda "" cuando alguien limpia la casilla, y el resultado que espera
+ * es "no tengo nombre puesto", no "mi nombre es la nada".
+ */
+async function setOwnDisplayName(userId, displayName) {
+  const trimmed = typeof displayName === 'string' ? displayName.trim() : '';
+  const value = trimmed.length > 0 ? trimmed : null;
+
+  const { rows } = await db.query(
+    `UPDATE users SET display_name = $2, updated_at = NOW()
+      WHERE id = $1 AND active = TRUE
+      RETURNING id, restaurant_id, email, role, display_name`,
+    [userId, value]
+  );
+  const user = rows[0];
+  if (!user) throw unauthorized('User inactive');
+
+  return {
+    id: user.id,
+    email: user.email,
+    role: user.role,
+    restaurantId: user.restaurant_id,
+    displayName: user.display_name ?? null
+  };
 }
 
 async function refresh(refreshToken, meta = {}) {
@@ -306,7 +353,7 @@ async function refresh(refreshToken, meta = {}) {
     }
 
     const { rows } = await client.query(
-      'SELECT id, restaurant_id, email, role, active FROM users WHERE id = $1',
+      'SELECT id, restaurant_id, email, role, active, display_name FROM users WHERE id = $1',
       [claimed.rows[0].user_id]
     );
     const user = rows[0];
@@ -335,7 +382,7 @@ async function refresh(refreshToken, meta = {}) {
  */
 async function changeOwnPassword(userId, currentPassword, newPassword, meta = {}) {
   const { rows } = await db.query(
-    'SELECT id, restaurant_id, email, password_hash, role, active FROM users WHERE id = $1',
+    'SELECT id, restaurant_id, email, password_hash, role, active, display_name FROM users WHERE id = $1',
     [userId]
   );
   const user = rows[0];
@@ -401,5 +448,5 @@ module.exports = {
   // the same transaction that creates them -- so the refresh session it writes
   // rolls back with the tenant if anything later in that transaction fails.
   currentUser, login, completeMfaLogin, refresh, revokeSession, revokeAllSessionsForUser, hashPassword, issueSession,
-  changeOwnPassword,
+  changeOwnPassword, setOwnDisplayName,
   ARGON2_OPTIONS };

@@ -1,9 +1,11 @@
 const express = require('express');
 const {
-  validateBody, loginSchema, refreshSchema, mfaChallengeSchema, mfaCodeSchema, changePasswordSchema
+  validateBody, loginSchema, refreshSchema, mfaChallengeSchema, mfaCodeSchema, changePasswordSchema,
+  displayNameSchema
 } = require('../middleware/schemas');
 const {
-  login, completeMfaLogin, refresh, revokeSession, currentUser, changeOwnPassword
+  login, completeMfaLogin, refresh, revokeSession, currentUser, changeOwnPassword,
+  setOwnDisplayName
 } = require('../services/auth');
 const mfa = require('../services/mfa');
 const { authenticateToken } = require('../middleware/auth');
@@ -104,6 +106,23 @@ router.post('/password', authenticateToken, validateBody(changePasswordSchema), 
 router.get('/me', authenticateToken, async (req, res, next) => {
   try {
     res.json({ user: await currentUser(req.user.sub) });
+  } catch (err) { next(err); }
+});
+
+/**
+ * Cómo se llama quien ha entrado.
+ *
+ * Sólo el propio: se escribe contra `req.user.sub`, así que no hay id de nadie
+ * que mandar y no hay forma de renombrar a otra persona. No es una acción de
+ * personal -- eso vive en /staff, con sus permisos -- sino la de cualquiera
+ * sobre su propia cuenta, igual que cambiar la contraseña.
+ *
+ * Devuelve el usuario entero, con la misma forma que /me, para que el cliente
+ * refresque lo que ya tiene guardado en vez de adivinar qué cambió.
+ */
+router.patch('/me', authenticateToken, validateBody(displayNameSchema), async (req, res, next) => {
+  try {
+    res.json({ user: await setOwnDisplayName(req.user.sub, req.body.displayName) });
   } catch (err) { next(err); }
 });
 
