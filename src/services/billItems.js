@@ -240,7 +240,12 @@ async function addItem({ restaurantId, billId, productId, quantity }) {
  * The caller passes an already-locked bill, because opening one requires an FX
  * snapshot that must not happen inside a transaction.
  */
-async function addItemsInTransaction(client, { restaurantId, bill, items }) {
+/**
+ * `guestOrderId` ata las líneas al pedido que las trajo, cuando vienen de uno.
+ * Opcional y por defecto nulo: casi todas las líneas las pone el panel, y ésas
+ * no pertenecen a ningún pedido.
+ */
+async function addItemsInTransaction(client, { restaurantId, bill, items, guestOrderId = null }) {
   assertItemisable(bill, await countItems(client, bill.id));
 
   const added = [];
@@ -268,11 +273,12 @@ async function addItemsInTransaction(client, { restaurantId, bill, items }) {
 
     const inserted = await client.query(
       `INSERT INTO bill_items
-         (restaurant_id, bill_id, product_id, name_snapshot, unit_price_minor, currency, quantity)
-       VALUES ($1, $2, $3, $4, $5, $6, $7)
+         (restaurant_id, bill_id, product_id, name_snapshot, unit_price_minor, currency, quantity,
+          guest_order_id)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
        RETURNING ${ITEM_COLUMNS}`,
       [restaurantId, bill.id, product.id, product.name, product.price_minor_units,
-        product.currency, line.quantity]
+        product.currency, line.quantity, guestOrderId]
     );
     added.push(inserted.rows[0]);
   }

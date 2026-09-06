@@ -1362,6 +1362,46 @@ Object.assign(schemas, {
 
   // Un cubo del desglose de ventas. Compartido por los tres para que no puedan
   // divergir en forma según cuál se lea.
+  GuestOrder: {
+    type: 'object',
+    description:
+      'One order a diner sent from their own phone. The lines are already on the bill — this row exists so the floor can be told it happened, and can mark that they have seen it.',
+    properties: {
+      id: { type: 'string', format: 'uuid' },
+      tableId: { type: 'string', format: 'uuid' },
+      tableName: { type: 'string' },
+      billId: { type: ['string', 'null'], format: 'uuid', description: 'The bill the lines landed on. Null once that bill has been purged; the order is history of the room either way.' },
+      lineCount: { type: 'integer', description: 'How many lines were ordered. Compare with `items`: a line a waiter has since removed is gone from `items` but the order still had it.' },
+      items: {
+        type: 'array',
+        description: 'What is still on the bill from this order, oldest first.',
+        items: {
+          type: 'object',
+          properties: {
+            name: { type: 'string', description: 'The name as it was when ordered, not today\'s menu.' },
+            quantity: { type: 'integer' },
+            subtotalMinor: minorUnits
+          }
+        }
+      },
+      createdAt: { type: 'string', format: 'date-time' },
+      ageSeconds: {
+        type: ['integer', 'null'],
+        description: 'How long this order has been waiting to be seen, computed server-side for the same reason the claims queue does it: a skewed client clock turns a one-minute-old order into a day-old one.'
+      }
+    }
+  },
+
+  GuestOrdersSummary: {
+    type: 'object',
+    description: 'The queue as numbers, for a badge. Same contract shape and same polling advice as `ClaimsSummary`.',
+    properties: {
+      pending: { type: 'integer', description: 'Orders nobody on the floor has marked as seen.' },
+      oldestPendingAt: { type: ['string', 'null'], format: 'date-time' },
+      oldestPendingAgeSeconds: { type: ['integer', 'null'] }
+    }
+  },
+
   TakingsChannel: {
     type: 'object',
     properties: {
@@ -3739,6 +3779,73 @@ const paths = {
     }
   },
 
+  '/api/v1/guest/bill/orders': {
+    post: {
+      tags: ['Guest'],
+      summary: 'Order from the table',
+      operationId: 'placeGuestOrder',
+      description: [
+        'The lines go straight onto the table\'s bill — nobody approves them first — and the floor is',
+        'told by the notice the order leaves behind (`GET /api/v1/orders`). A diner who orders from',
+        'their seat should not wait on a waiter tapping accept on another screen.',
+        '',
+        'Neither the table nor the restaurant is in the body: both come from the guest session, which was',
+        'created by verifying the QR signature. There is no field in which to name somebody else\'s table.',
+        '',
+        'If the table has no open bill, the first order opens one, exactly as a waiter taking the first',
+        'order does. `served_by` stays null: nobody from the house took this order, and putting a name',
+        'there would move tips toward someone who did not.',
+        '',
+        'Bounded harder than the staff order endpoint — 20 lines of up to 20 units, against 50 of 999.',
+        'The QR is stuck to the table and anyone who photographs it can open a session, so the room worth',
+        'leaving is a table\'s order, not four hundred portions. Rate limited to 10 per minute per session.'
+      ].join('\n'),
+      security: [{ guestAuth: [] }],
+      requestBody: {
+        required: true,
+        content: {
+          'application/json': {
+            schema: {
+              type: 'object',
+              required: ['items'],
+              properties: {
+                items: {
+                  type: 'array', minItems: 1, maxItems: 20,
+                  items: {
+                    type: 'object',
+                    required: ['productId'],
+                    properties: {
+                      productId: { type: 'string', format: 'uuid' },
+                      quantity: { type: 'integer', minimum: 1, maximum: 20, default: 1 }
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      },
+      responses: {
+        201: {
+          description: 'Received. Nothing to follow: what was ordered is already on the diner\'s bill.',
+          content: {
+            'application/json': {
+              schema: {
+                type: 'object',
+                properties: {
+                  orderId: { type: 'string', format: 'uuid' },
+                  createdAt: { type: 'string', format: 'date-time' },
+                  lineCount: { type: 'integer' }
+                }
+              }
+            }
+          }
+        },
+        ...commonErrors
+      }
+    }
+  },
+
   '/api/v1/guest/bill/payment-claims': {
     post: {
       tags: ['Guest'],
@@ -3874,6 +3981,86 @@ const paths = {
           description: 'Events since the cursor, oldest first.',
           content: { 'application/json': { schema: ref('PaymentActivity') } }
         },
+        ...commonErrors
+      }
+    }
+  },
+
+  '/api/v1/orders': {
+    get: {
+      tags: ['Orders'],
+      summary: 'Orders diners sent that the floor has not seen',
+      operationId: 'listGuestOrders',
+      description: [
+        'Any authenticated staff role, including WAITER — a waiter is exactly who needs this.',
+        '',
+        'A guest order writes its lines straight onto the bill; nothing here approves anything. This is',
+        'the tray of "table 4 just ordered" notices, with what was ordered, so somebody can walk over or',
+        'send it to the kitchen without opening the table to find out what it was.'
+      ].join('\n'),
+      security: staff,
+      responses: {
+        200: {
+          description: 'Unseen orders, oldest first.',
+          content: {
+            'application/json': {
+              schema: {
+                type: 'object',
+                properties: { data: { type: 'array', items: ref('GuestOrder') } }
+              }
+            }
+          }
+        },
+        ...commonErrors
+      }
+    }
+  },
+
+  '/api/v1/orders/summary': {
+    get: {
+      tags: ['Orders'],
+      summary: 'How many orders are waiting to be seen',
+      operationId: 'getGuestOrdersSummary',
+      description:
+        'The badge figure. Separate from the list for the same reason as the claims summary: a number on every screen should not be pulling whole orders to render itself.',
+      security: staff,
+      responses: {
+        200: { description: 'The queue, as numbers.', content: { 'application/json': { schema: ref('GuestOrdersSummary') } } },
+        ...commonErrors
+      }
+    }
+  },
+
+  '/api/v1/orders/{id}/ack': {
+    post: {
+      tags: ['Orders'],
+      summary: 'Mark an order as seen',
+      operationId: 'acknowledgeGuestOrder',
+      description: [
+        'Changes nothing about the bill — the lines went on it when the diner pressed send. This only',
+        'takes the notice out of the tray and records who took it.',
+        '',
+        'Idempotent: two waiters tapping the same notice is ordinary, and the second one is not an error.',
+        'Both get 200 with the final state, and only the call that changed something is audited.'
+      ].join('\n'),
+      security: staff,
+      parameters: [{ name: 'id', in: 'path', required: true, schema: { type: 'string', format: 'uuid' } }],
+      responses: {
+        200: {
+          description: 'The order, seen.',
+          content: {
+            'application/json': {
+              schema: {
+                type: 'object',
+                properties: {
+                  id: { type: 'string', format: 'uuid' },
+                  acknowledgedAt: { type: 'string', format: 'date-time' }
+                }
+              }
+            }
+          }
+        },
+        404: response('NotFound'),
         ...commonErrors
       }
     }
@@ -4739,6 +4926,7 @@ const document = {
     { name: 'Tables' },
     { name: 'Bills' },
     { name: 'Payments' },
+    { name: 'Orders' },
     { name: 'Menu' },
     { name: 'Exchange rate' },
     { name: 'Webhooks' },

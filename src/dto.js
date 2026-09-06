@@ -668,6 +668,37 @@ function billSplit({ split, participants, claims = [], fxRate = null }) {
  * The same field names as `user` in a login response, so a client that already
  * has that type does not need a second one.
  */
+/**
+ * Un pedido de mesa, como lo lee el panel.
+ *
+ * `lineCount` es lo que se pidió y `items` lo que queda: si un mesero quitó una
+ * línea, la cuenta ya no la debe y aquí tampoco sale, pero el pedido siguió
+ * teniendo tres. Las dos cifras dicen cosas distintas y por eso van las dos.
+ *
+ * `ageSeconds` se calcula aquí por lo mismo que en el resumen de avisos: un
+ * navegador con el reloj mal puesto convierte un pedido de hace un minuto en
+ * uno de hace un día.
+ */
+function guestOrder(row) {
+  const createdAt = isoTimestamp(row.created_at);
+  return {
+    id: row.id,
+    tableId: row.table_id,
+    tableName: row.table_name,
+    billId: row.bill_id ?? null,
+    lineCount: row.line_count,
+    items: (row.items ?? []).map(item => ({
+      name: item.name,
+      quantity: item.quantity,
+      subtotalMinor: String(item.subtotalMinor)
+    })),
+    createdAt,
+    ageSeconds: row.created_at
+      ? Math.max(0, Math.floor((Date.now() - new Date(row.created_at).getTime()) / 1000))
+      : null
+  };
+}
+
 function staffMember(row) {
   return {
     id: row.id,
@@ -685,7 +716,7 @@ function staffMember(row) {
 }
 
 module.exports = {
-  isoDate, isoTimestamp, staffMember,
+  isoDate, isoTimestamp, staffMember, guestOrder,
   bill, billItem, billWithItems, guestBill,
   table, floorTable, product, publicProduct, menuCategory, menuDocument, brandingImage, qrContext, menuSettings, menuCharges, account, payout, guestPayee, paymentProviderConfig, paymentClaim, staffPaymentClaim, c2pCharge, billSplit
 };
