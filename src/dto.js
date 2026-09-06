@@ -672,6 +672,10 @@ function staffMember(row) {
   return {
     id: row.id,
     email: row.email,
+    // Null rather than absent, and never falling back to the email: a client
+    // that has to tell "has not set one" from "the field does not exist" can,
+    // and the one place that decides what to show instead is the client.
+    displayName: row.display_name ?? null,
     role: row.role,
     active: row.active,
     restaurantId: row.restaurant_id,
