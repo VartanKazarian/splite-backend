@@ -205,6 +205,28 @@ describe('the service dashboard', { skip }, () => {
     assert.equal(third.data[0].amountVes, '2000');
   });
 
+  it('without a cursor, gives the latest — not the first ever recorded', async () => {
+    // El fallo que esto fija: el límite se cortaba siempre por el extremo
+    // viejo, así que un panel que pide "las últimas tres" recibía las tres
+    // primeras de la historia del restaurante. Con menos pagos que el límite no
+    // se nota; a partir de ahí el listado se congela en el día de la apertura y
+    // no vuelve a moverse.
+    const { bill } = await openBill(60000);
+    for (const amount of [1000, 2000, 3000, 4000, 5000]) {
+      await processSplitPayment({
+        restaurantId: restaurant.id, billId: bill.id, amountPaidMinorUnits: amount
+      });
+    }
+
+    const { data } = await activitySince({ restaurantId: restaurant.id, limit: 3 });
+    assert.equal(data.length, 3);
+    // Los tres últimos, y no los tres primeros.
+    assert.deepEqual(data.map(e => e.amountVes), ['3000', '4000', '5000']);
+    // Y siguen saliendo del más viejo al más nuevo, que es lo que hace que el
+    // último sirva de cursor.
+    assert.ok(data[0].at <= data[2].at);
+  });
+
   it('orders oldest first, so a client can keep the last one as its cursor', async () => {
     const { bill } = await openBill(20000);
     for (const amount of [1000, 2000, 3000]) {

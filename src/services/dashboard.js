@@ -202,8 +202,24 @@ async function serviceSnapshot({ restaurantId, from = null }) {
  * and keep the last `at` as its next cursor. `asOf` is returned for the case
  * where nothing happened at all, so the cursor still advances and the next poll
  * does not re-scan the same window forever.
+ *
+ * **Which end the limit cuts from depends on whether there is a cursor**, and
+ * getting that wrong is what this used to do. With a cursor the window is
+ * "everything after `since`", so the limit takes the *oldest* of those and the
+ * client walks forward. With no cursor there is no window: the caller means
+ * "the latest", and taking the oldest N of all history hands back a
+ * restaurant's first twenty payments, forever. Measured against a real ledger:
+ * asking for five returned five from three days earlier while the newest was
+ * two hours old, and once a restaurant passes the limit the feed freezes on its
+ * opening day and never moves again.
+ *
+ * So the cut is made from the new end and the page is turned back around before
+ * returning, which keeps one promise for both cases: the array is always oldest
+ * first, and its last entry is always the next cursor.
  */
 async function activitySince({ restaurantId, since = null, limit = 50 }) {
+  // Sin cursor, "dame veinte" significa las veinte últimas.
+  const latest = since === null;
   const { rows } = await db.query(
     `WITH settled AS (
        SELECT 'SETTLED'::text  AS kind, t.created_at AS at, p.id AS payment_id,
@@ -228,10 +244,15 @@ async function activitySince({ restaurantId, since = null, limit = 50 }) {
        FROM (SELECT * FROM settled UNION ALL SELECT * FROM declared) e
        JOIN bills b ON b.id = e.bill_id AND b.restaurant_id = $1
        LEFT JOIN tables tb ON tb.id = b.table_id AND tb.restaurant_id = $1
-      ORDER BY e.at ASC
+      ORDER BY e.at ${latest ? 'DESC' : 'ASC'}
       LIMIT $3`,
     [restaurantId, since, limit]
   );
+
+  // Interpolado y no parametrizado porque una dirección de ordenación no es un
+  // valor: es sintaxis, y ésta sale de un booleano de aquí dentro, nunca del
+  // cliente.
+  if (latest) rows.reverse();
 
   return {
     asOf: new Date().toISOString(),
