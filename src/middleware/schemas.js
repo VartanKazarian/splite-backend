@@ -191,6 +191,30 @@ const orderSchema = Joi.object({
   }))
 });
 
+/**
+ * Una comanda desde el teléfono del comensal.
+ *
+ * Más estrecho que `orderSchema`, que es el del mesero: veinte líneas y veinte
+ * unidades por línea, en vez de cincuenta y novecientas noventa y nueve. No es
+ * desconfianza -- son las dos cifras de un pedido de mesa, y el margen que
+ * sobra por encima sólo sirve para que un descuido, o alguien que fotografió
+ * el QR desde la puerta, cargue la cuenta con cuatrocientas raciones antes de
+ * que nadie mire la pantalla. Un comensal que de verdad quiera veintiuna
+ * unidades de algo hace dos pedidos.
+ *
+ * Ni `tableId` ni `restaurantId`: los pone la sesión, que se creó verificando
+ * la firma del QR. Un campo donde decir la mesa es un campo donde decir la
+ * mesa de otro.
+ */
+const guestOrderSchema = Joi.object({
+  items: Joi.array().min(1).max(20).required().items(Joi.object({
+    productId: uuid.required(),
+    quantity: Joi.number().integer().min(1).max(20).default(1)
+  }))
+});
+
+const guestOrderIdParamSchema = Joi.object({ id: uuid.required() });
+
 const billItemIdParamSchema = Joi.object({
   id: uuid.required(),
   itemId: uuid.required()
@@ -806,6 +830,8 @@ module.exports = {
   updateProductSchema,
   listProductsQuerySchema,
   productIdParamSchema,
+  guestOrderSchema,
+  guestOrderIdParamSchema,
   createCategorySchema,
   updateCategorySchema,
   reorderCategoriesSchema,

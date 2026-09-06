@@ -917,6 +917,76 @@ counting the bill twice — open it with a total of `0` to itemise it. A composi
 foreign key on `(bill_id, restaurant_id, currency)` ties every line to its bill,
 its tenant and its currency at once, so a EUR line cannot sit on a USD bill.
 
+## Ordering from the table
+
+A diner scans the table's QR, reads the menu, and sends "two tequeños and a
+cachapa" from their own phone. `POST /api/v1/guest/bill/orders`.
+
+**The lines go straight onto the bill.** There is no approval queue: they are
+inserted by the same `addItemsInTransaction` a waiter's order goes through, with
+the same checks — the product exists in *this* restaurant, is still on the menu,
+and is priced in the bill's currency — and the same total recalculation inside
+the same transaction. If a check fails, nothing is written: no order row, no
+lines, no half-placed order.
+
+That is a product decision, not an oversight. A diner who orders from their seat
+should not wait on a waiter tapping *accept* on another screen.
+
+**So what is `guest_orders` for, if the lines are already on the bill?**
+
+For the floor to be told. An order is an event — three tequeños and two
+cachapas, at 21:14, from table 4 — and loose lines are not: six new lines on a
+bill are indistinguishable from six a waiter typed half an hour ago, so there is
+nothing to announce and nothing to mark as dealt with. `acknowledged_at` is that
+half. While it is NULL the order is sitting in a tray; `POST /orders/:id/ack`
+takes it out and records who took it. Acknowledging changes nothing about the
+bill — the money was already on it.
+
+`GET /api/v1/orders` returns the tray with what was ordered, so somebody can
+walk over or call the kitchen without opening the table to find out what it was.
+`GET /api/v1/orders/summary` is the badge figure, separate for the same reason
+`/payments/claims/summary` is: a number on every screen should not be pulling
+whole orders to render itself.
+
+`lineCount` and `items` answer different questions and both are reported.
+`lineCount` is what was ordered; `items` is what is still on the bill. A line a
+waiter has since removed is gone from `items` — correctly, nobody owes it and
+nobody should cook it — while the order still had three.
+
+**An empty table is not an error.** The first order opens the bill, exactly as a
+waiter taking the first order does. Without it, the diner who sits down and
+orders before anybody comes over gets a failure they cannot act on. `served_by`
+stays null: nobody from the house took that order, and putting a name there
+would move tips toward someone who did not. `PATCH /bills/:id/server` is the
+correction.
+
+### What the diner cannot do
+
+Neither the table nor the restaurant is in the request body — both come from the
+guest session, which was created by verifying the QR signature. There is no
+field in which to name somebody else's table, and sending one anyway is stripped
+by the validator rather than honoured. The integration suite asserts the
+outcome, not a 400: the neighbouring table ends the test with no bill.
+
+What is left is the surface the QR itself creates. The code is stuck to the
+table and anybody who photographs it can open a session, so what is worth doing
+is bounding a bad minute rather than pretending it cannot happen:
+
+| | Staff `POST /bills/tables/:id/order` | Guest `POST /guest/bill/orders` |
+| --- | --- | --- |
+| Lines per order | 50 | **20** |
+| Units per line | 999 | **20** |
+| Rate limit | 60/min per user | **10/min per session** |
+
+Ten orders a minute is more than a whole table places in a service, and the ones
+above that are not a diner ordering. A guest who genuinely wants twenty-one of
+something sends two orders.
+
+**What this is not.** It is not a kitchen ticket. There are no preparation
+states, no printing, no timings — that is a different system with a different
+owner. This records that somebody ordered, what, and whether the room has
+noticed.
+
 ## Building a menu from a photo
 
 `POST /api/v1/menu/ocr-extract` takes a photo or PDF of a menu (multipart, field

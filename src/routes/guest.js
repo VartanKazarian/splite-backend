@@ -5,12 +5,13 @@ const { signQrPayload, verifyQrToken } = require('../utils/tokens');
 const { authenticateToken, requireRole } = require('../middleware/auth');
 const {
   validateBody, validateParams, validateQuery, guestSessionSchema, tableIdParamSchema, splitPreviewSchema,
-  declareClaimSchema, c2pChargeSchema, c2pBankGuideQuerySchema
+  declareClaimSchema, c2pChargeSchema, c2pBankGuideQuerySchema, guestOrderSchema
 } = require('../middleware/schemas');
 const { createGuestSession, destroyGuestSession, authenticateGuest } = require('../services/guest');
 const rateLimit = require('../middleware/rateLimit');
 const billItems = require('../services/billItems');
 const paymentClaims = require('../services/paymentClaims');
+const guestOrders = require('../services/guestOrders');
 const mercantilC2P = require('../services/mercantilC2P');
 const claveGuide = require('../payments/c2pClaveGuide');
 const { requestHash, begin, complete, abort } = require('../services/idempotency');
@@ -310,6 +311,63 @@ router.get('/bill', authenticateGuest, perSession, async (req, res, next) => {
  *
  * Takes no bill id, like every guest route: the table comes from the session.
  */
+/**
+ * Pedir desde la mesa.
+ *
+ * Las líneas entran en la cuenta en el acto -- no hay cola que alguien tenga
+ * que aprobar -- y el panel se entera por el aviso que deja el pedido. Es la
+ * decisión de producto: el comensal que pide desde su sitio no debe quedarse
+ * esperando a que un mesero pulse "aceptar" en otra pantalla.
+ *
+ * De lo que sí se protege es de lo que no cuesta nada proteger: el límite por
+ * sesión es más estrecho que el general de esta superficie (60/min), y el
+ * esquema acota el pedido a veinte líneas de veinte unidades. El QR está pegado
+ * a la mesa y cualquiera que lo fotografíe puede abrir sesión, así que lo que
+ * cabe hacer es acotar el daño de un minuto malo, no fingir que no existe.
+ *
+ * La mesa no viaja en el cuerpo: la pone la sesión. Ver `placeOrder`.
+ */
+router.post(
+  '/bill/orders',
+  authenticateGuest,
+  // Un pedido no es una consulta: diez por minuto son más de los que hace una
+  // mesa entera en un servicio, y el que sobra ya no es un comensal pidiendo.
+  rateLimit({ windowSeconds: 60, max: 10, keyPrefix: 'guest:order' }),
+  validateBody(guestOrderSchema),
+  async (req, res, next) => {
+    try {
+      const result = await guestOrders.placeOrder({
+        restaurantId: req.guest.restaurantId,
+        tableId: req.guest.tableId,
+        guestSessionId: req.guest.sessionId ?? null,
+        items: req.body.items
+      });
+
+      await logAudit({
+        restaurantId: req.guest.restaurantId,
+        // Sin actor: no lo hizo nadie de la casa. La sesión que lo hizo queda
+        // en `guest_orders.guest_session_id`, que es donde se puede seguir.
+        actorId: null,
+        action: result.opened ? 'BILL_OPENED_BY_GUEST_ORDER' : 'GUEST_ORDER_PLACED',
+        resourceType: 'guest_order',
+        resourceId: result.orderId,
+        details: { tableId: req.guest.tableId, lines: req.body.items.length },
+        ip: req.ip,
+        userAgent: req.get('user-agent'),
+        requestId: req.id
+      });
+
+      // Sólo "recibido". El comensal no sigue estados porque no hay estados que
+      // seguir: lo que pidió ya está en su cuenta, y ahí lo ve.
+      res.status(201).json({
+        orderId: result.orderId,
+        createdAt: result.createdAt,
+        lineCount: req.body.items.length
+      });
+    } catch (err) { next(err); }
+  }
+);
+
 router.post('/bill/payment-claims', authenticateGuest, perSession, validateBody(declareClaimSchema), async (req, res, next) => {
   try {
     const bill = await openBillForGuest(req.guest);

@@ -25,6 +25,7 @@ const tableRoutes = require('./routes/tables');
 const onboardingRoutes = require('./routes/onboarding');
 const accountRoutes = require('./routes/account');
 const paymentRoutes = require('./routes/payments');
+const orderRoutes = require('./routes/orders');
 const webhookRoutes = require('./routes/webhooks');
 
 const app = express();
@@ -181,6 +182,7 @@ app.use('/api/v1/exchange-rate', exchangeRateRoutes);
 app.use('/api/v1/menu', menuRoutes);
 app.use('/api/v1/account', accountRoutes);
 app.use('/api/v1/payments', paymentRoutes);
+app.use('/api/v1/orders', orderRoutes);
 
 // A SEPARATE router object, mounted at exactly one path. Serving webhooks by
 // mounting the payments router under a second prefix makes every payment route

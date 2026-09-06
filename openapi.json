@@ -195,6 +195,9 @@
       "name": "Payments"
     },
     {
+      "name": "Orders"
+    },
+    {
       "name": "Menu"
     },
     {
@@ -370,6 +373,7 @@
                   "BILL_NOT_FOUND",
                   "BILL_ITEM_NOT_FOUND",
                   "TABLE_NOT_FOUND",
+                  "GUEST_ORDER_NOT_FOUND",
                   "PRODUCT_NOT_FOUND",
                   "CATEGORY_NOT_FOUND",
                   "MENU_PDF_NOT_FOUND",
@@ -3252,6 +3256,93 @@
           },
           "bills": {
             "type": "integer"
+          }
+        }
+      },
+      "GuestOrder": {
+        "type": "object",
+        "description": "One order a diner sent from their own phone. The lines are already on the bill — this row exists so the floor can be told it happened, and can mark that they have seen it.",
+        "properties": {
+          "id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "tableId": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "tableName": {
+            "type": "string"
+          },
+          "billId": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "uuid",
+            "description": "The bill the lines landed on. Null once that bill has been purged; the order is history of the room either way."
+          },
+          "lineCount": {
+            "type": "integer",
+            "description": "How many lines were ordered. Compare with `items`: a line a waiter has since removed is gone from `items` but the order still had it."
+          },
+          "items": {
+            "type": "array",
+            "description": "What is still on the bill from this order, oldest first.",
+            "items": {
+              "type": "object",
+              "properties": {
+                "name": {
+                  "type": "string",
+                  "description": "The name as it was when ordered, not today's menu."
+                },
+                "quantity": {
+                  "type": "integer"
+                },
+                "subtotalMinor": {
+                  "type": "string",
+                  "pattern": "^[0-9]+$",
+                  "description": "Integer minor units (céntimos) as a string, so values beyond 2^53 survive JSON.",
+                  "examples": [
+                    "756710"
+                  ]
+                }
+              }
+            }
+          },
+          "createdAt": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "ageSeconds": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "description": "How long this order has been waiting to be seen, computed server-side for the same reason the claims queue does it: a skewed client clock turns a one-minute-old order into a day-old one."
+          }
+        }
+      },
+      "GuestOrdersSummary": {
+        "type": "object",
+        "description": "The queue as numbers, for a badge. Same contract shape and same polling advice as `ClaimsSummary`.",
+        "properties": {
+          "pending": {
+            "type": "integer",
+            "description": "Orders nobody on the floor has marked as seen."
+          },
+          "oldestPendingAt": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "date-time"
+          },
+          "oldestPendingAgeSeconds": {
+            "type": [
+              "integer",
+              "null"
+            ]
           }
         }
       },
@@ -8128,6 +8219,96 @@
         }
       }
     },
+    "/api/v1/guest/bill/orders": {
+      "post": {
+        "tags": [
+          "Guest"
+        ],
+        "summary": "Order from the table",
+        "operationId": "placeGuestOrder",
+        "description": "The lines go straight onto the table's bill — nobody approves them first — and the floor is\ntold by the notice the order leaves behind (`GET /api/v1/orders`). A diner who orders from\ntheir seat should not wait on a waiter tapping accept on another screen.\n\nNeither the table nor the restaurant is in the body: both come from the guest session, which was\ncreated by verifying the QR signature. There is no field in which to name somebody else's table.\n\nIf the table has no open bill, the first order opens one, exactly as a waiter taking the first\norder does. `served_by` stays null: nobody from the house took this order, and putting a name\nthere would move tips toward someone who did not.\n\nBounded harder than the staff order endpoint — 20 lines of up to 20 units, against 50 of 999.\nThe QR is stuck to the table and anyone who photographs it can open a session, so the room worth\nleaving is a table's order, not four hundred portions. Rate limited to 10 per minute per session.",
+        "security": [
+          {
+            "guestAuth": []
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "required": [
+                  "items"
+                ],
+                "properties": {
+                  "items": {
+                    "type": "array",
+                    "minItems": 1,
+                    "maxItems": 20,
+                    "items": {
+                      "type": "object",
+                      "required": [
+                        "productId"
+                      ],
+                      "properties": {
+                        "productId": {
+                          "type": "string",
+                          "format": "uuid"
+                        },
+                        "quantity": {
+                          "type": "integer",
+                          "minimum": 1,
+                          "maximum": 20,
+                          "default": 1
+                        }
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "Received. Nothing to follow: what was ordered is already on the diner's bill.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "orderId": {
+                      "type": "string",
+                      "format": "uuid"
+                    },
+                    "createdAt": {
+                      "type": "string",
+                      "format": "date-time"
+                    },
+                    "lineCount": {
+                      "type": "integer"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "429": {
+            "$ref": "#/components/responses/TooManyRequests"
+          },
+          "500": {
+            "$ref": "#/components/responses/ServerError"
+          }
+        }
+      }
+    },
     "/api/v1/guest/bill/payment-claims": {
       "post": {
         "tags": [
@@ -8343,6 +8524,155 @@
           },
           "401": {
             "$ref": "#/components/responses/Unauthorized"
+          },
+          "429": {
+            "$ref": "#/components/responses/TooManyRequests"
+          },
+          "500": {
+            "$ref": "#/components/responses/ServerError"
+          }
+        }
+      }
+    },
+    "/api/v1/orders": {
+      "get": {
+        "tags": [
+          "Orders"
+        ],
+        "summary": "Orders diners sent that the floor has not seen",
+        "operationId": "listGuestOrders",
+        "description": "Any authenticated staff role, including WAITER — a waiter is exactly who needs this.\n\nA guest order writes its lines straight onto the bill; nothing here approves anything. This is\nthe tray of \"table 4 just ordered\" notices, with what was ordered, so somebody can walk over or\nsend it to the kitchen without opening the table to find out what it was.",
+        "security": [
+          {
+            "staffAuth": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Unseen orders, oldest first.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "data": {
+                      "type": "array",
+                      "items": {
+                        "$ref": "#/components/schemas/GuestOrder"
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "429": {
+            "$ref": "#/components/responses/TooManyRequests"
+          },
+          "500": {
+            "$ref": "#/components/responses/ServerError"
+          }
+        }
+      }
+    },
+    "/api/v1/orders/summary": {
+      "get": {
+        "tags": [
+          "Orders"
+        ],
+        "summary": "How many orders are waiting to be seen",
+        "operationId": "getGuestOrdersSummary",
+        "description": "The badge figure. Separate from the list for the same reason as the claims summary: a number on every screen should not be pulling whole orders to render itself.",
+        "security": [
+          {
+            "staffAuth": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The queue, as numbers.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/GuestOrdersSummary"
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "429": {
+            "$ref": "#/components/responses/TooManyRequests"
+          },
+          "500": {
+            "$ref": "#/components/responses/ServerError"
+          }
+        }
+      }
+    },
+    "/api/v1/orders/{id}/ack": {
+      "post": {
+        "tags": [
+          "Orders"
+        ],
+        "summary": "Mark an order as seen",
+        "operationId": "acknowledgeGuestOrder",
+        "description": "Changes nothing about the bill — the lines went on it when the diner pressed send. This only\ntakes the notice out of the tray and records who took it.\n\nIdempotent: two waiters tapping the same notice is ordinary, and the second one is not an error.\nBoth get 200 with the final state, and only the call that changed something is audited.",
+        "security": [
+          {
+            "staffAuth": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The order, seen.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "id": {
+                      "type": "string",
+                      "format": "uuid"
+                    },
+                    "acknowledgedAt": {
+                      "type": "string",
+                      "format": "date-time"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "404": {
+            "$ref": "#/components/responses/NotFound"
           },
           "429": {
             "$ref": "#/components/responses/TooManyRequests"

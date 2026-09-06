@@ -24,10 +24,9 @@ const { processSplitPayment } = require('../services/locks');
 const billItems = require('../services/billItems');
 const splitEngine = require('../services/splitEngine');
 const splits = require('../services/splits');
-const { getRateFor } = require('../services/fx');
 const dto = require('../dto');
 const { ApiError } = require('../errors');
-const { parseRate, applyRate, toMinor } = require('../services/money');
+const { snapshotFx } = require('../services/billOpen');
 const { requestHash, begin, complete, abort } = require('../services/idempotency');
 const { logAudit, auditContext } = require('../services/audit');
 const { logger } = require('../connectors/logger');
@@ -50,41 +49,6 @@ router.use(authenticateToken);
 // app-level limiter runs before any auth middleware, which leaves it keyed on
 // IP alone — behind carrier NAT that is one shared bucket for many staff.
 router.use(rateLimit({ windowSeconds: 60, max: 60, keyPrefix: 'bills' }));
-
-/**
- * Freezes the rate the bill will settle at.
- *
- * Taken when the bill is opened, not when it is first paid, so the total a
- * diner is quoted cannot move underneath them while they eat. A VES menu needs
- * no conversion and is recorded as an identity rate rather than a null, so
- * every bill can state what it settled at.
- */
-async function snapshotFx(menuCurrency, totalDueMinorUnits) {
-  if (menuCurrency === 'VES') {
-    return { totalDueVes: String(totalDueMinorUnits), rate: '1', source: 'IDENTITY', valueDate: null };
-  }
-
-  const fx = await getRateFor(menuCurrency);
-  if (!fx) {
-    // Fail closed: a foreign-currency bill without a rate has no settleable
-    // total, and inventing one is what the FX service exists to prevent. This
-    // can only stop a bill being opened; payments on existing bills use the
-    // rate already frozen on them.
-    throw new ApiError(
-      'FX_UNAVAILABLE',
-      `No exchange rate is available for ${menuCurrency}, so the bill cannot be opened`,
-      { currency: menuCurrency }
-    );
-  }
-
-  const scaled = parseRate(fx.rate);
-  return {
-    totalDueVes: applyRate(toMinor(totalDueMinorUnits), scaled, 'Bill total in VES').toString(),
-    rate: String(fx.rate),
-    source: fx.source,
-    valueDate: fx.valueDate ?? null
-  };
-}
 
 router.get('/', validateQuery(listBillsQuerySchema), async (req, res, next) => {
   try {
