@@ -100,6 +100,71 @@ async function tipsByServer({ restaurantId, from, to }) {
 }
 
 /**
+ * Las cuentas cuyas propinas no son de nadie.
+ *
+ * `byServer` ya las suma bajo un id nulo, pero una cifra no se puede corregir:
+ * dice que hay 2.550,02 Bs sin dueño y no de qué mesas salieron. Y cuando
+ * alguien mira este informe -- al cerrar el turno, que es cuando se reparte el
+ * dinero -- esas cuentas ya están cerradas, así que no aparecen en el plano ni
+ * en ninguna otra pantalla: el selector de "Atendida por" vive en la hoja de
+ * una mesa, y una mesa cerrada no tiene hoja. Sin esta lista, la única forma de
+ * arreglarlo era `PATCH /bills/:id/server` con un id que no se puede sacar de
+ * ninguna parte.
+ *
+ * Se devuelven las cuentas, no los cobros: la atribución es de la cuenta -- una
+ * mesa la atiende una persona, aunque pague en tres veces -- y es lo que toca
+ * ese PATCH.
+ *
+ * Con tope, porque esto va dentro de un informe: un restaurante que estrena la
+ * carta por QR y no asigna a nadie en toda la semana no debe convertir esta
+ * respuesta en un listado de mil filas. El total sigue estando en `byServer`,
+ * así que la lista puede quedarse corta sin que ninguna cifra mienta.
+ */
+async function unassignedBills({ restaurantId, from, to, limit = 50 }) {
+  const { rows } = await db.query(
+    `SELECT b.id                       AS bill_id,
+            b.table_id                 AS table_id,
+            tb.name                    AS table_name,
+            b.status                   AS status,
+            COUNT(*)::int              AS payments,
+            SUM(p.tip_ves)::BIGINT     AS tips_ves,
+            SUM(p.amount_ves)::BIGINT  AS billed_ves,
+            MAX(t.created_at)          AS last_paid_at
+       FROM payment_transitions t
+       JOIN payments p
+         ON p.id = t.payment_id AND p.restaurant_id = t.restaurant_id
+       JOIN bills b
+         ON b.id = p.bill_id AND b.restaurant_id = p.restaurant_id
+       LEFT JOIN tables tb
+         ON tb.id = b.table_id AND tb.restaurant_id = b.restaurant_id
+      WHERE t.restaurant_id = $1
+        AND t.to_status = 'SUCCEEDED'
+        AND t.created_at >= $2
+        AND t.created_at <  $3
+        AND p.status = 'SUCCEEDED'
+        AND p.tip_ves > 0
+        AND b.served_by IS NULL
+      GROUP BY b.id, b.table_id, tb.name, b.status
+      ORDER BY SUM(p.tip_ves) DESC
+      LIMIT $4`,
+    [restaurantId, from, to, limit]
+  );
+
+  return rows.map(r => ({
+    billId: r.bill_id,
+    tableId: r.table_id,
+    // Null si la mesa se borró después. La cuenta y su propina siguen siendo
+    // reales, así que la fila se queda y el cliente decide qué poner.
+    tableName: r.table_name,
+    status: r.status,
+    payments: r.payments,
+    tipsVes: r.tips_ves,
+    billedVes: r.billed_ves,
+    lastPaidAt: new Date(r.last_paid_at).toISOString()
+  }));
+}
+
+/**
  * One person's own tips.
  *
  * Any role reaches this, for themselves only -- there is no user id in the
@@ -203,6 +268,11 @@ async function tipsReport({ restaurantId, from, to }) {
   });
 
   const byServer = await tipsByServer({ restaurantId, from, to });
+  // Sólo se busca si de verdad hay algo sin asignar. Sin esa fila en
+  // `byServer` la consulta no puede devolver nada, y es una consulta menos por
+  // informe en el caso normal, que es el que se pide todo el rato.
+  const hasUnassigned = byServer.some(row => row.userId === null);
+  const unassigned = hasUnassigned ? await unassignedBills({ restaurantId, from, to }) : [];
 
   return {
     from: new Date(from).toISOString(),
@@ -216,6 +286,9 @@ async function tipsReport({ restaurantId, from, to }) {
     billedVes: billed.toString(),
     tipRateBps: rateBps(total, billed),
     byServer,
+    // Las cuentas detrás de la fila sin dueño de `byServer`, para poder
+    // arreglarlas desde donde se ven. Ver `unassignedBills`.
+    unassigned,
     // The split that decides what actually has to be handed over. The three
     // always sum to the total, so a figure cannot go missing between them.
     inTillVes: inTill.toString(),
@@ -243,6 +316,6 @@ async function tipsForBill({ restaurantId, billId }) {
 }
 
 module.exports = {
-  tipsReport, tipsForBill, tipsByServer, tipsForServer, rateBps,
+  tipsReport, tipsForBill, tipsByServer, tipsForServer, unassignedBills, rateBps,
   IN_TILL_METHODS, OWED_METHODS
 };
