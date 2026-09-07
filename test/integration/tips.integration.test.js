@@ -473,6 +473,88 @@ describe('tips against a real Postgres', { skip }, () => {
     assert.equal(summed.toString(), report.totalTipsVes);
   });
 
+  it('names the bills behind the unattributed tips, so they can be fixed', async () => {
+    // La cifra sin dueño no se puede corregir: dice cuánto, no de qué mesas.
+    // Y cuando alguien lee este informe -- al cerrar el turno -- esas cuentas
+    // ya están cerradas y no salen en ninguna otra pantalla, así que sin esta
+    // lista no hay forma de sacar el id que pide PATCH /bills/:id/server.
+    const table = await fixtures.createTable(restaurant.id, { name: 'SINDUENO' });
+    const bill = await fixtures.createBill({
+      restaurantId: restaurant.id, tableId: table.id, totalDue: 8000, totalDueVes: 8000
+    });
+
+    const from = new Date(Date.now() - 60_000);
+    await processSplitPayment({
+      restaurantId: restaurant.id, billId: bill.id, amountPaidMinorUnits: 4000, tipVes: '777'
+    });
+    const to = new Date(Date.now() + 60_000);
+
+    const report = await tipsReport({ restaurantId: restaurant.id, from, to });
+    const row = report.unassigned.find(b => b.billId === bill.id);
+    assert.ok(row, 'la cuenta sin mesero aparece con su id');
+    assert.equal(row.tableName, 'SINDUENO', 'y con el nombre de la mesa, que es lo que se lee');
+    assert.equal(row.tipsVes, '777');
+    assert.equal(row.billedVes, '4000');
+    assert.equal(row.payments, 1);
+
+    // La lista y la fila nula de byServer hablan de lo mismo: lo que suman las
+    // cuentas listadas no puede pasarse de lo que dice el cubo sin dueño.
+    const bucket = report.byServer.find(r => r.userId === null);
+    const listed = report.unassigned.reduce((acc, b) => acc + BigInt(b.tipsVes), 0n);
+    assert.ok(bucket, 'sigue existiendo el cubo sin dueño');
+    assert.ok(
+      listed <= BigInt(bucket.tipsVes),
+      `las cuentas listadas (${listed}) no pueden superar el cubo (${bucket.tipsVes})`
+    );
+
+    // Y en cuanto se asigna, la cuenta sale de la lista y la propina se mueve:
+    // la atribución se lee de la cuenta en el momento de consultar.
+    const { rows: staff } = await db.query(
+      'SELECT id FROM users WHERE restaurant_id = $1 AND active = true LIMIT 1', [restaurant.id]
+    );
+    if (staff.length) {
+      await db.query('UPDATE bills SET served_by = $2 WHERE id = $1', [bill.id, staff[0].id]);
+      const reassigned = await tipsReport({ restaurantId: restaurant.id, from, to });
+      assert.ok(
+        !reassigned.unassigned.some(b => b.billId === bill.id),
+        'asignada deja de estar sin asignar'
+      );
+      const hers = reassigned.byServer.find(r => r.userId === staff[0].id);
+      assert.ok(hers && BigInt(hers.tipsVes) >= 777n, 'y la propina se fue con ella');
+    }
+  });
+
+  it('leaves the list empty when every bill has a server', async () => {
+    // No se paga una consulta por un informe limpio, que es el caso normal.
+    const other = await fixtures.createRestaurant({ name: 'Todo Asignado' });
+    try {
+      // `createRestaurant` no crea personal, así que el mesero se pone aquí:
+      // sin nadie a quien atribuir, el caso que se quiere probar no existe.
+      const { rows: staff } = await db.query(
+        `INSERT INTO users (restaurant_id, email, password_hash, role, active)
+         VALUES ($1, $2, 'x', 'WAITER', true) RETURNING id`,
+        [other.id, `mesero-${Date.now()}@todo-asignado.test`]
+      );
+      const table = await fixtures.createTable(other.id, { name: 'A1' });
+      const bill = await fixtures.createBill({
+        restaurantId: other.id, tableId: table.id, totalDue: 5000, totalDueVes: 5000
+      });
+      await db.query('UPDATE bills SET served_by = $2 WHERE id = $1', [bill.id, staff[0].id]);
+
+      const from = new Date(Date.now() - 60_000);
+      await processSplitPayment({
+        restaurantId: other.id, billId: bill.id, amountPaidMinorUnits: 5000, tipVes: '500'
+      });
+      const to = new Date(Date.now() + 60_000);
+
+      const report = await tipsReport({ restaurantId: other.id, from, to });
+      assert.equal(report.totalTipsVes, '500');
+      assert.deepEqual(report.unassigned, [], 'sin nada suelto, la lista va vacía');
+    } finally {
+      await fixtures.destroyRestaurant(other.id);
+    }
+  });
+
   it('does not report another tenant\'s tips', async () => {
     const other = await fixtures.createRestaurant({ name: 'Other Tips Tenant' });
     try {

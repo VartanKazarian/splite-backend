@@ -1477,6 +1477,60 @@
               }
             }
           },
+          "unassigned": {
+            "type": "array",
+            "description": "The bills behind the null-`userId` row of `byServer`, so it can be acted on rather than only read. A figure cannot be corrected: it says money has no owner without saying which tables it came from — and by the time anybody reads this report, at the end of a shift, those bills are closed and appear on no other screen, so `PATCH /bills/{id}/server` had no way to learn an id. Bills rather than payments, because attribution belongs to the bill: one person serves a table however many times it pays. Capped at 50; the totals stay in `byServer`, so a short list never makes a figure wrong. Empty unless something is actually unassigned.",
+            "items": {
+              "type": "object",
+              "properties": {
+                "billId": {
+                  "type": "string",
+                  "format": "uuid"
+                },
+                "tableId": {
+                  "type": [
+                    "string",
+                    "null"
+                  ],
+                  "format": "uuid"
+                },
+                "tableName": {
+                  "type": [
+                    "string",
+                    "null"
+                  ],
+                  "description": "Null when the table was deleted afterwards. The bill and its tip are still real, so the row stays."
+                },
+                "status": {
+                  "type": "string",
+                  "description": "OPEN, CLOSED or VOID — an open one can also be fixed from the floor."
+                },
+                "payments": {
+                  "type": "integer"
+                },
+                "tipsVes": {
+                  "type": "string",
+                  "pattern": "^[0-9]+$",
+                  "description": "Integer minor units (céntimos) as a string, so values beyond 2^53 survive JSON.",
+                  "examples": [
+                    "756710"
+                  ]
+                },
+                "billedVes": {
+                  "type": "string",
+                  "pattern": "^[0-9]+$",
+                  "description": "Integer minor units (céntimos) as a string, so values beyond 2^53 survive JSON.",
+                  "examples": [
+                    "756710"
+                  ]
+                },
+                "lastPaidAt": {
+                  "type": "string",
+                  "format": "date-time"
+                }
+              }
+            }
+          },
           "byMethod": {
             "type": "array",
             "items": {

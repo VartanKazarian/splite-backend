@@ -138,10 +138,19 @@ test('tips stay exact beyond 2^53 centimos', async () => {
  * attributed to -- so a stub returning one set of rows for anything asked would
  * feed the method rows to the server grouping and quietly assert nonsense.
  */
-function stubReport(byMethod, byServer = []) {
+/**
+ * Las tres consultas del informe, cada una con sus filas.
+ *
+ * Se distinguen por el texto, y el orden importa: la de las cuentas sin dueño
+ * también nombra `served_by`, así que se comprueba primero. Antes había dos y
+ * el doble devolvía las filas de `byServer` a la tercera, que es un doble
+ * mintiendo de una forma que el driver no puede.
+ */
+function stubReport(byMethod, byServer = [], unassigned = []) {
   const calls = [];
   db.query = async (text, params) => {
     calls.push({ text, params });
+    if (text.includes('served_by IS NULL')) return { rows: unassigned };
     return { rows: text.includes('served_by') ? byServer : byMethod };
   };
   return calls;
@@ -403,4 +412,46 @@ test('the report attributes tips to the person the bill belongs to', async () =>
 
   const attributed = out.byServer.reduce((sum, s) => sum + BigInt(s.tipsVes), 0n);
   assert.equal(attributed.toString(), out.totalTipsVes, 'the parts sum to the total');
+});
+
+test('the unattributed bucket comes with the bills behind it', async () => {
+  // Una cifra sin dueño no se puede corregir: hay que saber de qué mesas salió,
+  // y para entonces esas cuentas están cerradas y no salen en ninguna pantalla.
+  const calls = stubReport(
+    [{ payment_method: 'CASH', payments: 1, tips_ves: '1000', billed_ves: '10000' }],
+    [{ user_id: null, email: null, payments: 1, tips_ves: '1000', billed_ves: '10000' }],
+    [{
+      bill_id: 'b1', table_id: 't1', table_name: 'Mesa 4', status: 'CLOSED',
+      payments: 1, tips_ves: '1000', billed_ves: '10000',
+      last_paid_at: '2026-08-01T21:14:00.000Z'
+    }]
+  );
+
+  const out = await tipsReport({
+    restaurantId: 'r1', from: '2026-08-01T00:00:00Z', to: '2026-08-02T00:00:00Z'
+  });
+
+  assert.equal(out.unassigned.length, 1);
+  assert.equal(out.unassigned[0].billId, 'b1');
+  assert.equal(out.unassigned[0].tableName, 'Mesa 4');
+  assert.equal(out.unassigned[0].status, 'CLOSED');
+  assert.equal(out.unassigned[0].tipsVes, '1000');
+  assert.equal(out.unassigned[0].lastPaidAt, '2026-08-01T21:14:00.000Z');
+  assert.equal(calls.filter(c => c.text.includes('served_by IS NULL')).length, 1);
+});
+
+test('a clean report does not go looking for unassigned bills', async () => {
+  // Es el caso normal y el informe se pide todo el rato: sin fila nula en
+  // `byServer` la consulta no puede devolver nada, así que no se hace.
+  const calls = stubReport(
+    [{ payment_method: 'CASH', payments: 1, tips_ves: '1000', billed_ves: '10000' }],
+    [{ user_id: 'u1', email: 'ana@example.com', payments: 1, tips_ves: '1000', billed_ves: '10000' }]
+  );
+
+  const out = await tipsReport({
+    restaurantId: 'r1', from: '2026-08-01T00:00:00Z', to: '2026-08-02T00:00:00Z'
+  });
+
+  assert.deepEqual(out.unassigned, []);
+  assert.equal(calls.filter(c => c.text.includes('served_by IS NULL')).length, 0);
 });
