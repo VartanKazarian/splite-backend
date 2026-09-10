@@ -686,6 +686,10 @@ function guestOrder(row) {
     tableId: row.table_id,
     tableName: row.table_name,
     billId: row.bill_id ?? null,
+    // Null cuando la cuenta no es de nadie, que es lo normal en un pedido por
+    // QR: la abrió el comensal. Nunca el correo en su lugar -- qué enseñar
+    // mientras tanto lo decide el cliente, como en `staffMember`.
+    servedBy: row.served_by ?? null,
     lineCount: row.line_count,
     items: (row.items ?? []).map(item => ({
       name: item.name,

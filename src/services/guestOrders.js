@@ -120,6 +120,10 @@ async function listPending({ restaurantId, limit = 50 }) {
   const { rows } = await db.query(
     `SELECT o.id, o.table_id, o.bill_id, o.line_count, o.created_at,
             t.name AS table_name,
+            -- Quién tiene atribuida la cuenta, que en un pedido por QR suele
+            -- ser nadie: la abrió el comensal. Va aquí para que la bandeja
+            -- pueda ofrecer "lo atiendo yo" sólo cuando de verdad falta.
+            b.served_by AS served_by,
             COALESCE(
               json_agg(
                 json_build_object(
@@ -132,9 +136,10 @@ async function listPending({ restaurantId, limit = 50 }) {
             ) AS items
        FROM guest_orders o
        JOIN tables t ON t.id = o.table_id AND t.restaurant_id = o.restaurant_id
+       LEFT JOIN bills b ON b.id = o.bill_id AND b.restaurant_id = o.restaurant_id
        LEFT JOIN bill_items i ON i.guest_order_id = o.id
       WHERE o.restaurant_id = $1 AND o.acknowledged_at IS NULL
-      GROUP BY o.id, t.name
+      GROUP BY o.id, t.name, b.served_by
       ORDER BY o.created_at ASC
       LIMIT $2`,
     [restaurantId, limit]
