@@ -14,6 +14,9 @@
       "BILL_NOT_OPEN": {
         "status": "string -- the status the bill is actually in"
       },
+      "BILL_ALREADY_SERVED": {
+        "servedBy": "uuid -- who the bill is already attributed to"
+      },
       "PAYMENT_EXCEEDS_BALANCE": {
         "remainingVes": "string -- minor units still owed"
       },
@@ -399,6 +402,7 @@
                   "SPLIT_NOT_ITEMISED",
                   "SPLIT_NOTHING_OUTSTANDING",
                   "BILL_HAS_PAYMENTS",
+                  "BILL_ALREADY_SERVED",
                   "PAYMENT_EXCEEDS_BALANCE",
                   "PAYMENT_STATE_INVALID",
                   "IDEMPOTENCY_KEY_REUSED",
@@ -3336,6 +3340,14 @@
             "format": "uuid",
             "description": "The bill the lines landed on. Null once that bill has been purged; the order is history of the room either way."
           },
+          "servedBy": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "uuid",
+            "description": "Who the bill is attributed to, which for a QR order is usually **nobody**: the diner opened it, so no member of staff did. Carried here so the tray can offer \"I am taking this table\" only where it is actually missing, and never the email in its place — what to show meanwhile is the client's decision."
+          },
           "lineCount": {
             "type": "integer",
             "description": "How many lines were ordered. Compare with `items`: a line a waiter has since removed is gone from `items` but the order still had it."
@@ -5947,13 +5959,9 @@
         "tags": [
           "Bills"
         ],
-        "summary": "Correct who served a table",
+        "summary": "Correct who served a table, or claim one nobody is down for",
         "operationId": "setBillServer",
-        "x-required-roles": [
-          "OWNER",
-          "MANAGER"
-        ],
-        "description": "**OWNER and MANAGER only, and audited, because this moves money between people.**\n\n`servedBy` is set automatically when a bill is opened, to whoever opened it. That is right\nwhen the person taking the order opens the bill and wrong when a host or a cashier opens it\non somebody else's behalf — common enough to need a correction path rather than an\nassumption.\n\nTips are attributed through the bill's **current** server, so a correction here moves the\ntips that followed from it. That is the point: a correction leaving yesterday's money\nagainst the wrong name would not be one. It is also why a waiter cannot do this to their\nown tables.\n\n`servedBy: null` clears it — better for a bill to belong to nobody than to the wrong person.\nAn inactive account is refused with `STAFF_NOT_FOUND`, so somebody who has left cannot\nquietly be given a share.",
+        "description": "Two acts behind one endpoint, with two different rules.\n\n**Correcting is OWNER and MANAGER, and audited, because it moves money between people.**\n`servedBy` is set automatically when a bill is opened, to whoever opened it. That is right\nwhen the person taking the order opens the bill and wrong when a host or a cashier opens it\non somebody else's behalf — common enough to need a correction path rather than an\nassumption. Tips are attributed through the bill's **current** server, so a correction here\nmoves the tips that followed from it: a correction leaving yesterday's money against the\nwrong name would not be one. It is also why a waiter cannot do this to their own tables.\n\n**Claiming is any staff role, only ever themselves, and only while the bill has nobody.**\nIt takes nothing from anyone: an unattributed bill's tips sit in the \"no server\" bucket,\nowed to nobody in particular, so moving them to whoever actually served the table is the\ncorrection that bucket exists to make possible. It is here because of the QR — a diner\nordering from their phone opens the bill with no server, and the person who knows who is\nserving that table is the waiter walking over. Requiring a manager first is how a shift ends\nwith a pile of unattributed cash. Naming somebody else, or clearing the field, is still a\ncorrection and still needs the two roles: `FORBIDDEN_ROLE`. A bill somebody already holds\nanswers `BILL_ALREADY_SERVED`, and the current server is read `FOR UPDATE`, so two waiters\nclaiming the same table serialise rather than overwrite each other.\n\n`servedBy: null` clears it — better for a bill to belong to nobody than to the wrong person.\nAn inactive account is refused with `STAFF_NOT_FOUND`, so somebody who has left cannot\nquietly be given a share.",
         "security": [
           {
             "staffAuth": []

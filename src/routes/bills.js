@@ -300,26 +300,43 @@ router.post(
 );
 
 /**
- * Correct who served a table.
+ * Correct who served a table, or claim a table nobody is down for.
  *
- * OWNER and MANAGER only, and audited, because this moves money between people:
- * tips are attributed through the bill's *current* server, so a correction here
- * moves yesterday's tips with it. That is the point -- a correction that left
- * the money against the wrong name would not be one -- but it is also why a
- * waiter cannot do it to their own tables.
+ * Two different acts behind one endpoint, with two different rules.
  *
- * `servedBy: null` clears it, for a bill that should not be attributed to
- * anybody rather than attributed wrongly.
+ * **Correcting** is OWNER and MANAGER, and audited, because it moves money
+ * between people: tips are attributed through the bill's *current* server, so a
+ * correction here moves yesterday's tips with it. That is the point -- a
+ * correction that left the money against the wrong name would not be one --
+ * but it is also why a waiter cannot do it to their own tables. `servedBy:
+ * null` clears it, for a bill that should not be attributed to anybody rather
+ * than attributed wrongly.
+ *
+ * **Claiming** is anybody on staff, and only ever themselves, and only while
+ * the bill has nobody. It takes nothing from anyone: an unattributed bill's
+ * tips are in the "sin mesero" bucket, owed to nobody in particular, so moving
+ * them to the person who actually served the table is the correction that
+ * bucket exists to make possible.
+ *
+ * It exists because of the QR: a diner ordering from their phone opens the bill
+ * with no server -- nobody from the house did -- and until somebody says
+ * otherwise their tip belongs to nobody. The person who knows is the waiter who
+ * walks over, and asking them to find a manager first is how a shift ends with
+ * a pile of unattributed cash.
+ *
+ * The current server is read `FOR UPDATE` rather than checked in the WHERE, so
+ * two waiters claiming the same table serialise and the second is told it is
+ * taken instead of quietly overwriting the first.
  */
 router.patch(
   '/:id/server',
-  requireRole('OWNER', 'MANAGER'),
   validateParams(billIdParamSchema),
   validateBody(setBillServerSchema),
   async (req, res, next) => {
     try {
       const restaurantId = req.user.restaurantId;
       const servedBy = req.body.servedBy ?? null;
+      const canReassign = req.user.role === 'OWNER' || req.user.role === 'MANAGER';
 
       const updated = await db.withTransaction(async client => {
         // Checked rather than left to the foreign key, so the answer is
@@ -331,6 +348,28 @@ router.patch(
             [servedBy, restaurantId]
           );
           if (!rows.length) throw new ApiError('STAFF_NOT_FOUND', 'No such person at this restaurant');
+        }
+
+        if (!canReassign) {
+          const current = await client.query(
+            'SELECT served_by FROM bills WHERE id = $1 AND restaurant_id = $2 FOR UPDATE',
+            [req.params.id, restaurantId]
+          );
+          if (!current.rows.length) throw new ApiError('BILL_NOT_FOUND', 'Bill not found');
+
+          // Sólo a sí mismo. Clearing it, or naming somebody else, is a
+          // correction -- and a correction takes money off a name.
+          if (servedBy !== req.user.sub) {
+            throw new ApiError('FORBIDDEN_ROLE', 'Forbidden', {
+              requiredRoles: ['OWNER', 'MANAGER']
+            });
+          }
+          // Y sólo si no hay nadie. Claiming is filling a hole, never taking.
+          if (current.rows[0].served_by && current.rows[0].served_by !== req.user.sub) {
+            throw new ApiError('BILL_ALREADY_SERVED', 'This bill is already attributed', {
+              servedBy: current.rows[0].served_by
+            });
+          }
         }
 
         const { rows } = await client.query(

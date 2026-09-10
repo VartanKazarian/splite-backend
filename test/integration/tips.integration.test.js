@@ -335,8 +335,14 @@ describe('tips against a real Postgres', { skip }, () => {
     // The SUCCEEDED transition still sits inside the window, so the window is
     // not what excludes it -- the payment's current status is. A tip on money
     // that went back to the diner is owed to nobody.
+    // En 2021, y tiene que quedarse en el pasado. La ventana de abajo es
+    // absoluta, así que con una fecha alcanzable todo lo que el resto de la
+    // suite cobra con NOW() cae dentro de ella: puesta en 2026-09-10, esta
+    // prueba pasó dos semanas en verde y el 10 de septiembre leyó 70.100 donde
+    // esperaba 800. Es el mismo fallo que ya tuvo la prueba del turno del
+    // viernes, y se arregla igual.
     const bill = await freshBill({ totalDue: 5000, totalDueVes: 5000 });
-    const settledAt = new Date('2026-09-10T20:00:00.000Z');
+    const settledAt = new Date('2021-03-10T20:00:00.000Z');
 
     const { rows } = await db.query(
       `INSERT INTO payments (restaurant_id, bill_id, amount_ves, tip_ves, status, payment_method, payer_type, created_at)
@@ -349,7 +355,7 @@ describe('tips against a real Postgres', { skip }, () => {
       [rows[0].id, restaurant.id, settledAt]
     );
 
-    const window = { from: '2026-09-10T00:00:00.000Z', to: '2026-09-11T00:00:00.000Z' };
+    const window = { from: '2021-03-10T00:00:00.000Z', to: '2021-03-11T00:00:00.000Z' };
     assert.equal((await tipsReport({ restaurantId: restaurant.id, ...window })).totalTipsVes, '800');
 
     await db.query("UPDATE payments SET status = 'REFUNDED' WHERE id = $1", [rows[0].id]);

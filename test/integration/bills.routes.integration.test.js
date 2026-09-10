@@ -1026,6 +1026,111 @@ describe('bill routes over HTTP', { skip }, () => {
     assert.equal(bill.body.items[0].productId, null, 'only the reporting link is cleared');
   });
 
+  /**
+   * Quién puede decir que una mesa es suya.
+   *
+   * Corregir mueve dinero de un nombre a otro y sigue siendo de gerencia.
+   * Reclamar una cuenta que no es de nadie no le quita nada a nadie -- sus
+   * propinas están en el cubo "sin mesero" -- y es lo que hace falta desde que
+   * el comensal puede abrir la cuenta pidiendo por el QR.
+   */
+  describe('claiming an unattributed bill', () => {
+    let waiter;
+    let waiterToken;
+    let other;
+    let otherToken;
+
+    before(async () => {
+      const mk = async (role, label) => {
+        const { rows } = await db.query(
+          `INSERT INTO users (restaurant_id, email, password_hash, role)
+           VALUES ($1, $2, 'x', $3) RETURNING id`,
+          [restaurant.id, `${label}-${restaurant.id}@example.com`, role]
+        );
+        return rows[0].id;
+      };
+      waiter = await mk('WAITER', 'claim-waiter');
+      other = await mk('WAITER', 'claim-other');
+      waiterToken = signAccessToken({ id: waiter, restaurantId: restaurant.id, role: 'WAITER' });
+      otherToken = signAccessToken({ id: other, restaurantId: restaurant.id, role: 'WAITER' });
+    });
+
+    /** Una cuenta abierta y sin atribuir, como la deja un pedido por QR. */
+    const orphanBill = async () => {
+      const created = await request('POST', '/api/v1/bills', {
+        body: { tableId: (await newTable()).id, totalDueMinorUnits: '5000' }
+      });
+      assert.equal(created.status, 201, JSON.stringify(created.body));
+      await db.query('UPDATE bills SET served_by = NULL WHERE id = $1', [created.body.id]);
+      return created.body.id;
+    };
+
+    it('lets a waiter take a table nobody is down for', async () => {
+      const billId = await orphanBill();
+      const res = await request('PATCH', `/api/v1/bills/${billId}/server`, {
+        token: waiterToken, body: { servedBy: waiter }
+      });
+      assert.equal(res.status, 200, JSON.stringify(res.body));
+      assert.equal(res.body.servedBy, waiter, 'la cuenta queda a su nombre');
+    });
+
+    it('refuses to take one somebody already holds', async () => {
+      const billId = await orphanBill();
+      assert.equal((await request('PATCH', `/api/v1/bills/${billId}/server`, {
+        token: waiterToken, body: { servedBy: waiter }
+      })).status, 200);
+
+      // El segundo llega tarde, y se le dice -- en vez de pisar al primero.
+      const res = await request('PATCH', `/api/v1/bills/${billId}/server`, {
+        token: otherToken, body: { servedBy: other }
+      });
+      assert.equal(res.status, 409);
+      assert.equal(res.body.error.code, 'BILL_ALREADY_SERVED');
+      assert.equal(res.body.error.details.servedBy, waiter);
+    });
+
+    it('refuses to put the table on somebody else, or on nobody', async () => {
+      const billId = await orphanBill();
+
+      // Nombrar a otro es dar propinas: eso es una corrección.
+      const toOther = await request('PATCH', `/api/v1/bills/${billId}/server`, {
+        token: waiterToken, body: { servedBy: other }
+      });
+      assert.equal(toOther.status, 403);
+      assert.equal(toOther.body.error.code, 'FORBIDDEN_ROLE');
+
+      // Y vaciarlo también: quita dinero de un nombre.
+      const toNobody = await request('PATCH', `/api/v1/bills/${billId}/server`, {
+        token: waiterToken, body: { servedBy: null }
+      });
+      assert.equal(toNobody.status, 403);
+      assert.equal(toNobody.body.error.code, 'FORBIDDEN_ROLE');
+
+      const { rows } = await db.query('SELECT served_by FROM bills WHERE id = $1', [billId]);
+      assert.equal(rows[0].served_by, null, 'y nada de eso llegó a escribirse');
+    });
+
+    it('still lets management reassign and clear', async () => {
+      const billId = await orphanBill();
+      assert.equal((await request('PATCH', `/api/v1/bills/${billId}/server`, {
+        token: waiterToken, body: { servedBy: waiter }
+      })).status, 200);
+
+      // Gerencia sí puede mover una cuenta que ya tiene dueño.
+      const moved = await request('PATCH', `/api/v1/bills/${billId}/server`, {
+        body: { servedBy: other }
+      });
+      assert.equal(moved.status, 200, JSON.stringify(moved.body));
+      assert.equal(moved.body.servedBy, other);
+
+      const cleared = await request('PATCH', `/api/v1/bills/${billId}/server`, {
+        body: { servedBy: null }
+      });
+      assert.equal(cleared.status, 200);
+      assert.equal(cleared.body.servedBy, null);
+    });
+  });
+
   it('scopes every read to the caller\'s restaurant', async () => {
     const other = await fixtures.createRestaurant({ name: 'Other Routes Tenant' });
     try {
