@@ -1432,6 +1432,23 @@ Object.assign(schemas, {
     }
   },
 
+  BillAdjustment: {
+    type: 'object',
+    description:
+      'What was written off when a bill was settled short. Never signed: the direction is in `reason`, and a figure that may be negative is a subtraction somebody eventually does twice.',
+    properties: {
+      id: { type: 'string', format: 'uuid' },
+      amountVes: minorUnits,
+      reason: {
+        type: 'string',
+        enum: ['DISCOUNT', 'COMP', 'WRITE_OFF'],
+        description: 'A negotiated reduction, the house\'s own courtesy, or money that will not be collected. Three different questions for an owner: a shift full of WRITE_OFF is a problem, one full of COMP is a policy.'
+      },
+      note: { type: ['string', 'null'], maxLength: 280 },
+      createdAt: { type: 'string', format: 'date-time' }
+    }
+  },
+
   ServiceSnapshot: {
     type: 'object',
     description: 'The room right now, plus what has been taken over a window. Every money figure is summed server-side.',
@@ -1468,6 +1485,18 @@ Object.assign(schemas, {
               unclassified: { $ref: '#/components/schemas/TakingsChannel' }
             }
           }
+        }
+      },
+      adjustments: {
+        type: 'object',
+        description:
+          'What was **not** collected, because bills were settled short over the same window. The counterpart of `taken`, and never part of it: this money never arrived. Without it, forgiving fifty thousand bolívares in a shift shows up on no screen at all — the only trace is the audit log, which nobody opens while counting the till.',
+        properties: {
+          totalVes: minorUnits,
+          bills: { type: 'integer', description: 'How many bills were settled short.' },
+          discountVes: minorUnits,
+          compVes: minorUnits,
+          writeOffVes: minorUnits
         }
       },
       claims: {
@@ -3026,6 +3055,81 @@ const paths = {
       parameters: [{ $ref: '#/components/parameters/BillId' }],
       responses: {
         200: { description: 'Voided.', content: { 'application/json': { schema: ref('Bill') } } },
+        ...commonErrors,
+        403: response('Forbidden'),
+        404: response('NotFound'),
+        409: response('Conflict')
+      }
+    }
+  },
+
+  '/api/v1/bills/{id}/settle': {
+    post: {
+      tags: ['Bills'],
+      summary: 'Close a bill with what was actually collected',
+      operationId: 'settleBill',
+      'x-required-roles': ['OWNER', 'MANAGER'],
+      description: [
+        '**Roles: OWNER, MANAGER**, and audited, because this forgives money.',
+        '',
+        'A bill used to leave `OPEN` by exactly two routes, and between them is a gap a dining room',
+        'falls through. It becomes `CLOSED` on its own only when what was collected equals what was',
+        'owed **to the céntimo**; and it can be voided only while not a céntimo has arrived',
+        '(`BILL_HAS_PAYMENTS` otherwise). So a table that pays 2.000 of 2.330 and leaves, a courtesy',
+        'on a bill that already took a payment, a dish sent back after paying, or one zero too many',
+        'while typing, could **never be closed**: voiding is refused because money moved, and',
+        'removing lines to square it is refused with `TOTAL_BELOW_AMOUNT_PAID`. The table stayed',
+        'occupied on the floor for ever, and its balance stayed in the panel\'s outstanding figure.',
+        '',
+        'This closes it and records the difference with a reason and an author.',
+        '',
+        '**It does not touch `amountPaidVes`.** What was collected comes from the payment ledger and',
+        'is what gets compared against the bank and the till; adding a payment nobody made would',
+        'square the bill and unbalance the count, which is worse. The bill closes with',
+        '`amountPaidVes < totalDueVes`, and the difference lives in the adjustment.',
+        '',
+        'A bill that owes nothing is simply closed, with `adjustment: null` — closing something that',
+        'owes nothing is closing it, not forgiving zero.'
+      ].join('\n'),
+      security: staff,
+      parameters: [{ $ref: '#/components/parameters/BillId' }],
+      requestBody: {
+        required: true,
+        content: {
+          'application/json': {
+            schema: {
+              type: 'object',
+              required: ['reason'],
+              properties: {
+                reason: {
+                  type: 'string',
+                  enum: ['DISCOUNT', 'COMP', 'WRITE_OFF'],
+                  description: 'Required on purpose: it is the only thing separating a negotiated reduction from a courtesy and from bad debt, and a default would make the three the same.'
+                },
+                note: { type: 'string', maxLength: 280, description: 'Optional and short — "they left without paying", "table 4 birthday". What a figure needs to still mean something a month later.' }
+              }
+            }
+          }
+        }
+      },
+      responses: {
+        200: {
+          description: 'The closed bill, and what was written off.',
+          content: {
+            'application/json': {
+              schema: {
+                type: 'object',
+                properties: {
+                  bill: ref('Bill'),
+                  adjustment: {
+                    oneOf: [ref('BillAdjustment'), { type: 'null' }],
+                    description: 'Null when the bill owed nothing.'
+                  }
+                }
+              }
+            }
+          }
+        },
         ...commonErrors,
         403: response('Forbidden'),
         404: response('NotFound'),

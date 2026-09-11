@@ -1131,6 +1131,134 @@ describe('bill routes over HTTP', { skip }, () => {
     });
   });
 
+  /**
+   * Cerrar una cuenta que no cuadra.
+   *
+   * Era el único hueco por el que una mesa se quedaba ocupada para siempre:
+   * con dinero dentro no se puede anular, y quitarle líneas para cuadrarla se
+   * rechaza en cuanto el total bajaría de lo cobrado.
+   */
+  describe('settling a bill short', () => {
+    /** Una cuenta con una parte cobrada y un resto que nadie va a pagar. */
+    const partlyPaid = async () => {
+      const created = await request('POST', '/api/v1/bills', {
+        body: { tableId: (await newTable()).id, totalDueMinorUnits: '10000' }
+      });
+      assert.equal(created.status, 201, JSON.stringify(created.body));
+      const paid = await request('POST', `/api/v1/bills/${created.body.id}/payments`, {
+        body: {
+          billId: created.body.id, amountMinorUnits: '6000', currency: 'VES',
+          paymentMethod: 'CASH', idempotencyKey: crypto.randomUUID()
+        }
+      });
+      assert.equal(paid.status, 200, JSON.stringify(paid.body));
+      return created.body.id;
+    };
+
+    it('closes it and writes down what was forgiven', async () => {
+      const billId = await partlyPaid();
+
+      // Los dos caminos de antes, para que quede escrito por qué hace falta
+      // uno nuevo: anular se rechaza con dinero dentro, y bajar el total por
+      // debajo de lo cobrado también.
+      const voided = await request('POST', `/api/v1/bills/${billId}/void`);
+      assert.equal(voided.status, 409);
+      assert.equal(voided.body.error.code, 'BILL_HAS_PAYMENTS');
+
+      const settled = await request('POST', `/api/v1/bills/${billId}/settle`, {
+        body: { reason: 'WRITE_OFF', note: 'Se fueron sin pagar el resto' }
+      });
+      assert.equal(settled.status, 200, JSON.stringify(settled.body));
+      assert.equal(settled.body.bill.status, 'CLOSED');
+      assert.equal(settled.body.adjustment.amountVes, '4000', 'lo que faltaba');
+      assert.equal(settled.body.adjustment.reason, 'WRITE_OFF');
+      assert.equal(settled.body.adjustment.note, 'Se fueron sin pagar el resto');
+
+      // Lo cobrado no se toca: sale del libro de pagos y es lo que se compara
+      // contra la caja.
+      assert.equal(settled.body.bill.amountPaidVes, '6000');
+      assert.equal(settled.body.bill.totalDueVes, '10000');
+    });
+
+    it('refuses to settle the same bill twice', async () => {
+      const billId = await partlyPaid();
+      assert.equal((await request('POST', `/api/v1/bills/${billId}/settle`, {
+        body: { reason: 'COMP' }
+      })).status, 200);
+
+      const again = await request('POST', `/api/v1/bills/${billId}/settle`, {
+        body: { reason: 'COMP' }
+      });
+      assert.equal(again.status, 409);
+      assert.equal(again.body.error.code, 'BILL_NOT_OPEN');
+      assert.equal(again.body.error.details.status, 'CLOSED');
+    });
+
+    it('closes a squared bill without forgiving anything', async () => {
+      const created = await request('POST', '/api/v1/bills', {
+        body: { tableId: (await newTable()).id, totalDueMinorUnits: '3000' }
+      });
+      // Sin cobros: no falta nada por el camino de la caja, pero tampoco entró
+      // nada. Lo que se comprueba aquí es la rama de "no debe nada": se fuerza
+      // el saldo a cero para que el hueco sea cero.
+      await db.query('UPDATE bills SET total_due_ves = 0 WHERE id = $1', [created.body.id]);
+
+      const settled = await request('POST', `/api/v1/bills/${created.body.id}/settle`, {
+        body: { reason: 'DISCOUNT' }
+      });
+      assert.equal(settled.status, 200, JSON.stringify(settled.body));
+      assert.equal(settled.body.bill.status, 'CLOSED');
+      assert.equal(settled.body.adjustment, null, 'cerrar lo que no debe nada no perdona cero');
+    });
+
+    it('needs a reason, and only management may forgive', async () => {
+      const billId = await partlyPaid();
+
+      const noReason = await request('POST', `/api/v1/bills/${billId}/settle`, { body: {} });
+      assert.equal(noReason.status, 400);
+      assert.equal(noReason.body.error.code, 'VALIDATION_FAILED');
+
+      const { rows } = await db.query(
+        `INSERT INTO users (restaurant_id, email, password_hash, role)
+         VALUES ($1, $2, 'x', 'WAITER') RETURNING id`,
+        [restaurant.id, `settle-waiter-${Date.now()}@example.com`]
+      );
+      const waiterToken = signAccessToken({
+        id: rows[0].id, restaurantId: restaurant.id, role: 'WAITER'
+      });
+      const asWaiter = await request('POST', `/api/v1/bills/${billId}/settle`, {
+        token: waiterToken, body: { reason: 'COMP' }
+      });
+      assert.equal(asWaiter.status, 403);
+
+      // Y nada de eso llegó a cerrar la cuenta.
+      const still = await db.query('SELECT status FROM bills WHERE id = $1', [billId]);
+      assert.equal(still.rows[0].status, 'OPEN');
+    });
+
+    it('shows up in the day\'s figures, apart from what was taken', async () => {
+      const snapshot = await request('GET', '/api/v1/payments/dashboard');
+      assert.equal(snapshot.status, 200, JSON.stringify(snapshot.body));
+      const forgivenBefore = BigInt(snapshot.body.adjustments.totalVes);
+      const takenBefore = BigInt(snapshot.body.taken.paymentsVes);
+
+      const billId = await partlyPaid();
+      await request('POST', `/api/v1/bills/${billId}/settle`, { body: { reason: 'COMP' } });
+
+      const later = await request('GET', '/api/v1/payments/dashboard');
+      assert.equal(
+        (BigInt(later.body.adjustments.totalVes) - forgivenBefore).toString(), '4000',
+        'lo perdonado se ve'
+      );
+      assert.ok(BigInt(later.body.adjustments.compVes) >= 4000n, 'y con su motivo');
+      // Los 6.000 cobrados sí entran en lo cobrado; los 4.000 perdonados no.
+      assert.equal(
+        (BigInt(later.body.taken.paymentsVes) - takenBefore).toString(), '6000',
+        'perdonar no infla lo cobrado'
+      );
+    });
+  });
+
   it('scopes every read to the caller\'s restaurant', async () => {
     const other = await fixtures.createRestaurant({ name: 'Other Routes Tenant' });
     try {
