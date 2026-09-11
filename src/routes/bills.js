@@ -18,6 +18,7 @@ const {
   listBillsQuerySchema,
   billIdParamSchema,
   setBillServerSchema,
+  settleBillSchema,
   tableIdParamSchema
 } = require('../middleware/schemas');
 const { processSplitPayment } = require('../services/locks');
@@ -621,6 +622,100 @@ router.post(
         actor: { id: req.user.sub }
       });
       res.json(dto.billSplit(split));
+    } catch (err) { next(err); }
+  }
+);
+
+/**
+ * Cerrar una cuenta con lo que de verdad entró.
+ *
+ * Una cuenta pasaba a CLOSED sola, y sólo cuando lo cobrado igualaba
+ * **exactamente** lo debido; anularla exigía que no hubiera entrado un céntimo.
+ * Entre los dos caminos quedaba un hueco por el que se cae media sala: la mesa
+ * que paga 2.000 de 2.330 y se va, la cortesía sobre una cuenta que ya tenía
+ * cobros, el plato devuelto después de pagar, el cero de más al teclear. En
+ * todos esos casos la cuenta no se podía cerrar nunca -- anular se rechaza
+ * porque hay dinero, y quitar líneas para cuadrarla se rechaza con
+ * `TOTAL_BELOW_AMOUNT_PAID` -- y la mesa se quedaba ocupada para siempre.
+ *
+ * Esto la cierra y **escribe la diferencia con su motivo y su autor**. No toca
+ * `amount_paid_ves`: lo cobrado sale del libro de pagos y es lo que se compara
+ * contra el banco y contra la caja, así que sumar aquí un cobro que nadie hizo
+ * cuadraría la cuenta y descuadraría el arqueo. Ver `037_bill_adjustments`.
+ *
+ * OWNER y MANAGER, porque es perdonar dinero, y auditado por lo mismo.
+ *
+ * Con la cuenta cuadrada no escribe ajuste ninguno: cerrar algo que no debe
+ * nada es cerrarlo, no perdonar cero.
+ */
+router.post(
+  '/:id/settle',
+  requireRole('OWNER', 'MANAGER'),
+  validateParams(billIdParamSchema),
+  validateBody(settleBillSchema),
+  async (req, res, next) => {
+    try {
+      const restaurantId = req.user.restaurantId;
+
+      const result = await db.withTransaction(async client => {
+        const { rows } = await client.query(
+          `SELECT ${BILL_COLUMNS} FROM bills
+            WHERE id = $1 AND restaurant_id = $2 FOR UPDATE`,
+          [req.params.id, restaurantId]
+        );
+        if (!rows.length) throw new ApiError('BILL_NOT_FOUND', 'Bill not found');
+
+        const bill = rows[0];
+        if (bill.status !== 'OPEN') {
+          throw new ApiError('BILL_NOT_OPEN', `A ${bill.status} bill cannot be settled`, {
+            status: bill.status
+          });
+        }
+
+        // Lo que se deja de cobrar. BigInt porque son unidades menores en
+        // cadena y una cuenta puede pasar de 2^53 céntimos.
+        const shortfall = BigInt(bill.total_due_ves) - BigInt(bill.amount_paid_ves);
+
+        let adjustment = null;
+        if (shortfall > 0n) {
+          const written = await client.query(
+            `INSERT INTO bill_adjustments
+               (restaurant_id, bill_id, amount_ves, reason, note, created_by)
+             VALUES ($1, $2, $3, $4, $5, $6)
+             RETURNING id, amount_ves, reason, note, created_at`,
+            [restaurantId, bill.id, shortfall.toString(), req.body.reason,
+              req.body.note ?? null, req.user.sub]
+          );
+          adjustment = written.rows[0];
+        }
+
+        const closed = await client.query(
+          `UPDATE bills SET status = 'CLOSED', updated_at = NOW()
+            WHERE id = $1 AND restaurant_id = $2
+          RETURNING ${BILL_COLUMNS}`,
+          [bill.id, restaurantId]
+        );
+
+        return { bill: closed.rows[0], adjustment };
+      });
+
+      await logAudit({
+        ...auditContext(req),
+        action: 'BILL_SETTLED',
+        resourceType: 'bill',
+        resourceId: result.bill.id,
+        details: {
+          reason: req.body.reason,
+          // La cifra en la línea de auditoría y no sólo en la tabla: quien lee
+          // el registro está buscando justamente cuánto se perdonó.
+          adjustmentVes: result.adjustment ? result.adjustment.amount_ves : '0'
+        }
+      });
+
+      res.json({
+        bill: dto.bill(result.bill),
+        adjustment: result.adjustment ? dto.billAdjustment(result.adjustment) : null
+      });
     } catch (err) { next(err); }
   }
 );

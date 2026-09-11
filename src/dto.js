@@ -679,6 +679,23 @@ function billSplit({ split, participants, claims = [], fxRate = null }) {
  * navegador con el reloj mal puesto convierte un pedido de hace un minuto en
  * uno de hace un día.
  */
+/**
+ * Lo que se dejó de cobrar al cerrar una cuenta.
+ *
+ * `amountVes` sale en cadena como todo el dinero de esta API, y nunca lleva
+ * signo: el sentido lo da `reason`, y una cifra que puede ser negativa es una
+ * resta que alguien acaba haciendo dos veces.
+ */
+function billAdjustment(row) {
+  return {
+    id: row.id,
+    amountVes: String(row.amount_ves),
+    reason: row.reason,
+    note: row.note ?? null,
+    createdAt: isoTimestamp(row.created_at)
+  };
+}
+
 function guestOrder(row) {
   const createdAt = isoTimestamp(row.created_at);
   return {
@@ -720,7 +737,7 @@ function staffMember(row) {
 }
 
 module.exports = {
-  isoDate, isoTimestamp, staffMember, guestOrder,
+  isoDate, isoTimestamp, staffMember, guestOrder, billAdjustment,
   bill, billItem, billWithItems, guestBill,
   table, floorTable, product, publicProduct, menuCategory, menuDocument, brandingImage, qrContext, menuSettings, menuCharges, account, payout, guestPayee, paymentProviderConfig, paymentClaim, staffPaymentClaim, c2pCharge, billSplit
 };

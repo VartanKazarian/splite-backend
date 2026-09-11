@@ -3429,6 +3429,44 @@
           }
         }
       },
+      "BillAdjustment": {
+        "type": "object",
+        "description": "What was written off when a bill was settled short. Never signed: the direction is in `reason`, and a figure that may be negative is a subtraction somebody eventually does twice.",
+        "properties": {
+          "id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "amountVes": {
+            "type": "string",
+            "pattern": "^[0-9]+$",
+            "description": "Integer minor units (céntimos) as a string, so values beyond 2^53 survive JSON.",
+            "examples": [
+              "756710"
+            ]
+          },
+          "reason": {
+            "type": "string",
+            "enum": [
+              "DISCOUNT",
+              "COMP",
+              "WRITE_OFF"
+            ],
+            "description": "A negotiated reduction, the house's own courtesy, or money that will not be collected. Three different questions for an owner: a shift full of WRITE_OFF is a problem, one full of COMP is a policy."
+          },
+          "note": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "maxLength": 280
+          },
+          "createdAt": {
+            "type": "string",
+            "format": "date-time"
+          }
+        }
+      },
       "ServiceSnapshot": {
         "type": "object",
         "description": "The room right now, plus what has been taken over a window. Every money figure is summed server-side.",
@@ -3536,6 +3574,48 @@
                     "$ref": "#/components/schemas/TakingsChannel"
                   }
                 }
+              }
+            }
+          },
+          "adjustments": {
+            "type": "object",
+            "description": "What was **not** collected, because bills were settled short over the same window. The counterpart of `taken`, and never part of it: this money never arrived. Without it, forgiving fifty thousand bolívares in a shift shows up on no screen at all — the only trace is the audit log, which nobody opens while counting the till.",
+            "properties": {
+              "totalVes": {
+                "type": "string",
+                "pattern": "^[0-9]+$",
+                "description": "Integer minor units (céntimos) as a string, so values beyond 2^53 survive JSON.",
+                "examples": [
+                  "756710"
+                ]
+              },
+              "bills": {
+                "type": "integer",
+                "description": "How many bills were settled short."
+              },
+              "discountVes": {
+                "type": "string",
+                "pattern": "^[0-9]+$",
+                "description": "Integer minor units (céntimos) as a string, so values beyond 2^53 survive JSON.",
+                "examples": [
+                  "756710"
+                ]
+              },
+              "compVes": {
+                "type": "string",
+                "pattern": "^[0-9]+$",
+                "description": "Integer minor units (céntimos) as a string, so values beyond 2^53 survive JSON.",
+                "examples": [
+                  "756710"
+                ]
+              },
+              "writeOffVes": {
+                "type": "string",
+                "pattern": "^[0-9]+$",
+                "description": "Integer minor units (céntimos) as a string, so values beyond 2^53 survive JSON.",
+                "examples": [
+                  "756710"
+                ]
               }
             }
           },
@@ -6598,6 +6678,108 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/Bill"
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "403": {
+            "$ref": "#/components/responses/Forbidden"
+          },
+          "404": {
+            "$ref": "#/components/responses/NotFound"
+          },
+          "409": {
+            "$ref": "#/components/responses/Conflict"
+          },
+          "429": {
+            "$ref": "#/components/responses/TooManyRequests"
+          },
+          "500": {
+            "$ref": "#/components/responses/ServerError"
+          }
+        }
+      }
+    },
+    "/api/v1/bills/{id}/settle": {
+      "post": {
+        "tags": [
+          "Bills"
+        ],
+        "summary": "Close a bill with what was actually collected",
+        "operationId": "settleBill",
+        "x-required-roles": [
+          "OWNER",
+          "MANAGER"
+        ],
+        "description": "**Roles: OWNER, MANAGER**, and audited, because this forgives money.\n\nA bill used to leave `OPEN` by exactly two routes, and between them is a gap a dining room\nfalls through. It becomes `CLOSED` on its own only when what was collected equals what was\nowed **to the céntimo**; and it can be voided only while not a céntimo has arrived\n(`BILL_HAS_PAYMENTS` otherwise). So a table that pays 2.000 of 2.330 and leaves, a courtesy\non a bill that already took a payment, a dish sent back after paying, or one zero too many\nwhile typing, could **never be closed**: voiding is refused because money moved, and\nremoving lines to square it is refused with `TOTAL_BELOW_AMOUNT_PAID`. The table stayed\noccupied on the floor for ever, and its balance stayed in the panel's outstanding figure.\n\nThis closes it and records the difference with a reason and an author.\n\n**It does not touch `amountPaidVes`.** What was collected comes from the payment ledger and\nis what gets compared against the bank and the till; adding a payment nobody made would\nsquare the bill and unbalance the count, which is worse. The bill closes with\n`amountPaidVes < totalDueVes`, and the difference lives in the adjustment.\n\nA bill that owes nothing is simply closed, with `adjustment: null` — closing something that\nowes nothing is closing it, not forgiving zero.",
+        "security": [
+          {
+            "staffAuth": []
+          }
+        ],
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/BillId"
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "required": [
+                  "reason"
+                ],
+                "properties": {
+                  "reason": {
+                    "type": "string",
+                    "enum": [
+                      "DISCOUNT",
+                      "COMP",
+                      "WRITE_OFF"
+                    ],
+                    "description": "Required on purpose: it is the only thing separating a negotiated reduction from a courtesy and from bad debt, and a default would make the three the same."
+                  },
+                  "note": {
+                    "type": "string",
+                    "maxLength": 280,
+                    "description": "Optional and short — \"they left without paying\", \"table 4 birthday\". What a figure needs to still mean something a month later."
+                  }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "The closed bill, and what was written off.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "bill": {
+                      "$ref": "#/components/schemas/Bill"
+                    },
+                    "adjustment": {
+                      "oneOf": [
+                        {
+                          "$ref": "#/components/schemas/BillAdjustment"
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ],
+                      "description": "Null when the bill owed nothing."
+                    }
+                  }
                 }
               }
             }

@@ -183,6 +183,20 @@ const updateBillItemSchema = Joi.object({
   quantity: quantity.required()
 });
 
+/**
+ * Cerrar una cuenta con lo cobrado, y decir por qué falta el resto.
+ *
+ * El motivo es obligatorio a propósito. Es lo único que distingue una rebaja
+ * acordada de una cortesía de la casa y de dinero que no se va a cobrar, y son
+ * tres cosas distintas para quien lee el turno al final: muchos WRITE_OFF son
+ * un problema, muchos COMP son una política. Un valor por defecto convertiría
+ * las tres en la misma.
+ */
+const settleBillSchema = Joi.object({
+  reason: Joi.string().valid('DISCOUNT', 'COMP', 'WRITE_OFF').required(),
+  note: Joi.string().trim().max(280).allow('')
+});
+
 // A waiter takes an order, not a line: "two beers and a burger" is one action.
 const orderSchema = Joi.object({
   items: Joi.array().min(1).max(50).required().items(Joi.object({
@@ -818,6 +832,7 @@ module.exports = {
   addBillItemSchema,
   orderSchema,
   updateBillItemSchema,
+  settleBillSchema,
   billItemIdParamSchema,
   splitPreviewSchema,
   listTablesQuerySchema,

@@ -88,7 +88,7 @@ function takings(rows) {
 }
 
 async function serviceSnapshot({ restaurantId, from = null }) {
-  const [floor, taken, claims, c2p] = await Promise.all([
+  const [floor, taken, claims, adjustments, c2p] = await Promise.all([
     db.query(
       `SELECT count(*)::int                                        AS tables_total,
               count(b.id)::int                                     AS tables_occupied,
@@ -128,6 +128,23 @@ async function serviceSnapshot({ restaurantId, from = null }) {
 
     claimsSummary({ restaurantId }),
 
+    // Lo que se dejó de cobrar cerrando cuentas en la ventana.
+    //
+    // Va aquí y no en un informe aparte porque es la contrapartida de
+    // `taken`: sin ella, perdonar cincuenta mil bolívares en un turno no
+    // aparece en ninguna pantalla, y el único rastro es el registro de
+    // auditoría, que nadie abre mientras cuadra la caja. No entra en ninguna
+    // suma de lo cobrado -- no es dinero que haya entrado -- y por eso viaja en
+    // su propio campo. Ver `037_bill_adjustments`.
+    db.query(
+      `SELECT reason, COALESCE(SUM(amount_ves), 0)::BIGINT AS amount_ves, count(*)::int AS bills
+         FROM bill_adjustments
+        WHERE restaurant_id = $1
+          AND created_at >= COALESCE($2::timestamptz, ${CARACAS_DAY_START})
+        GROUP BY reason`,
+      [restaurantId, from]
+    ),
+
     // Tenant-scoped, unlike the same figure on /metrics: a restaurant sees its
     // own queue, an operator sees the installation's.
     db.query(
@@ -143,6 +160,11 @@ async function serviceSnapshot({ restaurantId, from = null }) {
 
   const f = floor.rows[0];
   const t = takings(taken.rows);
+
+  // Sumado de las mismas filas que se devuelven desglosadas, para que las dos
+  // mitades no puedan separarse.
+  const byReason = Object.fromEntries(adjustments.rows.map(r => [r.reason, r.amount_ves]));
+  const forgiven = adjustments.rows.reduce((sum, r) => sum + BigInt(r.amount_ves), 0n);
   const unresolved = Object.fromEntries(c2p.rows.map(r => [r.status, r.count]));
 
   const due = BigInt(f.due_ves);
@@ -171,6 +193,14 @@ async function serviceSnapshot({ restaurantId, from = null }) {
       tipsVes: t.tipsVes,
       payments: t.payments,
       byChannel: t.byChannel
+    },
+    // Lo perdonado al cerrar cuentas. Nunca se suma a `taken`: no entró.
+    adjustments: {
+      totalVes: forgiven.toString(),
+      bills: adjustments.rows.reduce((sum, r) => sum + r.bills, 0),
+      discountVes: byReason.DISCOUNT ?? '0',
+      compVes: byReason.COMP ?? '0',
+      writeOffVes: byReason.WRITE_OFF ?? '0'
     },
     claims: {
       pending: claims.pending,
