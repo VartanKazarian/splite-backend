@@ -959,6 +959,13 @@ again, so re-pricing, renaming or deactivating a product cannot change a bill
 that has already been served. `product_id` is kept for reporting and is
 nullable: the line outlives the product.
 
+Its **tax** is snapshotted the same way and for the same reason. `tax_category`
+and `vat_bps` are copied onto the line at the moment it is added — see
+[Charges](#charges-iva-and-servicio) — so declaring a dish exempt tomorrow does
+not move the IVA on a dinner served tonight. A bill open across such a change
+ends up with lines at different rates, each taxed as it was sold, which is the
+correct answer rather than an awkward one.
+
 `subtotal_minor` is `GENERATED ALWAYS AS (unit_price_minor * quantity) STORED`
 — the database computes it or nothing does. A subtotal the application keeps in
 step with its inputs is the same drift the payment ledger exists to remove.
@@ -1322,10 +1329,31 @@ is: changing a restaurant's rates must never reprice a meal already eaten.
 
 ```
   subtotal          sum of the line items
-+ IVA               vat_bps x subtotal
++ IVA               sum over tax rates of (rate x that rate's base)
 + service charge    service_charge_bps x subtotal, NOT taxed
 = total
 ```
+
+**IVA is calculated per rate, not per bill.** Each line freezes its own
+`tax_category` and `vat_bps` when it is added, exactly as it freezes the price.
+Recalculation groups the lines by frozen rate, applies each rate once to its
+own base, and sums the groups.
+
+Where every line is taxed alike — which is every bill opened before migration
+038, and most bills after it — there is a single group whose base is the whole
+subtotal, so the arithmetic is identical to the old `vat_bps x subtotal`. That
+equality is not an assumption: `test/integration/billItemTax` asserts the
+totals against arithmetic written out by hand, so a regression in the engine
+cannot validate itself.
+
+Grouping by rate rather than by line also keeps the total independent of how
+many rows the same food was split across: one rounding per rate, not one per
+renglón.
+
+`bills.vat_bps` survives as the restaurant's **general** rate — the default a
+new line inherits. It is no longer the rate every line paid, so a client must
+not recompute `vatMinor` from it; the per-line `taxCategory` and `vatBps` say
+what was actually applied.
 
 **IVA is not charged on the servicio.** Both are taken on the subtotal
 independently and summed; the service charge never enters the taxable base.
@@ -1340,6 +1368,40 @@ or by anything else. Every insert has to write a consistent row.
 Both rates default to **zero**, including for Venezuela's statutory 16%: a
 restaurant is configured deliberately, and a migration must never silently move
 an existing total.
+
+### What a product is, for tax
+
+`menu_products.tax_category` is one of four values, not a `has_vat` boolean:
+
+| | |
+|---|---|
+| `TAXABLE` | taxed at the applicable rate |
+| `EXEMPT` | exempt by the VAT law itself |
+| `EXONERATED` | exonerated by an executive act, which has an end date |
+| `NON_TAXABLE` | not subject: outside the scope of the tax |
+
+The last three all produce zero IVA on the bill, and they are **not** the same
+thing — a sales ledger declares them separately. Collapsing them into "no IVA"
+throws the distinction away at exactly the moment somebody asks for it.
+
+`menu_products.vat_bps` is the product's own rate, and is **null** for almost
+everything, meaning "the restaurant's general rate". Null rather than a copy of
+today's number: a column full of duplicates of the same rate goes out of sync
+the first time anyone changes it. Only a `TAXABLE` product may carry one, which
+a `CHECK` enforces and the API refuses before the database has to.
+
+On `bill_items` the same pair is stored **resolved** — `vat_bps` there is never
+null — because the restaurant can change its general rate tomorrow and a meal
+served tonight cannot follow it.
+
+Migration 038 backfilled every existing line with its own bill's `vat_bps` and
+left every category at `TAXABLE`, which is what they were: until that migration
+there was no way for the menu to say anything else. **No stored total moved.**
+
+This much is needed whatever happens with fiscal invoicing, and is the reason
+it went in first: a máquina fiscal also has to know the tax category of every
+renglón. It is the one part of the tax layer that does not depend on which
+providencia turns out to apply.
 
 A voluntary tip is deliberately not modelled here. It is untaxed and chosen by
 the payer rather than the restaurant, so it belongs with the payment — see

@@ -409,6 +409,7 @@
                   "IDEMPOTENCY_IN_FLIGHT",
                   "TABLE_NAME_TAKEN",
                   "PRODUCT_NAME_TAKEN",
+                  "PRODUCT_TAX_CONFLICT",
                   "MENU_CURRENCY_MISMATCH",
                   "CATEGORY_NAME_TAKEN",
                   "WEBHOOK_ALREADY_PROCESSED",
@@ -538,12 +539,12 @@
             "type": "integer",
             "minimum": 0,
             "maximum": 10000,
-            "description": "IVA rate in basis points, frozen when the bill opened. 1600 = 16%."
+            "description": "The restaurant's general IVA rate in basis points, frozen when the bill opened. 1600 = 16%. It is the default a line inherits, not necessarily the rate every line paid: a product can be exempt, or carry a rate of its own. Read the per-line taxCategory and vatBps to see what was applied, and do not recompute vatMinor from this field."
           },
           "vatMinor": {
             "type": "string",
             "pattern": "^[0-9]+$",
-            "description": "IVA, taken on the subtotal alone — never on the service charge.",
+            "description": "IVA, taken on the subtotal alone — never on the service charge. Computed per rate: lines are grouped by the rate frozen on each, the rate is applied once per group, and the groups are summed. With a single rate — which is every bill that predates per-product tax categories — that is arithmetically identical to applying it to the whole subtotal.",
             "examples": [
               "756710"
             ]
@@ -699,6 +700,22 @@
             "examples": [
               "756710"
             ]
+          },
+          "taxCategory": {
+            "type": "string",
+            "enum": [
+              "TAXABLE",
+              "EXEMPT",
+              "EXONERATED",
+              "NON_TAXABLE"
+            ],
+            "description": "The tax treatment frozen onto the line when it was added, like the price and for the same reason: changing a product's category tomorrow must not move the IVA on a meal already eaten."
+          },
+          "vatBps": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 10000,
+            "description": "The rate actually applied to this line, in basis points. Already resolved — unlike the product's, this is never null, because the restaurant can change its general rate and this line cannot. Zero for anything not taxable."
           },
           "createdAt": {
             "type": "string",
@@ -1796,12 +1813,12 @@
             "type": "integer",
             "minimum": 0,
             "maximum": 10000,
-            "description": "IVA rate in basis points, frozen when the bill opened. 1600 = 16%."
+            "description": "The restaurant's general IVA rate in basis points, frozen when the bill opened. 1600 = 16%. It is the default a line inherits, not necessarily the rate every line paid: a product can be exempt, or carry a rate of its own. Read the per-line taxCategory and vatBps to see what was applied, and do not recompute vatMinor from this field."
           },
           "vatMinor": {
             "type": "string",
             "pattern": "^[0-9]+$",
-            "description": "IVA, taken on the subtotal alone — never on the service charge.",
+            "description": "IVA, taken on the subtotal alone — never on the service charge. Computed per rate: lines are grouped by the rate frozen on each, the rate is applied once per group, and the groups are summed. With a single rate — which is every bill that predates per-product tax categories — that is arithmetically identical to applying it to the whole subtotal.",
             "examples": [
               "756710"
             ]
@@ -2253,6 +2270,25 @@
           "active": {
             "type": "boolean"
           },
+          "taxCategory": {
+            "type": "string",
+            "enum": [
+              "TAXABLE",
+              "EXEMPT",
+              "EXONERATED",
+              "NON_TAXABLE"
+            ],
+            "description": "Tax treatment of the product. The three non-taxable values all yield zero IVA and are not interchangeable: EXEMPT is exempt by the VAT law itself, EXONERATED by an executive act that expires, and NON_TAXABLE is outside the tax's scope. A sales ledger declares them separately."
+          },
+          "vatBps": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "minimum": 0,
+            "maximum": 10000,
+            "description": "The product's own IVA rate in basis points, or null when it follows the restaurant's general rate — which is the normal case. Null is not a missing value: a dish with no rate of its own is not a dish somebody forgot to set. Only a TAXABLE product may carry one."
+          },
           "imageUrl": {
             "type": [
               "string",
@@ -2410,6 +2446,26 @@
           "active": {
             "type": "boolean",
             "default": true
+          },
+          "taxCategory": {
+            "type": "string",
+            "enum": [
+              "TAXABLE",
+              "EXEMPT",
+              "EXONERATED",
+              "NON_TAXABLE"
+            ],
+            "default": "TAXABLE",
+            "description": "Tax treatment of the product. The three non-taxable values all yield zero IVA and are not interchangeable: EXEMPT is exempt by the VAT law itself, EXONERATED by an executive act that expires, and NON_TAXABLE is outside the tax's scope. A sales ledger declares them separately."
+          },
+          "vatBps": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "minimum": 0,
+            "maximum": 10000,
+            "description": "Overrides the restaurant's general rate for this product. Omit or send null to follow it. Rejected with 400 alongside a non-TAXABLE taxCategory: an exempt product with a 16% stored next to it is a contradiction."
           }
         },
         "description": "The currency is taken from the restaurant menu currency and is not accepted here."
@@ -2448,6 +2504,25 @@
           },
           "active": {
             "type": "boolean"
+          },
+          "taxCategory": {
+            "type": "string",
+            "enum": [
+              "TAXABLE",
+              "EXEMPT",
+              "EXONERATED",
+              "NON_TAXABLE"
+            ],
+            "description": "Tax treatment of the product. The three non-taxable values all yield zero IVA and are not interchangeable: EXEMPT is exempt by the VAT law itself, EXONERATED by an executive act that expires, and NON_TAXABLE is outside the tax's scope. A sales ledger declares them separately. Moving a product to a non-taxable category clears any vatBps it had: that is what the change means."
+          },
+          "vatBps": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "minimum": 0,
+            "maximum": 10000,
+            "description": "Explicit null returns the product to the restaurant's general rate; omitting the field leaves it as it is — the two are different. Sending a rate for a product whose stored category is not TAXABLE is refused with 409 PRODUCT_TAX_CONFLICT."
           }
         }
       },
@@ -8366,7 +8441,7 @@
           "OWNER",
           "MANAGER"
         ],
-        "description": "Roles: OWNER, MANAGER. Partial update; at least one field is required.",
+        "description": "Roles: OWNER, MANAGER. Partial update; at least one field is required.\n\nChanging the tax fields affects only bills opened afterwards. Every line freezes its own\ntaxCategory and vatBps when it is added, exactly as it freezes the price, so declaring a\ndish exempt today does not move the IVA on a meal already served.\n\nMoving a product to a non-taxable category clears any vatBps it carried — that is what the\nchange means. Sending a vatBps for a product whose stored category is not TAXABLE is refused\nwith 409 `PRODUCT_TAX_CONFLICT`; change taxCategory in the same request, or first.",
         "security": [
           {
             "staffAuth": []

@@ -119,6 +119,12 @@ function billItem(row) {
     currency: row.currency,
     quantity: row.quantity,
     subtotalMinor: row.subtotal_minor,
+    // El impuesto congelado en la línea, igual que el precio y por lo mismo:
+    // cambiar mañana la categoría de un producto no puede mover el IVA de una
+    // cena de anoche. Aquí `vatBps` sí es un número y no un «pregúntale al
+    // restaurante» -- en la línea ya está resuelto.
+    taxCategory: row.tax_category ?? 'TAXABLE',
+    vatBps: row.vat_bps ?? 0,
     createdAt: isoTimestamp(row.created_at),
     updatedAt: isoTimestamp(row.updated_at)
   };
@@ -383,6 +389,14 @@ function product(row) {
     categoryName: row.category_name ?? null,
     position: row.position ?? 0,
     active: row.active,
+    // El trato fiscal, que hasta ahora la carta no sabía decir. `TAXABLE` por
+    // defecto porque es lo que era todo: no había forma de declarar otra cosa.
+    taxCategory: row.tax_category ?? 'TAXABLE',
+    // La alícuota propia, o `null` si va a la general del restaurante. Se deja
+    // nula en vez de resolverla aquí a propósito: un cliente que viera el
+    // número no distinguiría un producto con tasa propia de uno que sigue a la
+    // del local, y son cosas distintas a la hora de cambiarla.
+    vatBps: row.vat_bps ?? null,
     // The photo, as a path rather than bytes. `has_image` comes from a join
     // that never selects the file itself, so a menu listing stays a listing --
     // see migration 033 for why the bytes live in their own table.

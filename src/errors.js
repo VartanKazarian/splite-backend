@@ -128,6 +128,10 @@ const CODES = {
   IDEMPOTENCY_IN_FLIGHT: 409,
   TABLE_NAME_TAKEN: 409,
   PRODUCT_NAME_TAKEN: 409,
+  // Alícuota propia sobre un producto que no está gravado. Es un conflicto con
+  // el estado guardado, no un cuerpo mal formado: el mismo campo es válido en
+  // cuanto la categoría del producto cambie.
+  PRODUCT_TAX_CONFLICT: 409,
   MENU_CURRENCY_MISMATCH: 409,
   CATEGORY_NAME_TAKEN: 409,
   WEBHOOK_ALREADY_PROCESSED: 409,

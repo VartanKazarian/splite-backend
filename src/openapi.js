@@ -119,9 +119,9 @@ const schemas = {
       subtotalMinor: { ...minorUnits, description: 'Sum of the line items, before charges.' },
       vatBps: {
         type: 'integer', minimum: 0, maximum: 10000,
-        description: 'IVA rate in basis points, frozen when the bill opened. 1600 = 16%.'
+        description: 'The restaurant\'s general IVA rate in basis points, frozen when the bill opened. 1600 = 16%. It is the default a line inherits, not necessarily the rate every line paid: a product can be exempt, or carry a rate of its own. Read the per-line taxCategory and vatBps to see what was applied, and do not recompute vatMinor from this field.'
       },
-      vatMinor: { ...minorUnits, description: 'IVA, taken on the subtotal alone — never on the service charge.' },
+      vatMinor: { ...minorUnits, description: 'IVA, taken on the subtotal alone — never on the service charge. Computed per rate: lines are grouped by the rate frozen on each, the rate is applied once per group, and the groups are summed. With a single rate — which is every bill that predates per-product tax categories — that is arithmetically identical to applying it to the whole subtotal.' },
       serviceChargeBps: {
         type: 'integer', minimum: 0, maximum: 10000,
         description: 'Servicio rate in basis points, frozen when the bill opened. 1000 = 10%.'
@@ -174,6 +174,14 @@ const schemas = {
       currency: { type: 'string', enum: ['VES', 'USD', 'EUR'] },
       quantity: { type: 'integer', minimum: 1, maximum: 999 },
       subtotalMinor: { ...minorUnits, description: 'unitPriceMinor x quantity, computed by the database.' },
+      taxCategory: {
+        type: 'string', enum: ['TAXABLE', 'EXEMPT', 'EXONERATED', 'NON_TAXABLE'],
+        description: 'The tax treatment frozen onto the line when it was added, like the price and for the same reason: changing a product\'s category tomorrow must not move the IVA on a meal already eaten.'
+      },
+      vatBps: {
+        type: 'integer', minimum: 0, maximum: 10000,
+        description: 'The rate actually applied to this line, in basis points. Already resolved — unlike the product\'s, this is never null, because the restaurant can change its general rate and this line cannot. Zero for anything not taxable.'
+      },
       createdAt: { type: 'string', format: 'date-time' },
       updatedAt: { type: 'string', format: 'date-time' }
     }
@@ -674,9 +682,9 @@ const schemas = {
       subtotalMinor: { ...minorUnits, description: 'Sum of the line items, before charges.' },
       vatBps: {
         type: 'integer', minimum: 0, maximum: 10000,
-        description: 'IVA rate in basis points, frozen when the bill opened. 1600 = 16%.'
+        description: 'The restaurant\'s general IVA rate in basis points, frozen when the bill opened. 1600 = 16%. It is the default a line inherits, not necessarily the rate every line paid: a product can be exempt, or carry a rate of its own. Read the per-line taxCategory and vatBps to see what was applied, and do not recompute vatMinor from this field.'
       },
-      vatMinor: { ...minorUnits, description: 'IVA, taken on the subtotal alone — never on the service charge.' },
+      vatMinor: { ...minorUnits, description: 'IVA, taken on the subtotal alone — never on the service charge. Computed per rate: lines are grouped by the rate frozen on each, the rate is applied once per group, and the groups are summed. With a single rate — which is every bill that predates per-product tax categories — that is arithmetically identical to applying it to the whole subtotal.' },
       serviceChargeBps: {
         type: 'integer', minimum: 0, maximum: 10000,
         description: 'Servicio rate in basis points, frozen when the bill opened. 1000 = 10%.'
@@ -854,6 +862,14 @@ const schemas = {
       categoryName: { type: ['string', 'null'], description: 'Flattened on so a client can group without a second request.' },
       position: { type: 'integer', description: 'Order within its section.' },
       active: { type: 'boolean' },
+      taxCategory: {
+        type: 'string', enum: ['TAXABLE', 'EXEMPT', 'EXONERATED', 'NON_TAXABLE'],
+        description: 'Tax treatment of the product. The three non-taxable values all yield zero IVA and are not interchangeable: EXEMPT is exempt by the VAT law itself, EXONERATED by an executive act that expires, and NON_TAXABLE is outside the tax\'s scope. A sales ledger declares them separately.'
+      },
+      vatBps: {
+        type: ['integer', 'null'], minimum: 0, maximum: 10000,
+        description: 'The product\'s own IVA rate in basis points, or null when it follows the restaurant\'s general rate — which is the normal case. Null is not a missing value: a dish with no rate of its own is not a dish somebody forgot to set. Only a TAXABLE product may carry one.'
+      },
       imageUrl: {
         type: ['string', 'null'],
         description:
@@ -918,7 +934,15 @@ const schemas = {
       description: { type: ['string', 'null'], maxLength: 500 },
       priceMinorUnits: minorUnits,
       categoryId: { type: ['string', 'null'], format: 'uuid', description: 'The section it belongs under. Null or omitted is uncategorised.' },
-      active: { type: 'boolean', default: true }
+      active: { type: 'boolean', default: true },
+      taxCategory: {
+        type: 'string', enum: ['TAXABLE', 'EXEMPT', 'EXONERATED', 'NON_TAXABLE'], default: 'TAXABLE',
+        description: 'Tax treatment of the product. The three non-taxable values all yield zero IVA and are not interchangeable: EXEMPT is exempt by the VAT law itself, EXONERATED by an executive act that expires, and NON_TAXABLE is outside the tax\'s scope. A sales ledger declares them separately.'
+      },
+      vatBps: {
+        type: ['integer', 'null'], minimum: 0, maximum: 10000,
+        description: 'Overrides the restaurant\'s general rate for this product. Omit or send null to follow it. Rejected with 400 alongside a non-TAXABLE taxCategory: an exempt product with a 16% stored next to it is a contradiction.'
+      }
     },
     description: 'The currency is taken from the restaurant menu currency and is not accepted here.'
   },
@@ -934,7 +958,15 @@ const schemas = {
         type: ['string', 'null'], format: 'uuid',
         description: 'Explicit null moves the product out of every section. Omitting the field leaves it where it is — the two are different.'
       },
-      active: { type: 'boolean' }
+      active: { type: 'boolean' },
+      taxCategory: {
+        type: 'string', enum: ['TAXABLE', 'EXEMPT', 'EXONERATED', 'NON_TAXABLE'],
+        description: 'Tax treatment of the product. The three non-taxable values all yield zero IVA and are not interchangeable: EXEMPT is exempt by the VAT law itself, EXONERATED by an executive act that expires, and NON_TAXABLE is outside the tax\'s scope. A sales ledger declares them separately. Moving a product to a non-taxable category clears any vatBps it had: that is what the change means.'
+      },
+      vatBps: {
+        type: ['integer', 'null'], minimum: 0, maximum: 10000,
+        description: 'Explicit null returns the product to the restaurant\'s general rate; omitting the field leaves it as it is — the two are different. Sending a rate for a product whose stored category is not TAXABLE is refused with 409 PRODUCT_TAX_CONFLICT.'
+      }
     }
   },
 
@@ -3898,7 +3930,17 @@ const paths = {
       tags: ['Menu'],
       summary: 'Update a menu product',
       'x-required-roles': ['OWNER', 'MANAGER'],
-      description: 'Roles: OWNER, MANAGER. Partial update; at least one field is required.',
+      description: [
+        'Roles: OWNER, MANAGER. Partial update; at least one field is required.',
+        '',
+        'Changing the tax fields affects only bills opened afterwards. Every line freezes its own',
+        'taxCategory and vatBps when it is added, exactly as it freezes the price, so declaring a',
+        'dish exempt today does not move the IVA on a meal already served.',
+        '',
+        'Moving a product to a non-taxable category clears any vatBps it carried — that is what the',
+        'change means. Sending a vatBps for a product whose stored category is not TAXABLE is refused',
+        'with 409 `PRODUCT_TAX_CONFLICT`; change taxCategory in the same request, or first.'
+      ].join('\n'),
       security: staff,
       parameters: [{ $ref: '#/components/parameters/ProductId' }],
       requestBody: { required: true, content: { 'application/json': { schema: ref('UpdateProductRequest') } } },
