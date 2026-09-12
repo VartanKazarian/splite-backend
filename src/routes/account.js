@@ -35,7 +35,7 @@ router.get('/', async (req, res, next) => {
     const { rows } = await db.query(
       `SELECT id, name, rif, menu_currency, vat_bps, service_charge_bps,
               payout_bank_code, payout_account_number, payout_phone, payout_holder_id,
-              plan_tier, trial_ends_at, fiscal_invoice_policy, created_at
+              plan_tier, trial_ends_at, fiscal_invoice_policy, fiscal_address, created_at
          FROM restaurants
         WHERE id = $1`,
       [req.user.restaurantId]
@@ -79,12 +79,22 @@ router.patch(
         `UPDATE restaurants
             SET name = COALESCE($2, name),
                 fiscal_invoice_policy = COALESCE($3, fiscal_invoice_policy),
+                -- Tres estados y no dos: ausente deja lo que hay, una cadena
+                -- con texto lo cambia, y la cadena vacía lo borra. Con
+                -- COALESCE a secas no habría forma de quitar una dirección mal
+                -- escrita.
+                fiscal_address = CASE
+                  WHEN $4::TEXT IS NULL THEN fiscal_address
+                  WHEN $4 = '' THEN NULL
+                  ELSE $4
+                END,
                 updated_at = NOW()
           WHERE id = $1
         RETURNING id, name, rif, menu_currency, vat_bps, service_charge_bps,
                   payout_bank_code, payout_account_number, payout_phone, payout_holder_id,
-                  plan_tier, trial_ends_at, fiscal_invoice_policy, created_at`,
-        [req.user.restaurantId, req.body.name ?? null, req.body.fiscalInvoicePolicy ?? null]
+                  plan_tier, trial_ends_at, fiscal_invoice_policy, fiscal_address, created_at`,
+        [req.user.restaurantId, req.body.name ?? null, req.body.fiscalInvoicePolicy ?? null,
+          req.body.fiscalAddress ?? null]
       );
       if (!rows.length) throw new ApiError('RESTAURANT_NOT_FOUND', 'Restaurant not found');
 
@@ -183,7 +193,7 @@ router.put(
           WHERE id = $1
         RETURNING id, name, rif, menu_currency, vat_bps, service_charge_bps,
                   payout_bank_code, payout_account_number, payout_phone, payout_holder_id,
-                  plan_tier, trial_ends_at, fiscal_invoice_policy, created_at`,
+                  plan_tier, trial_ends_at, fiscal_invoice_policy, fiscal_address, created_at`,
         [req.user.restaurantId, bankCode ?? null, accountNumber ?? null,
          normalisedPhone, holderId ?? null]
       );

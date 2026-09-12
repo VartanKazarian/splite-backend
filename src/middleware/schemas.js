@@ -572,7 +572,11 @@ const restaurantProfileSchema = Joi.object({
   // se renombra un restaurante sin querer.
   name: Joi.string().trim().min(1).max(120),
   // Quién recibe la factura: cada comensal, o la mesa. Ver la migración 040.
-  fiscalInvoicePolicy: Joi.string().valid('PER_DINER', 'SINGLE_BILL')
+  fiscalInvoicePolicy: Joi.string().valid('PER_DINER', 'SINGLE_BILL'),
+  // El domicilio que se imprime en el encabezado del recibo. La cadena vacía
+  // se admite y significa «bórralo»: sin ella, un dato mal escrito quedaría
+  // para siempre porque no habría forma de quitarlo.
+  fiscalAddress: Joi.string().trim().max(200).allow('')
 }).min(1);
 
 const payoutSchema = Joi.object({

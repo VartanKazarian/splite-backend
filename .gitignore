@@ -14,3 +14,7 @@ npm-debug.log*
 # stay excluded by the rules above.
 !certs/*.pem
 dump.rdb
+
+# Scratch local: scripts de siembra y arranque para reproducir cosas a mano.
+# No es parte del producto y no debe viajar en un commit.
+scratchpad/

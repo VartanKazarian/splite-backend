@@ -150,10 +150,30 @@ async function lockTarget(client, { restaurantId, actor, userId }) {
  *
  * This is for the race -- both of the last two owners removing each other at
  * the same instant, where each would read the other as remaining and proceed.
- * Counted inside the caller's transaction with the target row already locked,
- * so the second waits for the first and then finds nobody left.
+ * The target row being locked is *not* enough for that case, because the two
+ * targets are different rows; see the lock taken below.
  */
 async function assertOwnerRemains(client, { restaurantId, excludingUserId }) {
+  /*
+   * El candado que de verdad serializa las dos transacciones.
+   *
+   * `lockTarget` bloquea la fila del **objetivo**, y cuando los dos últimos
+   * dueños se quitan el uno al otro esas filas son distintas: cada transacción
+   * bloquea la suya, ninguna espera a la otra, las dos cuentan sobre el estado
+   * anterior a la ajena -- READ COMMITTED no enseña lo que la otra aún no ha
+   * confirmado -- y las dos concluyen que queda alguien. Medido: el restaurante
+   * acababa sin ningún dueño activo en 39 de 40 intentos, es decir bloqueado
+   * fuera de su propio panel y sin nadie que pueda reabrirlo.
+   *
+   * La fila del restaurante es lo único que las dos tienen en común, así que es
+   * donde tienen que encontrarse. La segunda espera aquí, y cuando pasa vuelve
+   * a contar y ya no queda nadie.
+   *
+   * No hay abrazo mortal posible: las dos toman primero su objetivo y después
+   * ésta, nunca al revés, así que no puede formarse un ciclo.
+   */
+  await client.query('SELECT 1 FROM restaurants WHERE id = $1 FOR UPDATE', [restaurantId]);
+
   const { rows } = await client.query(
     `SELECT count(*)::int AS remaining FROM users
       WHERE restaurant_id = $1 AND role = 'OWNER' AND active = true AND id <> $2`,

@@ -23,6 +23,7 @@ const dto = require('../dto');
 const { logAudit, auditContext } = require('../services/audit');
 const { ApiError } = require('../errors');
 const invoicing = require('../services/fiscalInvoicing');
+const receipts = require('../services/receipts');
 const guestContacts = require('../services/guestContacts');
 const { assertPlanAllows } = require('../middleware/plan');
 
@@ -331,6 +332,44 @@ router.get(
         billClosed: row.bill_status !== 'OPEN',
         invoiced: row.invoice_id !== null
       });
+    } catch (err) { next(err); }
+  }
+);
+
+/**
+ * El recibo de un cobro: la cuenta entera y, debajo, lo que puso esta persona.
+ *
+ * **La cuenta completa y no sólo su parte**, que es la decisión de producto de
+ * todo esto. Los recibos de una mesa de cuatro tienen que poder ponerse uno al
+ * lado del otro y contar la misma cena: mismos productos, mismo subtotal, mismo
+ * IVA, mismo total. Lo único que cambia entre ellos es el último bloque. Un
+ * recibo con sólo la parte de uno no deja comprobar nada -- ni que le cobraron
+ * lo que pidió, ni que las partes suman la cuenta.
+ *
+ * Anclado al pago y no a la cuenta abierta, por lo mismo que la factura: el
+ * recibo se mira justo después de que confirmen el cobro, que es el instante en
+ * que la cuenta se cierra. Pedirlo contra `openBillForGuest` lo haría imposible
+ * exactamente cuando hace falta.
+ *
+ * El aislamiento va aquí y no en el servicio: `billForGuestPayment` exige que
+ * el pago sea de **la mesa de esta sesión**, y el servicio sólo sabe de
+ * restaurante. Las dos vallas, y en este orden.
+ *
+ * **No es una factura fiscal** y no se parece a una: sin número de control,
+ * sin imprenta autorizada y sin valor para desgravar. Esa se pide aparte.
+ */
+router.get(
+  '/payments/:id/receipt',
+  authenticateGuest,
+  perSession,
+  validateParams(guestPaymentParamSchema),
+  async (req, res, next) => {
+    try {
+      await billForGuestPayment(req.guest, req.params.id);
+      res.json(await receipts.forPayment({
+        restaurantId: req.guest.restaurantId,
+        paymentId: req.params.id
+      }));
     } catch (err) { next(err); }
   }
 );

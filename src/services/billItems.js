@@ -71,6 +71,43 @@ async function lockOpenBill(client, { restaurantId, billId }) {
 }
 
 /**
+ * Las bases imponibles de una cuenta, una por alícuota.
+ *
+ * Vive fuera de `recalculateTotals` porque tiene un segundo lector: el recibo
+ * imprime el mismo desglose que la cuenta declara, y si cada uno lo calculara
+ * por su cuenta acabarían discrepando en el céntimo del redondeo -- que es
+ * justo el céntimo que hace que un recibo no cuadre con su cuenta.
+ */
+const TAX_GROUPS_SQL = `SELECT COALESCE(vat_bps, 0) AS vat_bps,
+            COALESCE(SUM(subtotal_minor), 0)::TEXT AS base
+       FROM bill_items
+      WHERE bill_id = $1
+      GROUP BY COALESCE(vat_bps, 0)
+      ORDER BY COALESCE(vat_bps, 0)`;
+
+/**
+ * Suma las bases y aplica a cada una su alícuota.
+ *
+ * Una vez por grupo y no una por línea, para que el total no dependa de en
+ * cuántos renglones se partió lo mismo. Devuelve además los grupos, que es lo
+ * que un documento -- recibo o factura -- tiene que imprimir.
+ */
+function summariseTaxGroups(rows) {
+  const groups = [];
+  let subtotal = 0n;
+  let vat = 0n;
+  for (const row of rows) {
+    const base = toMinor(row.base, 'Taxable base');
+    const vatBps = Number(row.vat_bps);
+    const vatMinor = applyBps(base, vatBps, 'IVA');
+    subtotal += base;
+    vat += vatMinor;
+    groups.push({ vatBps, baseMinor: base, vatMinor });
+  }
+  return { groups, subtotal, vat };
+}
+
+/**
  * Rewrites the bill's totals from its lines.
  *
  * Returns the updated bill. Runs inside the caller's transaction, with the bill
@@ -91,23 +128,8 @@ async function recalculateTotals(client, bill) {
    * hay un solo grupo, el subtotal del grupo es el subtotal de la cuenta, y la
    * operación es idéntica a la de antes. Hay una prueba que lo fija.
    */
-  const { rows } = await client.query(
-    `SELECT COALESCE(vat_bps, 0) AS vat_bps,
-            COALESCE(SUM(subtotal_minor), 0)::TEXT AS base
-       FROM bill_items
-      WHERE bill_id = $1
-      GROUP BY COALESCE(vat_bps, 0)
-      ORDER BY COALESCE(vat_bps, 0)`,
-    [bill.id]
-  );
-
-  let subtotal = 0n;
-  let vat = 0n;
-  for (const group of rows) {
-    const base = toMinor(group.base, 'Taxable base');
-    subtotal += base;
-    vat += applyBps(base, Number(group.vat_bps), 'IVA');
-  }
+  const { rows } = await client.query(TAX_GROUPS_SQL, [bill.id]);
+  const { subtotal, vat } = summariseTaxGroups(rows);
 
   // El servicio sigue tomándose sobre el subtotal entero y sin componer con el
   // IVA: gravar subtotal + servicio inflaría el impuesto en todas las cuentas.
@@ -365,5 +387,6 @@ async function removeItem({ restaurantId, billId, itemId }) {
 
 module.exports = {
   listForBill, addItem, addItemsInTransaction, updateQuantity, removeItem,
-  recalculateTotals, lockOpenBill
+  recalculateTotals, lockOpenBill,
+  TAX_GROUPS_SQL, summariseTaxGroups
 };

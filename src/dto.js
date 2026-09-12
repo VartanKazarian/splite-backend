@@ -541,6 +541,9 @@ function account(row) {
     id: row.id,
     name: row.name,
     rif: row.rif ?? null,
+    // Se imprime en el encabezado del recibo. Nulo cuando no se ha registrado:
+    // la pantalla omite la línea en vez de enseñar un hueco.
+    fiscalAddress: row.fiscal_address ?? null,
     menuCurrency: row.menu_currency,
     vatBps: row.vat_bps,
     serviceChargeBps: row.service_charge_bps,

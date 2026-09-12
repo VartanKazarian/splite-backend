@@ -1398,6 +1398,10 @@ const onboardingSchemas = {
       id: { type: 'string', format: 'uuid' },
       name: { type: 'string' },
       rif: { type: ['string', 'null'], description: 'Null for restaurants that predate self-service registration.' },
+      fiscalAddress: {
+        type: ['string', 'null'],
+        description: "The premises' address as printed in the receipt header. Null when none has been registered — the receipt omits the line rather than showing a gap, and never invents one."
+      },
       menuCurrency: { type: 'string', enum: ['VES', 'USD', 'EUR'] },
       vatBps: { type: 'integer' },
       serviceChargeBps: { type: 'integer' },
@@ -1970,6 +1974,83 @@ Object.assign(schemas, {
     }
   },
 
+  GuestReceipt: {
+    type: 'object',
+    description: 'A receipt: the whole table\'s bill, and then what this one diner paid towards it. **Not a fiscal invoice** -- no control number, no authorised printer, no use for deducting tax. That is a separate document, asked for separately.\n\nThe `bill` block is derived from the bill alone and is therefore identical on every receipt from that table; only `payment` differs. That is deliberate: four receipts from a table of four must line up and tell the same dinner, otherwise nobody can check that they were charged for what they ordered or that the parts add up to the whole.',
+    properties: {
+      restaurant: {
+        type: 'object',
+        properties: {
+          name: { type: 'string' },
+          rif: { type: 'string', nullable: true },
+          address: { type: 'string', nullable: true, description: 'Omitted when the restaurant has not registered one. Never invented.' }
+        }
+      },
+      table: { type: 'object', properties: { name: { type: 'string' } } },
+      bill: {
+        type: 'object',
+        description: 'The same for every diner at this table.',
+        properties: {
+          id: { type: 'string', format: 'uuid' },
+          status: { type: 'string', enum: ['OPEN', 'CLOSED', 'VOID'] },
+          currency: { type: 'string' },
+          openedAt: { type: 'string', format: 'date-time' },
+          lines: {
+            type: 'array',
+            description: 'Every line on the table\'s bill, oldest first, with quantity and unit price -- not just the ones this diner claimed.',
+            items: {
+              type: 'object',
+              properties: {
+                id: { type: 'string', format: 'uuid' },
+                name: { type: 'string', description: 'The name snapshotted when the line was added, so renaming a product cannot rewrite a served bill.' },
+                quantity: { type: 'integer' },
+                unitPriceMinor: minorUnits,
+                subtotalMinor: minorUnits,
+                taxCategory: { type: 'string', enum: ['TAXABLE', 'EXEMPT', 'EXONERATED', 'NON_TAXABLE'] },
+                vatBps: { type: 'integer', nullable: true }
+              }
+            }
+          },
+          subtotalMinor: minorUnits,
+          serviceChargeBps: { type: 'integer' },
+          serviceChargeMinor: minorUnits,
+          taxes: {
+            type: 'array',
+            description: 'One row per rate -- a taxable base and its tax -- which is how it is declared and how it reads. Computed by the same code that wrote the bill\'s stored totals, not a second implementation of the same rule.',
+            items: {
+              type: 'object',
+              properties: {
+                vatBps: { type: 'integer' },
+                baseMinor: minorUnits,
+                vatMinor: minorUnits
+              }
+            }
+          },
+          vatMinor: minorUnits,
+          totalMinor: minorUnits,
+          totalVes: { ...minorUnits, description: 'The total in bolívares, which is what is charged, at the rate frozen when the bill opened.' },
+          fxRateVesPerUnit: { type: 'string', nullable: true }
+        }
+      },
+      payment: {
+        type: 'object',
+        description: 'The only part that differs between the diners of one table.',
+        properties: {
+          id: { type: 'string', format: 'uuid' },
+          status: { type: 'string', enum: ['PENDING', 'IN_DOUBT', 'AMBIGUOUS', 'SUCCEEDED', 'FAILED', 'CANCELLED', 'REFUNDED', 'PARTIALLY_REFUNDED'] },
+          method: { type: 'string' },
+          reference: { type: 'string', nullable: true },
+          amountVes: { ...minorUnits, description: 'What this payment settles of the bill. The tip is never inside it.' },
+          tipVes: minorUnits,
+          handedOverVes: { ...minorUnits, description: 'amountVes + tipVes: what actually left the payer\'s account, and the figure they will compare against their bank.' },
+          declaredAt: { type: 'string', format: 'date-time' },
+          invoiced: { type: 'boolean' },
+          invoiceId: { type: 'string', format: 'uuid', nullable: true }
+        }
+      }
+    }
+  },
+
   RequestInvoiceRequest: {
     type: 'object',
     required: ['paymentId'],
@@ -2011,6 +2092,10 @@ Object.assign(schemas, {
       fiscalInvoicePolicy: {
         type: 'string', enum: ['PER_DINER', 'SINGLE_BILL'],
         description: 'OWNER only — a MANAGER sending this gets 403 FORBIDDEN_ROLE. PER_DINER issues one fiscal invoice per diner who pays; SINGLE_BILL issues one for the whole bill and derives each diner\'s breakdown from it, those breakdowns not being fiscal documents themselves.'
+      },
+      fiscalAddress: {
+        type: 'string', maxLength: 200, examples: ['Av. Francisco de Miranda, Chacao, Caracas'],
+        description: 'The address printed in the receipt header. Three states, not two: omitting the field leaves whatever is stored, a non-empty string replaces it, and an empty string clears it — without that last one a mistyped address could never be removed.'
       }
     }
   },
@@ -4185,6 +4270,49 @@ const paths = {
               }
             }
           }
+        },
+        ...commonErrors,
+        404: response('NotFound')
+      }
+    }
+  },
+
+  '/api/v1/guest/payments/{id}/receipt': {
+    get: {
+      tags: ['Guest'],
+      summary: 'The receipt for a payment: the whole bill, then your share of it',
+      operationId: 'getGuestReceipt',
+      description: [
+        '**The whole table\'s bill, and only then "you paid X".** Every product with its quantity',
+        'and unit price, the subtotal, the service charge, the VAT broken out by rate, and the',
+        'total — followed by what this one diner put in.',
+        '',
+        'That ordering is the product decision. Four receipts from a table of four have to line up',
+        'and tell the same dinner: same products, same subtotal, same VAT, same total, with only',
+        'the last block differing. A receipt showing just one person\'s share lets them check',
+        'nothing — not that they were charged for what they ordered, nor that the parts sum to the',
+        'whole.',
+        '',
+        'So the `bill` block is derived from the bill alone. It takes no payment, cannot vary',
+        'between diners, and there is a test that fixes it.',
+        '',
+        '**This is not a fiscal invoice.** A receipt evidences that a charge happened. It carries',
+        'no control number, no authorised printer issued it, and it does not serve to deduct tax.',
+        'The fiscal invoice is a separate document requested separately.',
+        '',
+        'Anchored to the payment rather than to the open bill, for the same reason the invoice is:',
+        'the receipt is read right after the charge is confirmed, which is the instant the bill',
+        'closes.',
+        '',
+        'Scoped like everything else here: the payment must sit on a bill belonging to the scanning',
+        'session\'s own table. A payment from another table reads as absent.'
+      ].join('\n'),
+      security: [{ guestAuth: [] }],
+      parameters: [{ name: 'id', in: 'path', required: true, schema: { type: 'string', format: 'uuid' } }],
+      responses: {
+        200: {
+          description: 'The receipt.',
+          content: { 'application/json': { schema: ref('GuestReceipt') } }
         },
         ...commonErrors,
         404: response('NotFound')
