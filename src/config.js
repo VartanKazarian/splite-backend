@@ -122,6 +122,15 @@ function assertProductionConfig() {
   }
   if (corsOrigins.includes('*')) throw new Error('Wildcard CORS origin is not allowed in production');
 
+  // El simulado fiscal no existe en producción, y no es una precaución
+  // teórica: emite documentos con números inventados. Uno de ésos entregado a
+  // un comensal como factura -- o declarado por el restaurante -- es un
+  // problema tributario con sanción, causado por una variable de entorno mal
+  // puesta. Que sea un fallo de arranque y no un descubrimiento posterior.
+  if (process.env.FISCAL_MOCK_ENABLED === 'true') {
+    throw new Error('FISCAL_MOCK_ENABLED must not be set in production: it issues documents with invented numbers');
+  }
+
   // Scoped to the flag rather than asserted unconditionally, so that deploying
   // self-service onboarding does not stop a running production API that has no
   // mail provider configured yet. Turning ONBOARDING_ENABLED on is what makes
@@ -444,6 +453,31 @@ module.exports = {
       debug: boolean('MERCANTIL_C2P_DEBUG', false)
     }
   },
+  fiscal: {
+    /**
+     * Qué imprenta digital emite las facturas fiscales.
+     *
+     * Vacío por defecto: un despliegue sin proveedor simplemente no puede
+     * emitir, y lo dice. En Venezuela el número de control lo asigna una
+     * imprenta **autorizada**, así que no hay «modo sin proveedor» que
+     * produzca algo válido -- sólo produciría documentos falsos.
+     */
+    provider: process.env.FISCAL_PROVIDER || '',
+
+    /**
+     * El simulado, explícitamente separado del nombre del proveedor.
+     *
+     * Es una bandera propia y no un valor más de `FISCAL_PROVIDER` a
+     * propósito: activar el simulado tiene que ser un acto deliberado y
+     * legible en la configuración, no una errata en el nombre de un
+     * proveedor real que acabe emitiendo documentos de mentira con toda la
+     * apariencia de buenos.
+     *
+     * `assertProductionConfig` la rechaza en producción.
+     */
+    mockEnabled: process.env.FISCAL_MOCK_ENABLED === 'true'
+  },
+
   menuOcr: {
     /**
      * Reading a menu off a photo with a vision model.

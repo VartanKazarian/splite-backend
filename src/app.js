@@ -11,6 +11,7 @@ const requestId = require('./middleware/requestId');
 const { isShuttingDown } = require('./lifecycle');
 const openapi = require('./openapi');
 const { logger } = require('./connectors/logger');
+const { registerFiscalProviders } = require('./fiscal/register');
 const rateLimit = require('./middleware/rateLimit');
 const errorHandler = require('./middleware/errorHandler');
 const metrics = require('./services/metrics');
@@ -27,6 +28,10 @@ const accountRoutes = require('./routes/account');
 const paymentRoutes = require('./routes/payments');
 const orderRoutes = require('./routes/orders');
 const webhookRoutes = require('./routes/webhooks');
+
+// Una vez, al arrancar: un adaptador incompleto tiene que impedir el arranque
+// y no fallar delante de un comensal que espera su factura.
+registerFiscalProviders();
 
 const app = express();
 

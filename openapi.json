@@ -376,6 +376,8 @@
                   "STAFF_NOT_FOUND",
                   "BILL_NOT_FOUND",
                   "BILL_ITEM_NOT_FOUND",
+                  "PAYMENT_NOT_FOUND",
+                  "FISCAL_REQUEST_NOT_FOUND",
                   "TABLE_NOT_FOUND",
                   "GUEST_ORDER_NOT_FOUND",
                   "PRODUCT_NOT_FOUND",
@@ -411,6 +413,7 @@
                   "TABLE_NAME_TAKEN",
                   "PRODUCT_NAME_TAKEN",
                   "PRODUCT_TAX_CONFLICT",
+                  "FISCAL_NOTHING_TO_DECLARE",
                   "MENU_CURRENCY_MISMATCH",
                   "CATEGORY_NAME_TAKEN",
                   "WEBHOOK_ALREADY_PROCESSED",
@@ -440,6 +443,7 @@
                   "MENU_OCR_UNAVAILABLE",
                   "MENU_OCR_UNREADABLE_RESPONSE",
                   "ONBOARDING_NOT_CONFIGURED",
+                  "FISCAL_DRAFT_MISSING",
                   "INTERNAL_ERROR"
                 ],
                 "description": "Stable identifier for what went wrong. Branch on this, never on `message`. A code always carries the same HTTP status."

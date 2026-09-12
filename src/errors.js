@@ -94,6 +94,8 @@ const CODES = {
   STAFF_NOT_FOUND: 404,
   BILL_NOT_FOUND: 404,
   BILL_ITEM_NOT_FOUND: 404,
+  PAYMENT_NOT_FOUND: 404,
+  FISCAL_REQUEST_NOT_FOUND: 404,
   TABLE_NOT_FOUND: 404,
   GUEST_ORDER_NOT_FOUND: 404,
   PRODUCT_NOT_FOUND: 404,
@@ -138,6 +140,10 @@ const CODES = {
   // el estado guardado, no un cuerpo mal formado: el mismo campo es válido en
   // cuanto la categoría del producto cambie.
   PRODUCT_TAX_CONFLICT: 409,
+  // La cuenta ya está declarada entera: no queda base imponible que poner en
+  // otra factura. Es un conflicto con el estado y no un cuerpo mal formado --
+  // la misma petición valdría sobre una cuenta con saldo sin declarar.
+  FISCAL_NOTHING_TO_DECLARE: 409,
   MENU_CURRENCY_MISMATCH: 409,
   CATEGORY_NAME_TAKEN: 409,
   WEBHOOK_ALREADY_PROCESSED: 409,
@@ -223,6 +229,11 @@ const CODES = {
   // message at all. Every other gated capability here says which one it is;
   // this is that, for onboarding.
   ONBOARDING_NOT_CONFIGURED: 503,
+
+  // El proveedor emitió un documento cuyo borrador no se guardó, así que no
+  // hay con qué registrarlo. Es un fallo nuestro y no del cliente, y necesita
+  // que alguien lo mire: el documento existe ahí fuera.
+  FISCAL_DRAFT_MISSING: 500,
 
   // 500 -- the message is never echoed; correlate on requestId.
   INTERNAL_ERROR: 500

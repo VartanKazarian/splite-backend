@@ -1590,6 +1590,61 @@ two taps or a retry racing a response cannot produce two documents. Failed
 attempts are excluded from it — an attempt that died without issuing anything
 must be retryable.
 
+### Talking to the imprenta digital
+
+In Venezuela the control number on an invoice is assigned by an **authorised**
+imprenta digital, not by the system requesting it. That is not an integration
+detail — it is why `src/fiscal/providers` generates no numbers. Splite assembles
+the document's content; an imprenta turns it into a fiscal document.
+
+The interface is two methods, and the second is what makes the first safe:
+
+- `issue(draft)` — asks for issuance. Returns the numbers **the provider
+  assigns**, or says it does not know whether it issued.
+- `lookup(key)` — asks about an idempotency key: "did you issue this?"
+
+Every attempt lands on one of three outcomes, not two. `ISSUED` and `REJECTED`
+are facts. **`UNCERTAIN` is the absence of an answer**, and collapsing it either
+way is the expensive mistake: treat it as rejected and a retry declares the sale
+twice; treat it as issued and you store a legal record with numbers that may not
+exist. So the rule is **ask, never blindly retry** — and if the question cannot
+be asked either, the case waits in a queue a person looks at. Leaving something
+pending is a legitimate outcome here; inventing which way it went is not.
+
+The edge is deliberately distrustful of its own adapters. An unexpected
+exception, an unknown outcome value, or an `ISSUED` with no control number all
+become `UNCERTAIN` rather than a rejection — an adapter that answered badly may
+still have issued. An unknown provider name throws instead of falling back to
+anything.
+
+`test/fiscalProvider.test.js` drives all of it against a mock whose main job is
+to **fail well** — in particular `SILENT_SUCCESS`, which issues and then throws
+a timeout. That is the case that sinks a fiscal integration, and the one you
+cannot provoke on demand against a real service.
+
+**The mock issues documents with invented numbers**, prefixed `MOCK-` so they
+cannot be mistaken for real ones on a screen or in a query. It is enabled by its
+own flag (`FISCAL_MOCK_ENABLED`) rather than by naming it in `FISCAL_PROVIDER`,
+so switching it on is a deliberate, legible act and not a typo in a real
+provider's name. `assertProductionConfig` refuses to boot with it set: one of
+those documents handed to a diner as an invoice is a tax problem with a penalty
+attached, caused by an environment variable.
+
+### The draft is stored before the call
+
+`fiscal_invoice_requests.draft_json` holds what was sent, because of the
+ambiguous case. When the answer arrives later — minutes or hours later, from
+that queue — the bill has moved on: other diners have paid, other invoices have
+been issued, and what remains to declare is no longer what it was. Rebuilding
+the draft then would produce a *different* document, and the one the provider
+issued is the first. So the sent draft is recorded, not today's recomputation.
+`test/integration/fiscalInvoicing` asserts exactly that, by letting a second
+diner invoice in between.
+
+The provider call happens outside the transaction that created the request. A
+network call inside one holds a locked row open for as long as the far end takes
+to answer — or not to answer.
+
 ### Reads are never gated
 
 Issuing is an `ENTERPRISE` capability (see the plan table above). Reading an
