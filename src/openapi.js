@@ -4145,6 +4145,53 @@ const paths = {
     }
   },
 
+  '/api/v1/guest/payments/{id}': {
+    get: {
+      tags: ['Guest'],
+      summary: 'What became of a payment this diner declared',
+      operationId: 'getGuestPaymentStatus',
+      description: [
+        'The diner declares a payment and the staff verify it. Without this read the phone had no',
+        'way of learning that they had: the claim was held in memory as PENDING and stayed that',
+        'way, so the screen promised an invoice "once the restaurant confirms your payment" and no',
+        'path existed by which that promise could be kept.',
+        '',
+        'Returns the minimum — what state it is in and whether it already has an invoice. Nothing',
+        'about the rest of the table: who else paid and how much is not the caller\'s business.',
+        '',
+        'Scoped like everything else on this surface: the payment must sit on a bill belonging to',
+        'the scanning session\'s own table, and the caller has to know the UUID, which only whoever',
+        'declared that payment receives. A payment from another table reads as absent.',
+        '',
+        '`billClosed` is not a problem — it is usually the signal that the invoice can now be asked',
+        'for, since confirming the payment is what closes the bill.'
+      ].join('\n'),
+      security: [{ guestAuth: [] }],
+      parameters: [{ name: 'id', in: 'path', required: true, schema: { type: 'string', format: 'uuid' } }],
+      responses: {
+        200: {
+          description: 'The payment, as its own payer may see it.',
+          content: {
+            'application/json': {
+              schema: {
+                type: 'object',
+                properties: {
+                  id: { type: 'string', format: 'uuid' },
+                  status: { type: 'string', enum: ['PENDING', 'IN_DOUBT', 'AMBIGUOUS', 'SUCCEEDED', 'FAILED', 'CANCELLED', 'REFUNDED', 'PARTIALLY_REFUNDED'] },
+                  amountVes: minorUnits,
+                  billClosed: { type: 'boolean' },
+                  invoiced: { type: 'boolean', description: 'True once a fiscal document exists for it, so the offer is not made twice.' }
+                }
+              }
+            }
+          }
+        },
+        ...commonErrors,
+        404: response('NotFound')
+      }
+    }
+  },
+
   '/api/v1/guest/bill/contact': {
     post: {
       tags: ['Guest'],

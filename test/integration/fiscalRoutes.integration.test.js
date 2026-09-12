@@ -213,6 +213,70 @@ describe('facturación sobre HTTP', { skip }, () => {
     }
   });
 
+  it('se puede facturar DESPUÉS de que la cuenta se cierre', async () => {
+    /*
+     * El fallo que esto fija, y que estuvo desplegado.
+     *
+     * El comensal declara su pago y la pantalla le promete «podrás pedir la
+     * factura cuando el restaurante confirme tu pago». Confirmarlo **cierra la
+     * cuenta**, y la ruta resolvía la cuenta con `openBillForGuest`, que exige
+     * `status = 'OPEN'`. Así que la factura dejaba de poder pedirse justo en el
+     * instante en que pasaba a poder pedirse: la promesa era incumplible.
+     *
+     * Una factura es de un pago, no de una cuenta abierta.
+     */
+    const { billId, paymentId } = await billWithPayment();
+    const { session, token } = await scan();
+
+    await db.query(`UPDATE bills SET status = 'CLOSED' WHERE id = $1`, [billId]);
+
+    const res = await request('POST', '/api/v1/guest/bill/invoice', {
+      body: { paymentId }, token, session
+    });
+    assert.equal(res.status, 201, JSON.stringify(res.body));
+    assert.equal(res.body.status, 'ISSUED');
+  });
+
+  it('el comensal puede ver en qué quedó su pago, y si ya tiene factura', async () => {
+    // Sin esta lectura el teléfono no tenía forma de enterarse de que se lo
+    // confirmaron, y la promesa de arriba no tenía camino por el que cumplirse.
+    const { paymentId } = await billWithPayment();
+    const { session, token } = await scan();
+
+    const antes = await request('GET', `/api/v1/guest/payments/${paymentId}`, { token, session });
+    assert.equal(antes.status, 200, JSON.stringify(antes.body));
+    assert.equal(antes.body.status, 'SUCCEEDED');
+    assert.equal(antes.body.invoiced, false);
+
+    await request('POST', '/api/v1/guest/bill/invoice', { body: { paymentId }, token, session });
+
+    const luego = await request('GET', `/api/v1/guest/payments/${paymentId}`, { token, session });
+    assert.equal(luego.body.invoiced, true, 'para no ofrecer dos veces lo mismo');
+  });
+
+  it('no se puede consultar ni facturar el pago de otra mesa', async () => {
+    // El aislamiento no se relaja por resolver desde el pago: tiene que estar
+    // en una cuenta de la mesa de esta sesión.
+    const otherTable = await fixtures.createTable(restaurant.id, { name: `OT${++seq}` });
+    const otherBill = await fixtures.createBill({
+      restaurantId: restaurant.id, tableId: otherTable.id, totalDue: 0, totalDueVes: 0
+    });
+    const { rows } = await db.query(
+      `INSERT INTO payments (restaurant_id, bill_id, amount_ves, payment_method, payer_type, status)
+       VALUES ($1, $2, 5000, 'CASH', 'GUEST', 'SUCCEEDED') RETURNING id`,
+      [restaurant.id, otherBill.id]
+    );
+    const { session, token } = await scan();
+
+    const read = await request('GET', `/api/v1/guest/payments/${rows[0].id}`, { token, session });
+    assert.equal(read.status, 404, 'de otra mesa consta como inexistente');
+
+    const invoice = await request('POST', '/api/v1/guest/bill/invoice', {
+      body: { paymentId: rows[0].id }, token, session
+    });
+    assert.equal(invoice.status, 404);
+  });
+
   /* ------------------------------------------------------------- el panel */
 
   it('el personal lee las facturas, con sus líneas y su desglose', async () => {

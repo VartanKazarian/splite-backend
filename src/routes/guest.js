@@ -6,7 +6,7 @@ const { authenticateToken, requireRole } = require('../middleware/auth');
 const {
   validateBody, validateParams, validateQuery, guestSessionSchema, tableIdParamSchema, splitPreviewSchema,
   declareClaimSchema, c2pChargeSchema, c2pBankGuideQuerySchema, guestOrderSchema,
-  requestInvoiceSchema, guestContactSchema
+  requestInvoiceSchema, guestContactSchema, guestPaymentParamSchema
 } = require('../middleware/schemas');
 const { createGuestSession, destroyGuestSession, authenticateGuest } = require('../services/guest');
 const rateLimit = require('../middleware/rateLimit');
@@ -273,6 +273,69 @@ async function openBillForGuest(guest) {
 }
 
 /**
+ * La cuenta de un pago que hizo este comensal, esté abierta o cerrada.
+ *
+ * `openBillForGuest` exige `status = 'OPEN'`, que es correcto para todo lo que
+ * ocurre **durante** la cena: dividir, pedir, pagar. Para la factura es justo
+ * lo contrario, y ahí estaba el fallo: confirmar el pago cierra la cuenta, así
+ * que anclar la factura a la cuenta abierta la hacía imposible de pedir
+ * exactamente en el instante en que pasaba a poder pedirse.
+ *
+ * Una factura es de **un pago**, no de una cuenta abierta. Así que se resuelve
+ * desde el pago hacia arriba.
+ *
+ * El aislamiento no se relaja por eso: el pago tiene que estar en una cuenta de
+ * **la mesa de esta sesión** y del restaurante de esta sesión. El comensal
+ * además tiene que conocer el UUID, que sólo recibe quien declaró ese pago.
+ */
+async function billForGuestPayment(guest, paymentId) {
+  const { rows } = await db.query(
+    `SELECT p.id AS payment_id, p.status AS payment_status, p.amount_ves,
+            b.id AS bill_id, b.status AS bill_status,
+            (SELECT i.id FROM fiscal_invoices i WHERE i.payment_id = p.id LIMIT 1) AS invoice_id
+       FROM payments p
+       JOIN bills b ON b.id = p.bill_id
+      WHERE p.id = $1 AND p.restaurant_id = $2 AND b.table_id = $3`,
+    [paymentId, guest.restaurantId, guest.tableId]
+  );
+  if (!rows.length) throw new ApiError('PAYMENT_NOT_FOUND', 'Payment not found');
+  return rows[0];
+}
+
+/**
+ * En qué quedó un pago que declaró este comensal.
+ *
+ * Sin esto el teléfono no tenía forma de enterarse de que se lo confirmaron: el
+ * aviso se creaba, se guardaba en memoria con estado PENDING y ahí se quedaba
+ * para siempre. La pantalla prometía «podrás pedir la factura cuando el
+ * restaurante confirme tu pago» y no existía el camino por el que esa promesa
+ * pudiera cumplirse.
+ *
+ * Devuelve lo mínimo: en qué estado está y si ya tiene factura. Nada del resto
+ * de la mesa -- quién más pagó y cuánto no es asunto de quien consulta.
+ */
+router.get(
+  '/payments/:id',
+  authenticateGuest,
+  perSession,
+  validateParams(guestPaymentParamSchema),
+  async (req, res, next) => {
+    try {
+      const row = await billForGuestPayment(req.guest, req.params.id);
+      res.json({
+        id: row.payment_id,
+        status: row.payment_status,
+        amountVes: row.amount_ves,
+        // Que la cuenta esté cerrada no impide pedir la factura: es más, suele
+        // ser la señal de que ya se puede.
+        billClosed: row.bill_status !== 'OPEN',
+        invoiced: row.invoice_id !== null
+      });
+    } catch (err) { next(err); }
+  }
+);
+
+/**
  * Who the diner is actually paying.
  *
  * Splite never holds the money -- a Pago Móvil goes from the diner's account to
@@ -495,10 +558,13 @@ router.post(
           'This deployment has no fiscal provider configured');
       }
 
-      const bill = await openBillForGuest(req.guest);
+      // Desde el pago y no desde la cuenta abierta. Confirmar el cobro cierra
+      // la cuenta, así que pedir aquí `openBillForGuest` hacía imposible
+      // facturar justo cuando ya se podía.
+      const found = await billForGuestPayment(req.guest, req.body.paymentId);
       const result = await invoicing.issueForPayment({
         restaurantId: req.guest.restaurantId,
-        billId: bill.id,
+        billId: found.bill_id,
         paymentId: req.body.paymentId,
         provider,
         customer: {
