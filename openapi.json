@@ -466,7 +466,7 @@
           },
           {
             "type": "object",
-            "description": "code is always VALIDATION_FAILED; details.fields carries one entry per failed field.",
+            "description": "code is always VALIDATION_FAILED.\n\n`details.fields` carries one human-readable entry per failed field, and\n`details.fieldPaths` the names of the fields those entries came from.\n\nUse `fieldPaths` to mark a form: the messages are Joi's and come in several shapes —\nsome open with the field name in quotes, some without them, and a custom message may not\nname the field at all — so a client that parses them marks the wrong box. `fieldPaths`\ncomes from the validator's own path and does not depend on how a message is worded.",
             "properties": {
               "error": {
                 "type": "object",
@@ -479,6 +479,13 @@
                         "items": {
                           "type": "string"
                         }
+                      },
+                      "fieldPaths": {
+                        "type": "array",
+                        "items": {
+                          "type": "string"
+                        },
+                        "description": "Field names, deduplicated. Nested fields are dotted."
                       }
                     }
                   }

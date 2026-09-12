@@ -72,7 +72,17 @@ const schemas = {
       ref('Error'),
       {
         type: 'object',
-        description: 'code is always VALIDATION_FAILED; details.fields carries one entry per failed field.',
+        description: [
+          'code is always VALIDATION_FAILED.',
+          '',
+          '`details.fields` carries one human-readable entry per failed field, and',
+          '`details.fieldPaths` the names of the fields those entries came from.',
+          '',
+          'Use `fieldPaths` to mark a form: the messages are Joi\'s and come in several shapes —',
+          'some open with the field name in quotes, some without them, and a custom message may not',
+          'name the field at all — so a client that parses them marks the wrong box. `fieldPaths`',
+          'comes from the validator\'s own path and does not depend on how a message is worded.'
+        ].join('\n'),
         properties: {
           error: {
             type: 'object',
@@ -80,7 +90,12 @@ const schemas = {
               details: {
                 type: 'object',
                 properties: {
-                  fields: { type: 'array', items: { type: 'string' } }
+                  fields: { type: 'array', items: { type: 'string' } },
+                  fieldPaths: {
+                    type: 'array',
+                    items: { type: 'string' },
+                    description: 'Field names, deduplicated. Nested fields are dotted.'
+                  }
                 }
               }
             }
