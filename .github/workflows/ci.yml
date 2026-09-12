@@ -115,6 +115,14 @@ jobs:
       # runs the same tests as ours.
       MFA_SECRET_KEYS: '1:Y2ktb25seS10ZXN0LWtleS0zMi1ieXRlcy1sb25nISE='
       MFA_ACTIVE_KEY_VERSION: '1'
+      # Y otro para las credenciales bancarias, por la misma razón y con la
+      # misma advertencia. Sin él, `putCredentials` lanza
+      # PAYMENT_CREDENTIALS_KEY_MISSING y la suite de aislamiento entre
+      # inquilinos no llega ni a crear su primera fila -- que es justo como se
+      # descubrió que faltaba: pasaba en local, donde la variable está puesta,
+      # y fallaba aquí.
+      PAYMENT_CREDENTIALS_KEYS: '1:Y2ktb25seS1wYXltZW50LWtleS0zMi1ieXRlcy0hISE='
+      PAYMENT_CREDENTIALS_ACTIVE_KEY_VERSION: '1'
 
     steps:
       - uses: actions/checkout@v4
