@@ -24,7 +24,25 @@ const { logger } = require('../connectors/logger');
 
 const ITEM_COLUMNS = `id, bill_id, product_id, name_snapshot,
                       unit_price_minor, currency, quantity, subtotal_minor,
+                      tax_category, vat_bps,
                       created_at, updated_at`;
+
+/**
+ * La alícuota que de verdad le toca a un producto, ya resuelta.
+ *
+ * El producto guarda NULL cuando va a la general del restaurante, porque una
+ * columna llena de copias del mismo número se desincroniza a la primera. Aquí
+ * se resuelve una sola vez, al añadir la línea, y lo que se congela en la línea
+ * es el número: el restaurante puede cambiar su tasa mañana y esta cena no.
+ *
+ * Lo que no está gravado va a cero pase lo que pase. Un exento con una alícuota
+ * al lado no existe -- la base de datos tampoco lo admite.
+ */
+function resolveLineTax(product, bill) {
+  const category = product.tax_category ?? 'TAXABLE';
+  if (category !== 'TAXABLE') return { category, vatBps: 0 };
+  return { category, vatBps: product.vat_bps ?? bill.vat_bps ?? 0 };
+}
 
 /**
  * Locks the bill and returns it, or explains why it cannot be changed.
@@ -59,20 +77,40 @@ async function lockOpenBill(client, { restaurantId, billId }) {
  * already locked, so the sum it reads cannot move underneath it.
  */
 async function recalculateTotals(client, bill) {
+  /*
+   * El IVA se calcula **por alícuota**, no por línea ni de una vez sobre el
+   * subtotal.
+   *
+   * Por alícuota y no por línea porque así es como se declara: un documento
+   * fiscal lleva una base imponible y un IVA por cada tasa, no uno por renglón.
+   * Redondear una vez por grupo en vez de una por línea evita además que el
+   * total dependa de en cuántos renglones se partió lo mismo.
+   *
+   * Y esto **no mueve ni un céntimo de lo ya calculado**: mientras todo vaya a
+   * la misma tasa -- que es lo único que el modelo sabía expresar hasta ahora --
+   * hay un solo grupo, el subtotal del grupo es el subtotal de la cuenta, y la
+   * operación es idéntica a la de antes. Hay una prueba que lo fija.
+   */
   const { rows } = await client.query(
-    'SELECT COALESCE(SUM(subtotal_minor), 0)::TEXT AS subtotal FROM bill_items WHERE bill_id = $1',
+    `SELECT COALESCE(vat_bps, 0) AS vat_bps,
+            COALESCE(SUM(subtotal_minor), 0)::TEXT AS base
+       FROM bill_items
+      WHERE bill_id = $1
+      GROUP BY COALESCE(vat_bps, 0)
+      ORDER BY COALESCE(vat_bps, 0)`,
     [bill.id]
   );
-  const subtotal = toMinor(rows[0].subtotal, 'Bill subtotal');
 
-  // subtotal + IVA + servicio, with both charges taken on the subtotal and
-  // neither compounding on the other. IVA is *not* charged on the service
-  // charge; taxing subtotal + service would overstate IVA on every bill.
-  //
-  // Both rates are the ones snapshotted when the bill opened, never today's,
-  // for the same reason the FX rate is frozen: changing a restaurant's
-  // configuration must not reprice a meal already eaten.
-  const vat = applyBps(subtotal, bill.vat_bps ?? 0, 'IVA');
+  let subtotal = 0n;
+  let vat = 0n;
+  for (const group of rows) {
+    const base = toMinor(group.base, 'Taxable base');
+    subtotal += base;
+    vat += applyBps(base, Number(group.vat_bps), 'IVA');
+  }
+
+  // El servicio sigue tomándose sobre el subtotal entero y sin componer con el
+  // IVA: gravar subtotal + servicio inflaría el impuesto en todas las cuentas.
   const serviceCharge = applyBps(subtotal, bill.service_charge_bps ?? 0, 'Service charge');
   const total = subtotal + vat + serviceCharge;
 
@@ -196,7 +234,8 @@ async function addItem({ restaurantId, billId, productId, quantity }) {
     // Resolved inside the caller's tenant, so a product id from another
     // restaurant reads as absent rather than being snapshotted onto this bill.
     const { rows } = await client.query(
-      'SELECT id, name, price_minor_units, currency, active FROM menu_products WHERE id = $1 AND restaurant_id = $2',
+      `SELECT id, name, price_minor_units, currency, active, tax_category, vat_bps
+         FROM menu_products WHERE id = $1 AND restaurant_id = $2`,
       [productId, restaurantId]
     );
     const product = rows[0];
@@ -217,12 +256,16 @@ async function addItem({ restaurantId, billId, productId, quantity }) {
       );
     }
 
+    const tax = resolveLineTax(product, bill);
+
     const inserted = await client.query(
       `INSERT INTO bill_items
-         (restaurant_id, bill_id, product_id, name_snapshot, unit_price_minor, currency, quantity)
-       VALUES ($1, $2, $3, $4, $5, $6, $7)
+         (restaurant_id, bill_id, product_id, name_snapshot, unit_price_minor, currency, quantity,
+          tax_category, vat_bps)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
        RETURNING ${ITEM_COLUMNS}`,
-      [restaurantId, billId, product.id, product.name, product.price_minor_units, product.currency, quantity]
+      [restaurantId, billId, product.id, product.name, product.price_minor_units, product.currency,
+        quantity, tax.category, tax.vatBps]
     );
 
     return { item: inserted.rows[0], bill: await recalculateTotals(client, bill) };
@@ -251,7 +294,8 @@ async function addItemsInTransaction(client, { restaurantId, bill, items, guestO
   const added = [];
   for (const line of items) {
     const { rows } = await client.query(
-      'SELECT id, name, price_minor_units, currency, active FROM menu_products WHERE id = $1 AND restaurant_id = $2',
+      `SELECT id, name, price_minor_units, currency, active, tax_category, vat_bps
+         FROM menu_products WHERE id = $1 AND restaurant_id = $2`,
       [line.productId, restaurantId]
     );
     const product = rows[0];
@@ -271,14 +315,16 @@ async function addItemsInTransaction(client, { restaurantId, bill, items, guestO
       );
     }
 
+    const tax = resolveLineTax(product, bill);
+
     const inserted = await client.query(
       `INSERT INTO bill_items
          (restaurant_id, bill_id, product_id, name_snapshot, unit_price_minor, currency, quantity,
-          guest_order_id)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+          guest_order_id, tax_category, vat_bps)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
        RETURNING ${ITEM_COLUMNS}`,
       [restaurantId, bill.id, product.id, product.name, product.price_minor_units,
-        product.currency, line.quantity, guestOrderId]
+        product.currency, line.quantity, guestOrderId, tax.category, tax.vatBps]
     );
     added.push(inserted.rows[0]);
   }

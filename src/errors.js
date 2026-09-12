@@ -72,6 +72,12 @@ const CODES = {
 
   // 403 -- the caller is known and still not allowed.
   FORBIDDEN_ROLE: 403,
+  // The restaurant's plan does not include this. 403 rather than 402: the
+  // request is refused on what was bought, not on an unpaid invoice, and
+  // nothing about it becomes payable by retrying. `details.requiredTiers`
+  // names the plans that would allow it, so a client is not left guessing
+  // which upgrade is the one that helps.
+  PLAN_UPGRADE_REQUIRED: 403,
   CROSS_TENANT_DENIED: 403,
   CORS_ORIGIN_NOT_ALLOWED: 403,
   // Staff administration. Three separate codes because they are three separate
@@ -88,6 +94,8 @@ const CODES = {
   STAFF_NOT_FOUND: 404,
   BILL_NOT_FOUND: 404,
   BILL_ITEM_NOT_FOUND: 404,
+  PAYMENT_NOT_FOUND: 404,
+  FISCAL_REQUEST_NOT_FOUND: 404,
   TABLE_NOT_FOUND: 404,
   GUEST_ORDER_NOT_FOUND: 404,
   PRODUCT_NOT_FOUND: 404,
@@ -128,6 +136,14 @@ const CODES = {
   IDEMPOTENCY_IN_FLIGHT: 409,
   TABLE_NAME_TAKEN: 409,
   PRODUCT_NAME_TAKEN: 409,
+  // Alícuota propia sobre un producto que no está gravado. Es un conflicto con
+  // el estado guardado, no un cuerpo mal formado: el mismo campo es válido en
+  // cuanto la categoría del producto cambie.
+  PRODUCT_TAX_CONFLICT: 409,
+  // La cuenta ya está declarada entera: no queda base imponible que poner en
+  // otra factura. Es un conflicto con el estado y no un cuerpo mal formado --
+  // la misma petición valdría sobre una cuenta con saldo sin declarar.
+  FISCAL_NOTHING_TO_DECLARE: 409,
   MENU_CURRENCY_MISMATCH: 409,
   CATEGORY_NAME_TAKEN: 409,
   WEBHOOK_ALREADY_PROCESSED: 409,
@@ -179,6 +195,11 @@ const CODES = {
   WEBHOOK_REPLAY_PROTECTION_UNAVAILABLE: 503,
   SHUTTING_DOWN: 503,
 
+  // Este despliegue no tiene imprenta digital configurada, así que no puede
+  // emitir nada válido. 503 y no 500: no es un fallo, es una capacidad que
+  // no está montada, y el remedio es de quien despliega.
+  FISCAL_PROVIDER_NOT_CONFIGURED: 503,
+
   // 503 -- the deployment cannot handle credentials right now. Not 500: this is
   // configuration, and saying so is what stops somebody hunting a bug.
   PAYMENT_CREDENTIALS_KEY_MISSING: 503,
@@ -213,6 +234,11 @@ const CODES = {
   // message at all. Every other gated capability here says which one it is;
   // this is that, for onboarding.
   ONBOARDING_NOT_CONFIGURED: 503,
+
+  // El proveedor emitió un documento cuyo borrador no se guardó, así que no
+  // hay con qué registrarlo. Es un fallo nuestro y no del cliente, y necesita
+  // que alguien lo mire: el documento existe ahí fuera.
+  FISCAL_DRAFT_MISSING: 500,
 
   // 500 -- the message is never echoed; correlate on requestId.
   INTERNAL_ERROR: 500

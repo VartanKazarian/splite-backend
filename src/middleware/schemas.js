@@ -518,9 +518,59 @@ const c2pBankGuideQuerySchema = Joi.object({
  * Bounded to the column (VARCHAR(120)) and required to have something in it
  * after trimming, so a name cannot be blanked into an empty landing page.
  */
-const restaurantProfileSchema = Joi.object({
-  name: Joi.string().trim().min(1).max(120).required()
+/**
+ * Pedir factura, con el consumidor final como camino principal.
+ *
+ * Los tres datos del receptor son **opcionales**, y eso no es laxitud: la
+ * mayoría de la gente no da su cédula por una cena, y un cuerpo vacío significa
+ * consumidor final, que es una respuesta completa y no un formulario a medio
+ * llenar. Exigir la identificación convertiría el caso mayoritario en el caso
+ * raro.
+ *
+ * Quien sí la da suele necesitarla exacta -- va a justificar el gasto -- así que
+ * el RIF se valida con el mismo patrón que ya usa el resto de la API en vez de
+ * aceptarlo como texto libre.
+ */
+const requestInvoiceSchema = Joi.object({
+  paymentId: uuid.required(),
+  name: Joi.string().trim().min(1).max(160),
+  taxId: venezuelanId,
+  email: Joi.string().trim().email().max(255)
 });
+
+/**
+ * El contacto que deja un comensal.
+ *
+ * `marketingConsent` **no tiene valor por defecto y no es obligatorio**. Un
+ * cliente que no lo manda no está consintiendo ni retirando nada: está
+ * diciendo sólo «aquí va mi correo para la factura». Ponerle `.default(true)`
+ * -- o darlo por hecho a partir de que haya correo -- convertiría un dato
+ * transaccional en una lista de publicidad sin que nadie dijera que sí, que es
+ * justo lo que este campo existe para impedir.
+ */
+const guestContactSchema = Joi.object({
+  email: Joi.string().trim().email().max(255).required(),
+  name: Joi.string().trim().min(1).max(160),
+  marketingConsent: Joi.boolean()
+});
+
+/** La cola de facturación que mira una persona. */
+const fiscalRequestQuerySchema = Joi.object({
+  status: Joi.string().valid('PENDING', 'SENT', 'ISSUED', 'FAILED', 'UNCERTAIN'),
+  limit: Joi.number().integer().min(1).max(100).default(25),
+  offset: Joi.number().integer().min(0).default(0)
+});
+
+const fiscalIdParamSchema = Joi.object({ id: uuid.required() });
+
+const restaurantProfileSchema = Joi.object({
+  // `name` deja de ser obligatorio porque el cuerpo ya no es sólo el nombre.
+  // Pedirlo siempre obligaría a reenviarlo para cambiar otra cosa, que es cómo
+  // se renombra un restaurante sin querer.
+  name: Joi.string().trim().min(1).max(120),
+  // Quién recibe la factura: cada comensal, o la mesa. Ver la migración 040.
+  fiscalInvoicePolicy: Joi.string().valid('PER_DINER', 'SINGLE_BILL')
+}).min(1);
 
 const payoutSchema = Joi.object({
   bankCode: Joi.string().trim().pattern(/^[0-9]{4}$/)
@@ -672,6 +722,40 @@ const menuCurrencySchema = Joi.object({
   currency: Joi.string().valid(...MENU_CURRENCIES).required()
 });
 
+/**
+ * El trato fiscal de un producto.
+ *
+ * Cuatro valores y no un booleano «lleva IVA», porque las tres formas de no
+ * llevarlo no son la misma: exento lo es por la ley del impuesto, exonerado por
+ * un acto del Ejecutivo que caduca, y no sujeto está fuera del ámbito. En la
+ * factura las tres dan cero; en el libro de ventas se declaran por separado, y
+ * colapsarlas pierde el dato justo cuando alguien lo pide.
+ */
+const taxCategory = Joi.string().valid('TAXABLE', 'EXEMPT', 'EXONERATED', 'NON_TAXABLE');
+
+/**
+ * La alícuota propia del producto, cuando no es la general del restaurante.
+ *
+ * `null` significa «la del restaurante», que es el caso de casi todo y la razón
+ * de que sea nulable de verdad: un plato sin alícuota propia no es un plato al
+ * que se le olvidó ponerla. Sólo la lleva lo gravado -- un exento con un 16%
+ * guardado al lado es una contradicción, y se rechaza aquí con un mensaje que
+ * dice cuál de los dos campos sobra, en vez de dejar que salte el CHECK de la
+ * base de datos con un error que nadie puede leer.
+ */
+const vatBps = Joi.number().integer().min(0).max(10000);
+
+// El `is` se construye de cero y no a partir de `taxCategory`: `.valid()` sobre
+// un esquema que ya tiene valores **añade** a la lista en vez de estrecharla, y
+// la condición acabaría cumpliéndose también para TAXABLE -- es decir, para el
+// único caso en el que el campo tiene sentido.
+const notTaxableHasNoRate = {
+  is: Joi.string().valid('EXEMPT', 'EXONERATED', 'NON_TAXABLE').required(),
+  then: Joi.valid(null).messages({
+    'any.only': 'vatBps solo puede tener valor en un producto TAXABLE'
+  })
+};
+
 const createProductSchema = Joi.object({
   name: Joi.string().trim().min(1).max(160).required(),
   description: Joi.string().trim().max(500).allow('', null),
@@ -682,7 +766,11 @@ const createProductSchema = Joi.object({
   // The section it belongs under. Null is uncategorised, which is a real answer
   // rather than a missing one -- plenty of menus are a single list.
   categoryId: uuid.allow(null),
-  active: Joi.boolean().default(true)
+  active: Joi.boolean().default(true),
+  // Por defecto gravado: es lo que era todo hasta ahora, así que una carta que
+  // no sabe de impuestos sigue comportándose igual que antes de este campo.
+  taxCategory: taxCategory.default('TAXABLE'),
+  vatBps: vatBps.allow(null).when('taxCategory', notTaxableHasNoRate)
 });
 
 const updateProductSchema = Joi.object({
@@ -692,7 +780,11 @@ const updateProductSchema = Joi.object({
   // Explicitly nullable: moving a product out of every section is a thing
   // somebody means to do, and is not the same as omitting the field.
   categoryId: uuid.allow(null),
-  active: Joi.boolean()
+  active: Joi.boolean(),
+  taxCategory,
+  // Nulable igual que en el alta, y por lo mismo: poner `null` es devolver el
+  // producto a la alícuota general, que es una decisión, no un olvido.
+  vatBps: vatBps.allow(null).when('taxCategory', notTaxableHasNoRate)
 }).min(1);
 
 const createCategorySchema = Joi.object({
@@ -821,6 +913,10 @@ module.exports = {
   splitPaymentSchema,
   payoutSchema,
   restaurantProfileSchema,
+  requestInvoiceSchema,
+  guestContactSchema,
+  fiscalRequestQuerySchema,
+  fiscalIdParamSchema,
   paymentProviderParamSchema,
   declareClaimSchema,
   c2pChargeSchema,

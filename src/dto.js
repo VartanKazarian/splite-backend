@@ -1,5 +1,6 @@
 const { usdReference } = require('./services/split');
 const banks = require('./payments/banks');
+const entitlements = require('./services/entitlements');
 
 /**
  * The boundary between the database and the wire.
@@ -119,6 +120,12 @@ function billItem(row) {
     currency: row.currency,
     quantity: row.quantity,
     subtotalMinor: row.subtotal_minor,
+    // El impuesto congelado en la línea, igual que el precio y por lo mismo:
+    // cambiar mañana la categoría de un producto no puede mover el IVA de una
+    // cena de anoche. Aquí `vatBps` sí es un número y no un «pregúntale al
+    // restaurante» -- en la línea ya está resuelto.
+    taxCategory: row.tax_category ?? 'TAXABLE',
+    vatBps: row.vat_bps ?? 0,
     createdAt: isoTimestamp(row.created_at),
     updatedAt: isoTimestamp(row.updated_at)
   };
@@ -383,6 +390,14 @@ function product(row) {
     categoryName: row.category_name ?? null,
     position: row.position ?? 0,
     active: row.active,
+    // El trato fiscal, que hasta ahora la carta no sabía decir. `TAXABLE` por
+    // defecto porque es lo que era todo: no había forma de declarar otra cosa.
+    taxCategory: row.tax_category ?? 'TAXABLE',
+    // La alícuota propia, o `null` si va a la general del restaurante. Se deja
+    // nula en vez de resolverla aquí a propósito: un cliente que viera el
+    // número no distinguiría un producto con tasa propia de uno que sigue a la
+    // del local, y son cosas distintas a la hora de cambiarla.
+    vatBps: row.vat_bps ?? null,
     // The photo, as a path rather than bytes. `has_image` comes from a join
     // that never selects the file itself, so a menu listing stays a listing --
     // see migration 033 for why the bytes live in their own table.
@@ -535,9 +550,117 @@ function account(row) {
       trialEndsAt: isoTimestamp(row.trial_ends_at),
       trialDaysRemaining: trialEndsAt
         ? Math.ceil((trialEndsAt.getTime() - Date.now()) / msPerDay)
-        : null
+        : null,
+      // What this tier includes, as a flat object of booleans. Published so a
+      // client asks before it acts: offering a button that answers 403 is a
+      // worse experience than not offering it, and reading the tier name and
+      // hard-coding the table on the frontend is the same table maintained
+      // twice.
+      //
+      // Note that a false here means "not sold with this plan", which is not
+      // always the same as "the API will refuse it" -- see
+      // src/services/entitlements.js for why those two sets differ, and which
+      // capabilities actually refuse today.
+      capabilities: entitlements.capabilitiesFor(row.plan_tier)
     },
+    // A quién se le factura: cada comensal, o la mesa. Se publica siempre,
+    // incluso sin la facturación contratada, porque es un ajuste del
+    // restaurante y no una capacidad del plan -- y porque un panel que lo
+    // muestra en gris explica mejor lo que se compra que uno que lo esconde.
+    fiscalInvoicePolicy: row.fiscal_invoice_policy ?? 'PER_DINER',
     createdAt: isoTimestamp(row.created_at)
+  };
+}
+
+/**
+ * Una factura fiscal emitida.
+ *
+ * `documentNumber` y `controlNumber` los pone la imprenta digital autorizada.
+ * Se devuelven tal cual y nunca se construyen aquí: inventar un número de
+ * control sería falsificar.
+ */
+function fiscalInvoice(row) {
+  return {
+    id: row.id,
+    billId: row.bill_id,
+    paymentId: row.payment_id ?? null,
+    documentType: row.document_type,
+    // Qué documento compensa, si es una nota de crédito. Una factura emitida no
+    // se corrige: se compensa con otra.
+    compensatesId: row.compensates_id ?? null,
+    documentNumber: row.document_number,
+    controlNumber: row.control_number,
+    provider: row.provider,
+    // Cómo se construyeron las líneas -- ver el README. Se publica para que un
+    // panel pueda explicar por qué una factura dice «0,338 x Hamburguesa» en
+    // vez de dejar al restaurante adivinando.
+    lineBasis: row.line_basis,
+    currency: row.currency,
+    subtotalMinor: row.subtotal_minor,
+    vatMinor: row.vat_minor,
+    serviceMinor: row.service_minor,
+    totalMinor: row.total_minor,
+    // Nulo es consumidor final, que es el caso mayoritario y no un dato que
+    // falte.
+    customer: row.customer_name || row.customer_tax_id || row.customer_email
+      ? {
+        name: row.customer_name ?? null,
+        taxId: row.customer_tax_id ?? null,
+        email: row.customer_email ?? null
+      }
+      : null,
+    issuedAt: isoTimestamp(row.issued_at),
+    ...(row.lines ? { lines: row.lines.map(fiscalInvoiceLine) } : {}),
+    ...(row.taxes ? { taxes: row.taxes.map(fiscalInvoiceTax) } : {})
+  };
+}
+
+function fiscalInvoiceLine(row) {
+  return {
+    position: row.position,
+    description: row.description,
+    // Milésimas, porque una línea prorrateada es una fracción de plato. Va como
+    // entero en milésimas y no como decimal por la misma razón que el dinero:
+    // un número de coma flotante deja de ser exacto antes de lo que parece.
+    quantityMilli: String(row.quantity_milli),
+    unitPriceMinor: row.unit_price_minor,
+    taxCategory: row.tax_category,
+    vatBps: row.vat_bps,
+    baseMinor: row.base_minor,
+    vatMinor: row.vat_minor
+  };
+}
+
+/** El desglose por alícuota: lo que un documento fiscal declara de verdad. */
+function fiscalInvoiceTax(row) {
+  return {
+    taxCategory: row.tax_category,
+    vatBps: row.vat_bps,
+    baseMinor: row.base_minor,
+    vatMinor: row.vat_minor
+  };
+}
+
+/**
+ * Un intento de emisión, que no es lo mismo que una factura.
+ *
+ * Es lo que alimenta la cola: `UNCERTAIN` significa que el proveedor contestó
+ * algo que no dice si emitió, y que nadie debe reintentar a ciegas.
+ */
+function fiscalRequest(row) {
+  return {
+    id: row.id,
+    billId: row.bill_id,
+    paymentId: row.payment_id ?? null,
+    documentType: row.document_type,
+    status: row.status,
+    provider: row.provider ?? null,
+    attempts: row.attempts,
+    lastErrorCode: row.last_error_code ?? null,
+    lastAttemptAt: isoTimestamp(row.last_attempt_at),
+    createdAt: isoTimestamp(row.created_at),
+    // La factura que salió de él, si salió alguna.
+    invoiceId: row.invoice_id ?? null
   };
 }
 
@@ -739,5 +862,6 @@ function staffMember(row) {
 module.exports = {
   isoDate, isoTimestamp, staffMember, guestOrder, billAdjustment,
   bill, billItem, billWithItems, guestBill,
+  fiscalInvoice, fiscalInvoiceLine, fiscalInvoiceTax, fiscalRequest,
   table, floorTable, product, publicProduct, menuCategory, menuDocument, brandingImage, qrContext, menuSettings, menuCharges, account, payout, guestPayee, paymentProviderConfig, paymentClaim, staffPaymentClaim, c2pCharge, billSplit
 };

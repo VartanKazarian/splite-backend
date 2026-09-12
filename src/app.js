@@ -11,6 +11,7 @@ const requestId = require('./middleware/requestId');
 const { isShuttingDown } = require('./lifecycle');
 const openapi = require('./openapi');
 const { logger } = require('./connectors/logger');
+const { registerFiscalProviders } = require('./fiscal/register');
 const rateLimit = require('./middleware/rateLimit');
 const errorHandler = require('./middleware/errorHandler');
 const metrics = require('./services/metrics');
@@ -26,7 +27,12 @@ const onboardingRoutes = require('./routes/onboarding');
 const accountRoutes = require('./routes/account');
 const paymentRoutes = require('./routes/payments');
 const orderRoutes = require('./routes/orders');
+const fiscalRoutes = require('./routes/fiscal');
 const webhookRoutes = require('./routes/webhooks');
+
+// Una vez, al arrancar: un adaptador incompleto tiene que impedir el arranque
+// y no fallar delante de un comensal que espera su factura.
+registerFiscalProviders();
 
 const app = express();
 
@@ -191,6 +197,7 @@ app.use('/api/v1/menu', menuRoutes);
 app.use('/api/v1/account', accountRoutes);
 app.use('/api/v1/payments', paymentRoutes);
 app.use('/api/v1/orders', orderRoutes);
+app.use('/api/v1/fiscal', fiscalRoutes);
 
 // A SEPARATE router object, mounted at exactly one path. Serving webhooks by
 // mounting the payments router under a second prefix makes every payment route

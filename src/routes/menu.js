@@ -138,6 +138,7 @@ const router = express.Router();
 
 const PRODUCT_COLUMNS = `id, name, description, price_minor_units,
                          currency, category_id, position, active,
+                         tax_category, vat_bps,
                          created_at, updated_at`;
 
 /**
@@ -175,7 +176,8 @@ const IMAGE_JOIN = `LEFT JOIN menu_product_images pi
 const withCategoryName = inner => `
   WITH written AS (${inner})
   SELECT w.id, w.restaurant_id, w.name, w.description, w.price_minor_units, w.currency,
-         w.category_id, w.position, w.active, w.created_at, w.updated_at,
+         w.category_id, w.position, w.active, w.tax_category, w.vat_bps,
+         w.created_at, w.updated_at,
          c.name AS category_name,
          (pi.product_id IS NOT NULL) AS has_image, pi.checksum AS image_checksum
     FROM written w
@@ -901,7 +903,8 @@ router.get('/products', validateQuery(listProductsQuerySchema), async (req, res,
     params.push(req.query.limit, req.query.offset);
     const { rows } = await db.query(
       `SELECT p.id, p.restaurant_id, p.name, p.description, p.price_minor_units, p.currency,
-              p.category_id, p.position, p.active, p.created_at, p.updated_at,
+              p.category_id, p.position, p.active, p.tax_category, p.vat_bps,
+              p.created_at, p.updated_at,
               c.name AS category_name, ${IMAGE_COLUMNS}
          FROM menu_products p
          LEFT JOIN menu_categories c
@@ -934,8 +937,9 @@ router.post(
       const { rows } = await db.query(
         withCategoryName(`
           INSERT INTO menu_products
-            (restaurant_id, name, description, price_minor_units, currency, category_id, active)
-          VALUES ($1, $2, $3, $4, $5, $6, $7)
+            (restaurant_id, name, description, price_minor_units, currency, category_id, active,
+             tax_category, vat_bps)
+          VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
           RETURNING *`),
         [
           req.user.restaurantId,
@@ -944,7 +948,12 @@ router.post(
           req.body.priceMinorUnits,
           restaurant.rows[0].menu_currency,
           req.body.categoryId ?? null,
-          req.body.active
+          req.body.active,
+          req.body.taxCategory,
+          // `undefined` y `null` acaban en lo mismo a propósito: un producto sin
+          // alícuota propia va a la general del restaurante, y eso se guarda
+          // como NULL y no como una copia del número de hoy.
+          req.body.vatBps ?? null
         ]
       );
 
@@ -979,6 +988,18 @@ router.patch(
       // meaning "out of every section", and COALESCE cannot tell that from an
       // omitted field. A separate flag says whether the caller mentioned it.
       const setsCategory = Object.prototype.hasOwnProperty.call(req.body, 'categoryId');
+      // `vatBps` tiene el mismo problema que `categoryId` y una vuelta más.
+      //
+      // Lo mismo: `null` es un valor -- «vuelve a la alícuota general» -- y
+      // COALESCE no sabe distinguirlo de un campo que no se mandó.
+      //
+      // La vuelta de más: declarar exento un producto que tenía alícuota propia
+      // dejaría una contradicción que el CHECK de la base rechaza. Cuando quien
+      // llama cambia la categoría a una no gravada y **no** menciona la
+      // alícuota, se limpia sola: es lo que significa el cambio. Si la menciona
+      // y contradice a la categoría, salta el CHECK y se traduce abajo a un
+      // error legible, en vez de guardarle en silencio algo que no pidió.
+      const setsVatBps = Object.prototype.hasOwnProperty.call(req.body, 'vatBps');
       const { rows } = await db.query(
         withCategoryName(`
           UPDATE menu_products
@@ -986,7 +1007,13 @@ router.patch(
                  description = COALESCE($2, description),
                  price_minor_units = COALESCE($3, price_minor_units),
                  active = COALESCE($4, active),
-                 category_id = CASE WHEN $5::boolean THEN $6::uuid ELSE category_id END
+                 category_id = CASE WHEN $5::boolean THEN $6::uuid ELSE category_id END,
+                 tax_category = COALESCE($9, tax_category),
+                 vat_bps = CASE
+                   WHEN $10::boolean THEN $11::integer
+                   WHEN COALESCE($9, tax_category) <> 'TAXABLE' THEN NULL
+                   ELSE vat_bps
+                 END
            WHERE id = $7 AND restaurant_id = $8
           RETURNING *`),
         [
@@ -997,7 +1024,10 @@ router.patch(
           setsCategory,
           req.body.categoryId ?? null,
           req.params.id,
-          req.user.restaurantId
+          req.user.restaurantId,
+          req.body.taxCategory ?? null,
+          setsVatBps,
+          req.body.vatBps ?? null
         ]
       );
       if (!rows.length) throw new ApiError('PRODUCT_NOT_FOUND', 'Product not found');
@@ -1013,6 +1043,17 @@ router.patch(
     } catch (err) {
       if (err.code === '23505') {
         return next(new ApiError('PRODUCT_NAME_TAKEN', 'A product with that name already exists'));
+      }
+      // Ponerle alícuota propia a un producto que ya estaba exento. El esquema
+      // atrapa la contradicción cuando llegan los dos campos juntos; cuando
+      // sólo llega la alícuota, la categoría que la contradice es la que estaba
+      // guardada, y quien lo sabe es la base. Se traduce aquí porque un 23514
+      // en crudo no le dice a nadie qué hacer.
+      if (err.code === '23514' && String(err.constraint) === 'menu_products_vat_only_when_taxable') {
+        return next(new ApiError(
+          'PRODUCT_TAX_CONFLICT',
+          'Only a TAXABLE product can carry its own vatBps; change taxCategory first'
+        ));
       }
       next(err);
     }
@@ -1123,6 +1164,7 @@ router.put(
          )
          SELECT p.id, p.restaurant_id, p.name, p.description, p.price_minor_units,
                 p.currency, p.category_id, p.position, p.active,
+                p.tax_category, p.vat_bps,
                 p.created_at, p.updated_at,
                 c.name AS category_name,
                 true AS has_image, u.checksum AS image_checksum

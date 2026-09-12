@@ -119,9 +119,9 @@ const schemas = {
       subtotalMinor: { ...minorUnits, description: 'Sum of the line items, before charges.' },
       vatBps: {
         type: 'integer', minimum: 0, maximum: 10000,
-        description: 'IVA rate in basis points, frozen when the bill opened. 1600 = 16%.'
+        description: 'The restaurant\'s general IVA rate in basis points, frozen when the bill opened. 1600 = 16%. It is the default a line inherits, not necessarily the rate every line paid: a product can be exempt, or carry a rate of its own. Read the per-line taxCategory and vatBps to see what was applied, and do not recompute vatMinor from this field.'
       },
-      vatMinor: { ...minorUnits, description: 'IVA, taken on the subtotal alone — never on the service charge.' },
+      vatMinor: { ...minorUnits, description: 'IVA, taken on the subtotal alone — never on the service charge. Computed per rate: lines are grouped by the rate frozen on each, the rate is applied once per group, and the groups are summed. With a single rate — which is every bill that predates per-product tax categories — that is arithmetically identical to applying it to the whole subtotal.' },
       serviceChargeBps: {
         type: 'integer', minimum: 0, maximum: 10000,
         description: 'Servicio rate in basis points, frozen when the bill opened. 1000 = 10%.'
@@ -174,6 +174,14 @@ const schemas = {
       currency: { type: 'string', enum: ['VES', 'USD', 'EUR'] },
       quantity: { type: 'integer', minimum: 1, maximum: 999 },
       subtotalMinor: { ...minorUnits, description: 'unitPriceMinor x quantity, computed by the database.' },
+      taxCategory: {
+        type: 'string', enum: ['TAXABLE', 'EXEMPT', 'EXONERATED', 'NON_TAXABLE'],
+        description: 'The tax treatment frozen onto the line when it was added, like the price and for the same reason: changing a product\'s category tomorrow must not move the IVA on a meal already eaten.'
+      },
+      vatBps: {
+        type: 'integer', minimum: 0, maximum: 10000,
+        description: 'The rate actually applied to this line, in basis points. Already resolved — unlike the product\'s, this is never null, because the restaurant can change its general rate and this line cannot. Zero for anything not taxable.'
+      },
       createdAt: { type: 'string', format: 'date-time' },
       updatedAt: { type: 'string', format: 'date-time' }
     }
@@ -674,9 +682,9 @@ const schemas = {
       subtotalMinor: { ...minorUnits, description: 'Sum of the line items, before charges.' },
       vatBps: {
         type: 'integer', minimum: 0, maximum: 10000,
-        description: 'IVA rate in basis points, frozen when the bill opened. 1600 = 16%.'
+        description: 'The restaurant\'s general IVA rate in basis points, frozen when the bill opened. 1600 = 16%. It is the default a line inherits, not necessarily the rate every line paid: a product can be exempt, or carry a rate of its own. Read the per-line taxCategory and vatBps to see what was applied, and do not recompute vatMinor from this field.'
       },
-      vatMinor: { ...minorUnits, description: 'IVA, taken on the subtotal alone — never on the service charge.' },
+      vatMinor: { ...minorUnits, description: 'IVA, taken on the subtotal alone — never on the service charge. Computed per rate: lines are grouped by the rate frozen on each, the rate is applied once per group, and the groups are summed. With a single rate — which is every bill that predates per-product tax categories — that is arithmetically identical to applying it to the whole subtotal.' },
       serviceChargeBps: {
         type: 'integer', minimum: 0, maximum: 10000,
         description: 'Servicio rate in basis points, frozen when the bill opened. 1000 = 10%.'
@@ -854,6 +862,14 @@ const schemas = {
       categoryName: { type: ['string', 'null'], description: 'Flattened on so a client can group without a second request.' },
       position: { type: 'integer', description: 'Order within its section.' },
       active: { type: 'boolean' },
+      taxCategory: {
+        type: 'string', enum: ['TAXABLE', 'EXEMPT', 'EXONERATED', 'NON_TAXABLE'],
+        description: 'Tax treatment of the product. The three non-taxable values all yield zero IVA and are not interchangeable: EXEMPT is exempt by the VAT law itself, EXONERATED by an executive act that expires, and NON_TAXABLE is outside the tax\'s scope. A sales ledger declares them separately.'
+      },
+      vatBps: {
+        type: ['integer', 'null'], minimum: 0, maximum: 10000,
+        description: 'The product\'s own IVA rate in basis points, or null when it follows the restaurant\'s general rate — which is the normal case. Null is not a missing value: a dish with no rate of its own is not a dish somebody forgot to set. Only a TAXABLE product may carry one.'
+      },
       imageUrl: {
         type: ['string', 'null'],
         description:
@@ -918,7 +934,15 @@ const schemas = {
       description: { type: ['string', 'null'], maxLength: 500 },
       priceMinorUnits: minorUnits,
       categoryId: { type: ['string', 'null'], format: 'uuid', description: 'The section it belongs under. Null or omitted is uncategorised.' },
-      active: { type: 'boolean', default: true }
+      active: { type: 'boolean', default: true },
+      taxCategory: {
+        type: 'string', enum: ['TAXABLE', 'EXEMPT', 'EXONERATED', 'NON_TAXABLE'], default: 'TAXABLE',
+        description: 'Tax treatment of the product. The three non-taxable values all yield zero IVA and are not interchangeable: EXEMPT is exempt by the VAT law itself, EXONERATED by an executive act that expires, and NON_TAXABLE is outside the tax\'s scope. A sales ledger declares them separately.'
+      },
+      vatBps: {
+        type: ['integer', 'null'], minimum: 0, maximum: 10000,
+        description: 'Overrides the restaurant\'s general rate for this product. Omit or send null to follow it. Rejected with 400 alongside a non-TAXABLE taxCategory: an exempt product with a 16% stored next to it is a contradiction.'
+      }
     },
     description: 'The currency is taken from the restaurant menu currency and is not accepted here.'
   },
@@ -934,7 +958,15 @@ const schemas = {
         type: ['string', 'null'], format: 'uuid',
         description: 'Explicit null moves the product out of every section. Omitting the field leaves it where it is — the two are different.'
       },
-      active: { type: 'boolean' }
+      active: { type: 'boolean' },
+      taxCategory: {
+        type: 'string', enum: ['TAXABLE', 'EXEMPT', 'EXONERATED', 'NON_TAXABLE'],
+        description: 'Tax treatment of the product. The three non-taxable values all yield zero IVA and are not interchangeable: EXEMPT is exempt by the VAT law itself, EXONERATED by an executive act that expires, and NON_TAXABLE is outside the tax\'s scope. A sales ledger declares them separately. Moving a product to a non-taxable category clears any vatBps it had: that is what the change means.'
+      },
+      vatBps: {
+        type: ['integer', 'null'], minimum: 0, maximum: 10000,
+        description: 'Explicit null returns the product to the restaurant\'s general rate; omitting the field leaves it as it is — the two are different. Sending a rate for a product whose stored category is not TAXABLE is refused with 409 PRODUCT_TAX_CONFLICT.'
+      }
     }
   },
 
@@ -1340,6 +1372,22 @@ const onboardingSchemas = {
       trialDaysRemaining: {
         type: ['integer', 'null'],
         description: 'Computed server-side, and negative once past. A browser doing this subtraction uses the visitor\'s clock and timezone, which reads as expired a day early for anyone whose laptop is set wrong.'
+      },
+      capabilities: {
+        type: 'object',
+        description: 'What this tier is sold as including, as one boolean per capability. Read it instead of hard-coding the pricing table in the client: a button that answers 403 is a worse experience than a button that is not offered, and a copy of this table on the frontend is the same table maintained twice. Every capability is always present, true or false, so a client can ask about one it does not yet know how to use without treating absence as denial. A false means \'not sold with this plan\', which is not always the same as \'the API will refuse it\' — several capabilities shipped before this table existed and are still served on every tier, because taking them away mid-service is a pricing decision rather than a wiring one. Today only fiscalInvoicing actually refuses, with 403 PLAN_UPGRADE_REQUIRED.',
+        additionalProperties: { type: 'boolean' },
+        properties: {
+          bills: { type: 'boolean' },
+          splitting: { type: 'boolean' },
+          declaredMobilePayment: { type: 'boolean' },
+          c2pCharge: { type: 'boolean' },
+          guestOrdering: { type: 'boolean' },
+          tipReports: { type: 'boolean' },
+          menuOcr: { type: 'boolean' },
+          mfa: { type: 'boolean' },
+          fiscalInvoicing: { type: 'boolean' }
+        }
       }
     }
   },
@@ -1355,6 +1403,10 @@ const onboardingSchemas = {
       serviceChargeBps: { type: 'integer' },
       payout: { oneOf: [ref('Payout'), { type: 'null' }] },
       plan: ref('Plan'),
+      fiscalInvoicePolicy: {
+        type: 'string', enum: ['PER_DINER', 'SINGLE_BILL'],
+        description: 'Who gets the fiscal invoice. PER_DINER issues one per diner who pays, which is what somebody claiming their own dinner as an expense needs. SINGLE_BILL issues one document for the whole bill and derives each diner\'s breakdown from it -- those breakdowns are not fiscal documents. Both are legitimate and it is the restaurant\'s call, so it is a setting rather than a rule. Only an OWNER may change it: it decides how the restaurant declares.'
+      },
       createdAt: { type: 'string', format: 'date-time' }
     }
   }
@@ -1807,13 +1859,159 @@ Object.assign(schemas, {
     }
   },
 
+  FiscalInvoiceTax: {
+    type: 'object',
+    description: 'One row per rate. This is what a fiscal document actually declares, and it is kept separate from the lines because an AGGREGATE invoice has a single line and still has to separate the 16% from the exempt part.',
+    properties: {
+      taxCategory: { type: 'string', enum: ['TAXABLE', 'EXEMPT', 'EXONERATED', 'NON_TAXABLE'] },
+      vatBps: { type: 'integer', minimum: 0, maximum: 10000 },
+      baseMinor: minorUnits,
+      vatMinor: minorUnits
+    }
+  },
+
+  FiscalInvoiceLine: {
+    type: 'object',
+    properties: {
+      position: { type: 'integer' },
+      description: { type: 'string' },
+      quantityMilli: {
+        type: 'string', pattern: '^[0-9]+$',
+        description: 'Quantity in thousandths: 338 is 0.338 of a dish. A prorated line really is a fraction of a plate, and rounding it to a whole would misstate the amount — which is the one thing that cannot move. Sent as an integer string for the same reason money is: a float stops being exact sooner than you would think.'
+      },
+      unitPriceMinor: minorUnits,
+      taxCategory: { type: 'string', enum: ['TAXABLE', 'EXEMPT', 'EXONERATED', 'NON_TAXABLE'] },
+      vatBps: { type: 'integer' },
+      baseMinor: minorUnits,
+      vatMinor: minorUnits
+    }
+  },
+
+  FiscalInvoice: {
+    type: 'object',
+    description: 'An issued fiscal document. `documentNumber` and `controlNumber` are assigned by the authorised imprenta digital and returned as given — Splite never generates either.',
+    properties: {
+      id: { type: 'string', format: 'uuid' },
+      billId: { type: 'string', format: 'uuid' },
+      paymentId: { type: ['string', 'null'], format: 'uuid' },
+      documentType: { type: 'string', enum: ['INVOICE', 'CREDIT_NOTE', 'DEBIT_NOTE'] },
+      compensatesId: {
+        type: ['string', 'null'], format: 'uuid',
+        description: 'Which document this credit note compensates. An issued invoice is never corrected; it is compensated by another document.'
+      },
+      documentNumber: { type: 'string' },
+      controlNumber: { type: 'string' },
+      provider: { type: 'string' },
+      lineBasis: {
+        type: 'string', enum: ['ITEMISED', 'PRORATED', 'AGGREGATE'],
+        description: 'How the lines were built. ITEMISED when the split was by product and the payment matched that share, so the real dishes are known. PRORATED scales the bill lines by what was paid. AGGREGATE is one descriptive line. Published so a panel can explain why an invoice reads "0.338 x Hamburguesa" instead of leaving the restaurant guessing.'
+      },
+      currency: { type: 'string', enum: ['VES'] },
+      subtotalMinor: minorUnits,
+      vatMinor: minorUnits,
+      serviceMinor: minorUnits,
+      totalMinor: minorUnits,
+      customer: {
+        type: ['object', 'null'],
+        description: 'Null means consumidor final, which is the majority case and a complete answer rather than a half-filled form.',
+        properties: {
+          name: { type: ['string', 'null'] },
+          taxId: { type: ['string', 'null'] },
+          email: { type: ['string', 'null'] }
+        }
+      },
+      issuedAt: { type: 'string', format: 'date-time' },
+      lines: { type: 'array', items: ref('FiscalInvoiceLine'), description: 'Only on a single-invoice read.' },
+      taxes: { type: 'array', items: ref('FiscalInvoiceTax'), description: 'Only on a single-invoice read.' }
+    }
+  },
+
+  FiscalRequest: {
+    type: 'object',
+    description: 'An attempt to issue, which is not the same thing as an invoice. UNCERTAIN means the provider answered something that does not say whether it issued — nobody may blindly retry one of these.',
+    properties: {
+      id: { type: 'string', format: 'uuid' },
+      billId: { type: 'string', format: 'uuid' },
+      paymentId: { type: ['string', 'null'], format: 'uuid' },
+      documentType: { type: 'string', enum: ['INVOICE', 'CREDIT_NOTE', 'DEBIT_NOTE'] },
+      status: { type: 'string', enum: ['PENDING', 'SENT', 'ISSUED', 'FAILED', 'UNCERTAIN'] },
+      provider: { type: ['string', 'null'] },
+      attempts: { type: 'integer' },
+      lastErrorCode: { type: ['string', 'null'] },
+      lastAttemptAt: { type: ['string', 'null'], format: 'date-time' },
+      createdAt: { type: 'string', format: 'date-time' },
+      invoiceId: { type: ['string', 'null'], format: 'uuid', description: 'The invoice this attempt produced, if it produced one.' }
+    }
+  },
+
+  GuestContactRequest: {
+    type: 'object',
+    required: ['email'],
+    description: 'The diner leaving their details, asked for with a concrete reason: so their invoice can reach them.',
+    properties: {
+      email: { type: 'string', format: 'email', maxLength: 255 },
+      name: { type: 'string', minLength: 1, maxLength: 160 },
+      marketingConsent: {
+        type: 'boolean',
+        description: 'Only true when the diner ticked a box that was empty. Giving an email so an invoice can arrive is NOT consent to marketing -- they are two purposes, and this field is what keeps them apart. Omitting it consents to nothing and withdraws nothing. A previous withdrawal is never reactivated by leaving the address again: somebody who unsubscribed and dines again has not said yes a second time.'
+      }
+    }
+  },
+
+  GuestContactResponse: {
+    type: 'object',
+    properties: {
+      email: { type: 'string' },
+      marketingConsent: {
+        type: 'boolean',
+        description: 'What was stored, not what was asked for. If a withdrawal was on file this comes back false, because the diner is entitled to see they are still unsubscribed rather than believe they just signed up.'
+      },
+      withdrawn: { type: 'boolean' }
+    }
+  },
+
+  RequestInvoiceRequest: {
+    type: 'object',
+    required: ['paymentId'],
+    description: 'Every recipient field is optional, and a body carrying only `paymentId` is a complete request meaning consumidor final. That is the majority case, not a degraded one: most people do not hand over their cédula for a dinner. Somebody who does usually needs it exact, so `taxId` is validated rather than accepted as free text.',
+    properties: {
+      paymentId: { type: 'string', format: 'uuid', description: 'A settled payment on the scanning diner\'s own table. The bill comes from the QR session, so there is no field in which to name somebody else\'s.' },
+      name: { type: 'string', minLength: 1, maxLength: 160 },
+      taxId: { type: 'string', pattern: '^[VEJGPC][0-9]{6,9}$', examples: ['V12345678'] },
+      email: { type: 'string', format: 'email', maxLength: 255 }
+    }
+  },
+
+  RequestInvoiceResponse: {
+    type: 'object',
+    properties: {
+      status: {
+        type: 'string', enum: ['ISSUED', 'UNCERTAIN', 'FAILED'],
+        description: 'ISSUED comes with 201 and an invoice. UNCERTAIN and FAILED come with 202 and none: no document has been created, and with UNCERTAIN one may yet be, once a person resolves it.'
+      },
+      requestId: { type: 'string', format: 'uuid' },
+      invoice: { oneOf: [ref('FiscalInvoice'), { type: 'null' }] },
+      paymentUnaffected: {
+        type: 'boolean',
+        description: 'Always true, and worth saying out loud: a failure here never means the payment failed. The money is taken and the receipt stands; what may be pending is the fiscal document. A client that renders this as a failed payment is wrong.'
+      }
+    }
+  },
+
   UpdateAccountRequest: {
     type: 'object',
-    required: ['name'],
+    minProperties: 1,
     description:
-      "The restaurant's own name, as a diner reads it on the QR landing page. Trimmed; something has to be left after trimming, so a name cannot be blanked into an empty landing page.",
+      'A partial update: send only what changes. `name` stopped being required when this body grew past the name, because requiring it would mean resending it to change anything else — which is how a restaurant gets renamed without meaning to.',
     properties: {
-      name: { type: 'string', minLength: 1, maxLength: 120, examples: ['Casa 72'] }
+      name: {
+        type: 'string', minLength: 1, maxLength: 120, examples: ['Casa 72'],
+        description: "The restaurant's own name, as a diner reads it on the QR landing page. Trimmed; something has to be left after trimming, so a name cannot be blanked into an empty landing page."
+      },
+      fiscalInvoicePolicy: {
+        type: 'string', enum: ['PER_DINER', 'SINGLE_BILL'],
+        description: 'OWNER only — a MANAGER sending this gets 403 FORBIDDEN_ROLE. PER_DINER issues one fiscal invoice per diner who pays; SINGLE_BILL issues one for the whole bill and derives each diner\'s breakdown from it, those breakdowns not being fiscal documents themselves.'
+      }
     }
   },
 
@@ -3898,7 +4096,17 @@ const paths = {
       tags: ['Menu'],
       summary: 'Update a menu product',
       'x-required-roles': ['OWNER', 'MANAGER'],
-      description: 'Roles: OWNER, MANAGER. Partial update; at least one field is required.',
+      description: [
+        'Roles: OWNER, MANAGER. Partial update; at least one field is required.',
+        '',
+        'Changing the tax fields affects only bills opened afterwards. Every line freezes its own',
+        'taxCategory and vatBps when it is added, exactly as it freezes the price, so declaring a',
+        'dish exempt today does not move the IVA on a meal already served.',
+        '',
+        'Moving a product to a non-taxable category clears any vatBps it carried — that is what the',
+        'change means. Sending a vatBps for a product whose stored category is not TAXABLE is refused',
+        'with 409 `PRODUCT_TAX_CONFLICT`; change taxCategory in the same request, or first.'
+      ].join('\n'),
       security: staff,
       parameters: [{ $ref: '#/components/parameters/ProductId' }],
       requestBody: { required: true, content: { 'application/json': { schema: ref('UpdateProductRequest') } } },
@@ -3930,6 +4138,219 @@ const paths = {
       ],
       responses: {
         204: { description: 'Deactivated.' },
+        ...commonErrors,
+        403: response('Forbidden'),
+        404: response('NotFound')
+      }
+    }
+  },
+
+  '/api/v1/guest/bill/contact': {
+    post: {
+      tags: ['Guest'],
+      summary: 'Leave an email for the invoice',
+      operationId: 'saveGuestContact',
+      description: [
+        'The address is asked for with a concrete reason -- so the invoice can arrive -- and the',
+        'restaurant would also like to send promotions. **Those are two purposes**, and this',
+        'endpoint stores them as two things.',
+        '',
+        '`marketingConsent` reaches true only when the person in front ticked an empty box. There',
+        'is no default and no inference from the address being present: a transactional detail must',
+        'not become a mailing list because nobody said no.',
+        '',
+        'Not gated by plan. Leaving your email is not a capability that is sold, and a diner has no',
+        'business finding out what their restaurant has subscribed to.'
+      ].join('\n'),
+      security: [{ guestAuth: [] }],
+      requestBody: { required: true, content: { 'application/json': { schema: ref('GuestContactRequest') } } },
+      responses: {
+        201: { description: 'Stored.', content: { 'application/json': { schema: ref('GuestContactResponse') } } },
+        ...commonErrors
+      }
+    }
+  },
+
+  '/api/v1/guest/bill/invoice': {
+    post: {
+      tags: ['Guest'],
+      summary: 'Ask for a fiscal invoice',
+      operationId: 'requestGuestInvoice',
+      description: [
+        'Offered after paying, beside the receipt, once the money has moved. A tax form before',
+        'payment turns a dinner into paperwork, and most people do not need one.',
+        '',
+        '**Consumidor final is the main path, not the exception.** A body carrying only `paymentId`',
+        'is complete. Do not render the recipient fields as a form to be filled in.',
+        '',
+        'The bill comes from the QR session, so a diner can only invoice a payment on their own',
+        'table — there is no field in which to name another.',
+        '',
+        'Requires the restaurant to be on a plan that includes `fiscalInvoicing` (403',
+        '`PLAN_UPGRADE_REQUIRED`) and the deployment to have an imprenta digital configured (503',
+        '`FISCAL_PROVIDER_NOT_CONFIGURED`).',
+        '',
+        '**A failure here never means the payment failed.** 202 with `UNCERTAIN` means the provider',
+        'answered something that does not say whether it issued; it goes to a queue a person looks',
+        'at, and blindly retrying would risk declaring the sale twice.'
+      ].join('\n'),
+      security: [{ guestAuth: [] }],
+      requestBody: { required: true, content: { 'application/json': { schema: ref('RequestInvoiceRequest') } } },
+      responses: {
+        201: { description: 'Issued.', content: { 'application/json': { schema: ref('RequestInvoiceResponse') } } },
+        202: { description: 'Not issued: in doubt, or refused by the provider. No document exists.', content: { 'application/json': { schema: ref('RequestInvoiceResponse') } } },
+        ...commonErrors,
+        403: response('Forbidden'),
+        404: response('NotFound'),
+        409: response('Conflict'),
+        503: response('ServiceUnavailable')
+      }
+    }
+  },
+
+  '/api/v1/fiscal/invoices': {
+    get: {
+      tags: ['Fiscal'],
+      summary: 'List issued invoices',
+      operationId: 'listFiscalInvoices',
+      description: [
+        'Any signed-in member of staff, and **never gated by plan**. Issuing is a paid capability;',
+        'reading a document already issued is not and cannot be. The legal duty to keep them',
+        'outlives the subscription, and an invoice that became unreadable because an invoice went',
+        'unpaid would be a problem Splite created.',
+        '',
+        'Newest first.'
+      ].join('\n'),
+      security: staff,
+      parameters: [
+        { name: 'limit', in: 'query', schema: { type: 'integer', minimum: 1, maximum: 100, default: 25 } },
+        { name: 'offset', in: 'query', schema: { type: 'integer', minimum: 0, default: 0 } }
+      ],
+      responses: {
+        200: {
+          description: 'Issued invoices.',
+          content: {
+            'application/json': {
+              schema: {
+                type: 'object',
+                properties: {
+                  data: { type: 'array', items: ref('FiscalInvoice') },
+                  limit: { type: 'integer' },
+                  offset: { type: 'integer' }
+                }
+              }
+            }
+          }
+        },
+        ...commonErrors
+      }
+    }
+  },
+
+  '/api/v1/fiscal/invoices/{id}': {
+    get: {
+      tags: ['Fiscal'],
+      summary: 'Read one invoice, with its lines and tax breakdown',
+      operationId: 'getFiscalInvoice',
+      description: [
+        'Never gated by plan, for the reason on the list endpoint.',
+        '',
+        '`taxes` is separate from `lines` and is not derived from them: it is what the document',
+        'declares. An AGGREGATE invoice has one line and still separates the 16% from the exempt',
+        'part.'
+      ].join('\n'),
+      security: staff,
+      parameters: [{ name: 'id', in: 'path', required: true, schema: { type: 'string', format: 'uuid' } }],
+      responses: {
+        200: { description: 'The invoice.', content: { 'application/json': { schema: ref('FiscalInvoice') } } },
+        ...commonErrors,
+        404: response('NotFound')
+      }
+    }
+  },
+
+  '/api/v1/fiscal/requests': {
+    get: {
+      tags: ['Fiscal'],
+      summary: 'The issuing queue',
+      operationId: 'listFiscalRequests',
+      description: [
+        '`?status=UNCERTAIN` is the query that matters: attempts where the provider answered',
+        'something that does not say whether it issued. Oldest first — the opposite of the invoice',
+        'list — because a doubt from yesterday is more urgent than one from a minute ago.',
+        '',
+        'Not gated by plan: this is a read.'
+      ].join('\n'),
+      security: staff,
+      parameters: [
+        { name: 'status', in: 'query', schema: { type: 'string', enum: ['PENDING', 'SENT', 'ISSUED', 'FAILED', 'UNCERTAIN'] } },
+        { name: 'limit', in: 'query', schema: { type: 'integer', minimum: 1, maximum: 100, default: 25 } },
+        { name: 'offset', in: 'query', schema: { type: 'integer', minimum: 0, default: 0 } }
+      ],
+      responses: {
+        200: {
+          description: 'Issuing attempts.',
+          content: {
+            'application/json': {
+              schema: {
+                type: 'object',
+                properties: {
+                  data: { type: 'array', items: ref('FiscalRequest') },
+                  limit: { type: 'integer' },
+                  offset: { type: 'integer' }
+                }
+              }
+            }
+          }
+        },
+        ...commonErrors
+      }
+    }
+  },
+
+  '/api/v1/fiscal/requests/{id}/resolve': {
+    post: {
+      tags: ['Fiscal'],
+      summary: 'Ask the provider what happened to an attempt in doubt',
+      operationId: 'resolveFiscalRequest',
+      'x-required-roles': ['OWNER', 'MANAGER'],
+      description: [
+        'Roles: OWNER, MANAGER.',
+        '',
+        '**This never re-requests issuance.** It asks the provider about the idempotency key. That',
+        'is the only safe action on something that may already have been issued, which is why the',
+        'route is called resolve and not retry — a duplicate invoice cannot be deleted and has',
+        'already been declared.',
+        '',
+        'If the provider says it did issue, the document is recorded from the draft that was',
+        '*sent*, not from a fresh computation: by now other diners have paid and the bill would',
+        'produce a different draft.',
+        '',
+        '`stillUnknown` means the question could not be answered either, and the attempt stays in',
+        'the queue. That is a correct outcome, not a failure.',
+        '',
+        'Gated by plan, because it can end up recording a document.'
+      ].join('\n'),
+      security: staff,
+      parameters: [{ name: 'id', in: 'path', required: true, schema: { type: 'string', format: 'uuid' } }],
+      responses: {
+        200: {
+          description: 'What the provider said.',
+          content: {
+            'application/json': {
+              schema: {
+                type: 'object',
+                properties: {
+                  requestId: { type: 'string', format: 'uuid' },
+                  status: { type: 'string', enum: ['PENDING', 'SENT', 'ISSUED', 'FAILED', 'UNCERTAIN'] },
+                  stillUnknown: { type: 'boolean' },
+                  unchanged: { type: 'boolean', description: 'The attempt was not in doubt, so nothing was asked.' },
+                  invoice: { oneOf: [ref('FiscalInvoice'), { type: 'null' }] }
+                }
+              }
+            }
+          }
+        },
         ...commonErrors,
         403: response('Forbidden'),
         404: response('NotFound')
@@ -4790,6 +5211,59 @@ const paths = {
     }
   },
 
+  '/api/v1/account/contacts': {
+    get: {
+      tags: ['Account'],
+      summary: 'Diners who asked to hear from the restaurant',
+      operationId: 'listGuestContacts',
+      'x-required-roles': ['OWNER', 'MANAGER'],
+      description: [
+        'Roles: OWNER, MANAGER.',
+        '',
+        'Not "everyone who has paid here": only the diners who ticked an empty box saying yes, and',
+        'have not withdrawn since. That difference is the whole product — a list of people who',
+        'agreed is worth something, and a list of people who merely wanted their invoice is a',
+        'problem waiting.',
+        '',
+        'There is deliberately no parameter for "all the addresses". It would exist to be used, and',
+        'the only thing to do with the others is send them something they did not ask for.'
+      ].join('\n'),
+      security: staff,
+      parameters: [
+        { name: 'limit', in: 'query', schema: { type: 'integer', minimum: 1, maximum: 200, default: 100 } },
+        { name: 'offset', in: 'query', schema: { type: 'integer', minimum: 0, default: 0 } }
+      ],
+      responses: {
+        200: {
+          description: 'Consented contacts, newest first.',
+          content: {
+            'application/json': {
+              schema: {
+                type: 'object',
+                properties: {
+                  data: {
+                    type: 'array',
+                    items: {
+                      type: 'object',
+                      properties: {
+                        id: { type: 'string', format: 'uuid' },
+                        email: { type: 'string' },
+                        name: { type: ['string', 'null'] },
+                        consentAt: { type: ['string', 'null'], format: 'date-time' }
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          }
+        },
+        ...commonErrors,
+        403: response('Forbidden')
+      }
+    }
+  },
+
   '/api/v1/account/banks': {
     get: {
       tags: ['Account'],
@@ -4973,18 +5447,24 @@ const paths = {
     },
     patch: {
       tags: ['Account'],
-      summary: "Rename the restaurant",
+      summary: 'Update the restaurant',
       operationId: 'updateAccount',
       'x-required-roles': ['OWNER', 'MANAGER'],
       description: [
-        'Roles: OWNER, MANAGER.',
+        'Roles: OWNER, MANAGER. Partial update; at least one field is required. Omitting a field',
+        'leaves it as it is — in particular, changing the invoicing policy does not require',
+        'resending the name, which is how a restaurant gets renamed by accident.',
         '',
-        'The name a diner reads on their phone the moment they scan the code on the table, above',
-        'the table number. It could previously only be set during onboarding, which left whatever',
-        'was typed that day in front of every customer with no way to correct it.',
+        '`name` is what a diner reads on their phone the moment they scan the code on the table,',
+        'above the table number. It could previously only be set during onboarding, which left',
+        'whatever was typed that day in front of every customer with no way to correct it.',
         '',
-        'Nothing else in the record is touched here — menu currency, charges and the payee each',
-        'have their own endpoint, because each is a different decision with a different reach.'
+        '`fiscalInvoicePolicy` is **OWNER only**, and answers with 403 `FORBIDDEN_ROLE` for a',
+        'MANAGER. It is not profile editing: it decides how the restaurant declares, so it sits',
+        'with the money decisions and is audited separately as `FISCAL_POLICY_CHANGED`.',
+        '',
+        'Menu currency, charges and the payee each still have their own endpoint, because each is',
+        'a different decision with a different reach.'
       ].join('\n'),
       security: staff,
       requestBody: { required: true, content: { 'application/json': { schema: ref('UpdateAccountRequest') } } },

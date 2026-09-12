@@ -167,6 +167,7 @@ these do not** — they mean stop offering the feature on this server.
 | **Second factor** | `MFA_SECRET_KEYS` | 503 `MFA_KEY_MISSING` on enrolment. Existing accounts keep signing in on passwords | `GET /api/v1/auth/mfa` |
 | **Self-service registration** | `ONBOARDING_ENABLED=true`, plus everything the boot guard above then demands | 503 `ONBOARDING_NOT_CONFIGURED`. The router is not mounted at all — a stub answers, so no lead is recorded and no mail is sent | The code itself. It answered a bare 404 until a frontend, unable to tell that from a mistyped path, rendered an invented support address to a restaurant mid-application |
 | **Store bank credentials** | `PAYMENT_CREDENTIALS_KEYS` | 503 `PAYMENT_CREDENTIALS_KEY_MISSING` | — |
+| **Issue fiscal invoices** | `FISCAL_PROVIDER`, naming an authorised imprenta digital with an adapter. `FISCAL_MOCK_ENABLED=true` registers the mock instead, and **the boot guard refuses it in production** — its documents carry invented `MOCK-` numbers | 503 `FISCAL_PROVIDER_NOT_CONFIGURED` | `plan.capabilities.fiscalInvoicing` on `GET /api/v1/account`, which answers the separate question of whether the plan includes it |
 | **Charge through Mercantil C2P** | `MERCANTIL_C2P_URL`, **and** credentials stored per restaurant, **and** those credentials proven by a real call | 503 `PAYMENT_PROVIDER_MISCONFIGURED` | `chargeable` on `GET /api/v1/account/banks` |
 | **Self-service signup** | `ONBOARDING_ENABLED=true` and a mail provider | The routes are **not mounted at all** — 404, not 503 | — |
 | **Foreign-currency menus** | `FX_ENABLED` (on by default) and a reachable BCV | 503 `FX_UNAVAILABLE`, but only after the stored-rate fallback is exhausted | `GET /api/v1/exchange-rate` |
@@ -793,6 +794,47 @@ A restaurant is created with IVA at 1600 bps and servicio at 1000 bps. Migration
 restaurant's open bills; one created today has no such history. Both are
 changeable through `PATCH /api/v1/menu/settings/charges`.
 
+### What a plan includes, and what actually refuses
+
+`restaurants.plan_tier` has existed since migration 012 and for a long time
+nothing read it. `src/services/entitlements.js` is where it now means
+something, and it keeps two sets apart on purpose:
+
+**`INCLUDED`** is what each tier is sold as including. `GET /api/v1/account`
+publishes it as `plan.capabilities`, one boolean per capability, so a client
+asks before it acts instead of offering a button that answers 403 — and so the
+pricing table is not maintained a second time on the frontend.
+
+**`ENFORCED`** is the much shorter list the API actually refuses without. Today
+it holds one entry: `fiscalInvoicing`.
+
+Those differ because every other capability in the table already shipped and is
+already in use by restaurants on whatever tier they happen to sit on. Switching
+on enforcement for those has a dining room attached: a TRIAL restaurant taking
+C2P payments tonight would start getting refusals mid-service. That is the same
+reasoning the trial row above states — the decision is a pricing one, made
+deliberately and with notice, not a side effect of wiring up a permission
+layer. `test/entitlements.test.js` asserts the exact contents of `ENFORCED`, so
+growing it is a visible act rather than a quiet one.
+
+Refusals are `403 PLAN_UPGRADE_REQUIRED`, and carry `details.requiredTiers` so
+a client is not left guessing which upgrade is the one that helps. 403 rather
+than 402: the request is refused on what was bought, and nothing about it
+becomes payable by retrying.
+
+`requirePlan(capability)` in `src/middleware/plan.js` reads the tier from the
+row on each gated request rather than from the access token. A token lives
+fifteen minutes and this gate stands in front of issuing fiscal documents: a
+restaurant that upgrades should be able to invoice now, and one whose plan
+ended should stop now. An unknown capability name throws when the route is
+mounted rather than when the first request arrives, so a typo stops the process
+instead of silently refusing everyone and looking like a pricing rule.
+
+**Gate the writes, never the reads.** A downgrade stops a restaurant issuing
+new fiscal documents; the legal duty to keep the ones it already issued
+outlives the subscription. An invoice that becomes unreadable because an
+invoice went unpaid is a problem Splite would have created.
+
 Mail goes through `src/services/mailer.js`, a port with two adapters. `log`
 writes the message and its link to the logger and sends nothing; it is refused
 in production once onboarding is on. `resend` posts to api.resend.com over
@@ -958,6 +1000,13 @@ A line's price is **snapshotted when it is added** and never read from the menu
 again, so re-pricing, renaming or deactivating a product cannot change a bill
 that has already been served. `product_id` is kept for reporting and is
 nullable: the line outlives the product.
+
+Its **tax** is snapshotted the same way and for the same reason. `tax_category`
+and `vat_bps` are copied onto the line at the moment it is added — see
+[Charges](#charges-iva-and-servicio) — so declaring a dish exempt tomorrow does
+not move the IVA on a dinner served tonight. A bill open across such a change
+ends up with lines at different rates, each taxed as it was sold, which is the
+correct answer rather than an awkward one.
 
 `subtotal_minor` is `GENERATED ALWAYS AS (unit_price_minor * quantity) STORED`
 — the database computes it or nothing does. A subtotal the application keeps in
@@ -1322,10 +1371,31 @@ is: changing a restaurant's rates must never reprice a meal already eaten.
 
 ```
   subtotal          sum of the line items
-+ IVA               vat_bps x subtotal
++ IVA               sum over tax rates of (rate x that rate's base)
 + service charge    service_charge_bps x subtotal, NOT taxed
 = total
 ```
+
+**IVA is calculated per rate, not per bill.** Each line freezes its own
+`tax_category` and `vat_bps` when it is added, exactly as it freezes the price.
+Recalculation groups the lines by frozen rate, applies each rate once to its
+own base, and sums the groups.
+
+Where every line is taxed alike — which is every bill opened before migration
+038, and most bills after it — there is a single group whose base is the whole
+subtotal, so the arithmetic is identical to the old `vat_bps x subtotal`. That
+equality is not an assumption: `test/integration/billItemTax` asserts the
+totals against arithmetic written out by hand, so a regression in the engine
+cannot validate itself.
+
+Grouping by rate rather than by line also keeps the total independent of how
+many rows the same food was split across: one rounding per rate, not one per
+renglón.
+
+`bills.vat_bps` survives as the restaurant's **general** rate — the default a
+new line inherits. It is no longer the rate every line paid, so a client must
+not recompute `vatMinor` from it; the per-line `taxCategory` and `vatBps` say
+what was actually applied.
 
 **IVA is not charged on the servicio.** Both are taken on the subtotal
 independently and summed; the service charge never enters the taxable base.
@@ -1341,9 +1411,330 @@ Both rates default to **zero**, including for Venezuela's statutory 16%: a
 restaurant is configured deliberately, and a migration must never silently move
 an existing total.
 
+### What a product is, for tax
+
+`menu_products.tax_category` is one of four values, not a `has_vat` boolean:
+
+| | |
+|---|---|
+| `TAXABLE` | taxed at the applicable rate |
+| `EXEMPT` | exempt by the VAT law itself |
+| `EXONERATED` | exonerated by an executive act, which has an end date |
+| `NON_TAXABLE` | not subject: outside the scope of the tax |
+
+The last three all produce zero IVA on the bill, and they are **not** the same
+thing — a sales ledger declares them separately. Collapsing them into "no IVA"
+throws the distinction away at exactly the moment somebody asks for it.
+
+`menu_products.vat_bps` is the product's own rate, and is **null** for almost
+everything, meaning "the restaurant's general rate". Null rather than a copy of
+today's number: a column full of duplicates of the same rate goes out of sync
+the first time anyone changes it. Only a `TAXABLE` product may carry one, which
+a `CHECK` enforces and the API refuses before the database has to.
+
+On `bill_items` the same pair is stored **resolved** — `vat_bps` there is never
+null — because the restaurant can change its general rate tomorrow and a meal
+served tonight cannot follow it.
+
+Migration 038 backfilled every existing line with its own bill's `vat_bps` and
+left every category at `TAXABLE`, which is what they were: until that migration
+there was no way for the menu to say anything else. **No stored total moved.**
+
+This much is needed whatever happens with fiscal invoicing, and is the reason
+it went in first: a máquina fiscal also has to know the tax category of every
+renglón. It is the one part of the tax layer that does not depend on which
+providencia turns out to apply.
+
 A voluntary tip is deliberately not modelled here. It is untaxed and chosen by
 the payer rather than the restaurant, so it belongs with the payment — see
 [Tips](#tips).
+
+## Fiscal invoicing (architecture, not conformance)
+
+**Read this first.** Nothing here makes Splite SENIAT-conforming by having been
+written. No document number and no control number is ever generated by this
+code — both come from an authorised *imprenta digital*, and inventing either
+would be forgery. Until a real authorised provider is connected and the setup
+validated by an accountant, this is **prepared architecture** and has to be
+called that.
+
+The regulatory reading it is built on, which a Venezuelan tax lawyer should
+confirm in writing: Providencia SNAT/2024/000102 governs digital invoicing and
+ties sales *at the premises* to the fiscal printer, while SNAT/2026/00084 (12
+August 2026) repealed the software homologation regime of SNAT/2024/000121. The
+build assumes a diner ordering and paying from their own phone is a sale **by
+electronic means**. That calling is each restaurant's, not Splite's, which is
+why invoicing is a capability switched on per restaurant rather than something
+imposed on every tenant.
+
+### The hard part is the remainder, not the document
+
+Several invoices are issued against one table — one per diner who pays — and
+between them they must declare the bill **exactly**: not one céntimo of taxable
+base over or under, and the same per rate. A bolívar of excess base across the
+table's invoices is not a rounding artefact, it is a false declaration.
+
+What makes that awkward here is the split model Splite already has: each diner
+pays a **free amount against what is left**. How many there will be, and how
+much each will put in, is unknown until they do it, so there are no weights to
+divide by up front — which is how most systems solve this.
+
+`src/services/fiscalAllocation.js` answers in the shape the product already
+has: **sequential, against the remainder**. The bill carries one bucket per
+declarable component — one per rate, plus the service charge — and each payment
+takes a slice of every bucket. The last payment takes exactly what is left.
+Exactness is structural rather than checked afterwards, the same decision that
+already governs `splitEngine`.
+
+Dividing by percentage instead is what loses the céntimo: three diners at 33.3%
+do not sum to 100%, and the shortfall lands in the declaration. Against the
+remainder the error is consumed rather than accumulated.
+
+**The rounding that does remain, stated plainly.** Inside a rate group the
+slice is split into base and IVA by the same largest-remainder division, so the
+sum of bases and the sum of IVA are both exact — which is what gets declared —
+but a *single* invoice's IVA can sit one céntimo off applying the rate to its
+own base. That is unavoidable once an amount chosen by the payer has to become
+two whole numbers, and `test/fiscalAllocation.test.js` pins the bound at one
+céntimo rather than leaving it to drift. What is never compromised is the
+total: each invoice is worth exactly what that person paid.
+
+When what each diner ate *is* known — the "Lo mío" mode — nothing is prorated
+and the lines are computed from theirs.
+
+### Which lines a diner's invoice carries
+
+The rule is a product one: **if we know what this person ate, that is what gets
+invoiced; if we do not, it is prorated.** Only one split mode records who
+claimed what — splitting by product — and even then only when that person pays
+exactly their share. Every other case, nobody knows what of the table was
+theirs, and saying otherwise on a tax document would be inventing it.
+
+| | |
+|---|---|
+| `ITEMISED` | Split by product, and the payment matches what was claimed. Real dish lines. |
+| `PRORATED` | The bill's lines, scaled by what was paid. |
+| `AGGREGATE` | One line: "Consumo — parte de la cuenta de la mesa N". |
+
+`ITEMISED` asks for two things at once and both matter. That the split is by
+product, because it is the only mode that records claims. And that the amount
+paid *is* their share: somebody who claimed 400 and put in 250 has not bought
+their dishes, and issuing the dish lines would declare 400 against a 250
+receipt. Splitting equally is prorated among the payers, because equal shares
+say nothing about who ate what.
+
+The basis is stored on the document itself, so in two years it is readable
+rather than deducible.
+
+**Amounts do not come from the lines.** They come from the allocation engine,
+which is what guarantees the table's invoices sum exactly. The lines are built
+afterwards by spreading what the engine already assigned across the lines of
+each rate group. That is backwards from the obvious way — sum the lines, then
+compute the IVA — and deliberately so: summing independently rounded lines is
+precisely where the céntimo goes that turns a split into a false declaration.
+
+A prorated line carries a fractional quantity in thousandths — 0.338 of a
+burger. It is ugly, and it is what prorating means. Rounding the quantity to 1
+would misstate the amount, which is the one thing that cannot move; if the
+ugliness is unacceptable on paper, the answer is `AGGREGATE`, not a rounded
+quantity.
+
+### Per diner, or per table
+
+Both are legitimate, so it is a restaurant setting
+(`restaurants.fiscal_invoice_policy`) rather than a rule:
+
+- **`PER_DINER`** (default) — one fiscal invoice per diner who pays. This is
+  what somebody claiming their own dinner as an expense needs, and it is the
+  case that motivated the work.
+- **`SINGLE_BILL`** — one fiscal invoice for the whole bill. Diners still get
+  their breakdown, derived from that one document, but those breakdowns are not
+  fiscal documents. Firmer regulatory ground — one sale, one invoice — and the
+  right answer for a restaurant that does not want to issue N documents a
+  table.
+
+A partial unique index enforces the second: a bill may hold only one
+bill-level invoice request, so the same sale cannot be declared twice. Credit
+notes are excluded from it, since correcting that invoice is exactly what has
+to remain possible.
+
+Changing the policy is `OWNER` only and audited as `FISCAL_POLICY_CHANGED`. It
+is not profile editing — it decides how the restaurant declares — so it sits
+with the money decisions. `name` stopped being required on `PATCH
+/api/v1/account` when that body grew past the name: requiring it would mean
+resending it to change anything else, which is how a restaurant gets renamed by
+accident in front of every diner who scans the QR.
+
+### Why the document and the attempt are different tables
+
+A fiscal invoice does not have states: it exists or it does not. What has
+states, retries and ambiguous provider responses is the *request*. Keeping them
+in one table would mean allowing `UPDATE` on a legal record in order to move a
+progress field.
+
+So `fiscal_invoice_requests` is mutable and carries the state machine —
+including `UNCERTAIN`, the response that matters most, where the provider
+answered something that does not say whether it issued. Against that the rule
+is to **ask, never blindly retry**: a duplicate invoice is the restaurant's tax
+problem, not an application error, and it cannot be deleted afterwards because
+`fiscal_invoices` refuses `DELETE`.
+
+That refusal is a database trigger, not a convention — it rejects `UPDATE` and
+`DELETE` on the invoice, its lines and its tax breakdown, so it also rejects the
+hand-written statement from a console at eleven at night. An issued invoice is
+not corrected; it is compensated by a credit note. Credit and debit notes are
+admitted by the schema from day one for exactly that reason: adding them later
+would mean altering tables that by then are a taxpayer's legal records.
+
+A unique index makes a second request against the same payment impossible, so
+two taps or a retry racing a response cannot produce two documents. Failed
+attempts are excluded from it — an attempt that died without issuing anything
+must be retryable.
+
+### Talking to the imprenta digital
+
+In Venezuela the control number on an invoice is assigned by an **authorised**
+imprenta digital, not by the system requesting it. That is not an integration
+detail — it is why `src/fiscal/providers` generates no numbers. Splite assembles
+the document's content; an imprenta turns it into a fiscal document.
+
+The interface is two methods, and the second is what makes the first safe:
+
+- `issue(draft)` — asks for issuance. Returns the numbers **the provider
+  assigns**, or says it does not know whether it issued.
+- `lookup(key)` — asks about an idempotency key: "did you issue this?"
+
+Every attempt lands on one of three outcomes, not two. `ISSUED` and `REJECTED`
+are facts. **`UNCERTAIN` is the absence of an answer**, and collapsing it either
+way is the expensive mistake: treat it as rejected and a retry declares the sale
+twice; treat it as issued and you store a legal record with numbers that may not
+exist. So the rule is **ask, never blindly retry** — and if the question cannot
+be asked either, the case waits in a queue a person looks at. Leaving something
+pending is a legitimate outcome here; inventing which way it went is not.
+
+The edge is deliberately distrustful of its own adapters. An unexpected
+exception, an unknown outcome value, or an `ISSUED` with no control number all
+become `UNCERTAIN` rather than a rejection — an adapter that answered badly may
+still have issued. An unknown provider name throws instead of falling back to
+anything.
+
+`test/fiscalProvider.test.js` drives all of it against a mock whose main job is
+to **fail well** — in particular `SILENT_SUCCESS`, which issues and then throws
+a timeout. That is the case that sinks a fiscal integration, and the one you
+cannot provoke on demand against a real service.
+
+**The mock issues documents with invented numbers**, prefixed `MOCK-` so they
+cannot be mistaken for real ones on a screen or in a query. It is enabled by its
+own flag (`FISCAL_MOCK_ENABLED`) rather than by naming it in `FISCAL_PROVIDER`,
+so switching it on is a deliberate, legible act and not a typo in a real
+provider's name. `assertProductionConfig` refuses to boot with it set: one of
+those documents handed to a diner as an invoice is a tax problem with a penalty
+attached, caused by an environment variable.
+
+### The draft is stored before the call
+
+`fiscal_invoice_requests.draft_json` holds what was sent, because of the
+ambiguous case. When the answer arrives later — minutes or hours later, from
+that queue — the bill has moved on: other diners have paid, other invoices have
+been issued, and what remains to declare is no longer what it was. Rebuilding
+the draft then would produce a *different* document, and the one the provider
+issued is the first. So the sent draft is recorded, not today's recomputation.
+`test/integration/fiscalInvoicing` asserts exactly that, by letting a second
+diner invoice in between.
+
+The provider call happens outside the transaction that created the request. A
+network call inside one holds a locked row open for as long as the far end takes
+to answer — or not to answer.
+
+### Reads are never gated
+
+Issuing is an `ENTERPRISE` capability (see the plan table above). Reading an
+already-issued invoice is gated by nothing at all, ever. The duty to keep them
+outlives the subscription, and an invoice that became unreadable because an
+invoice went unpaid would be a problem Splite created.
+
+So `requirePlan` appears on `POST /api/v1/fiscal/requests/{id}/resolve` — which
+can end up recording a document — and on nothing else in
+`src/routes/fiscal.js`. `test/integration/fiscalRoutes` drops a restaurant to
+`TRIAL` *after* it has issued and asserts that the list, the document and the
+queue all still answer 200.
+
+### The email, and the two things it is for
+
+The address is asked for with a concrete reason — so the invoice can arrive —
+and the restaurant would also like to send promotions. **Those are two
+purposes.** Somebody who typed their email so a document would reach them has
+not, by doing that, agreed to receive advertising. Putting both behind one
+"yes" is precisely what gets challenged later.
+
+So `guest_contacts` keeps them as two columns. `invoice_opt_in` is why the row
+exists. `marketing_consent` defaults to **false** and reaches true only when
+someone ticks a box that was empty — there is no default on the field, and it is
+never inferred from the address being present.
+
+A boolean on its own would be worthless in a complaint, so consent carries
+`consent_at` and `consent_source`: what has to be shown is *when* it was given
+and *from which screen*, not that a flag is set.
+
+Three behaviours follow, and none is a detail:
+
+- **Leaving the address again does not reactivate a withdrawal.** Somebody who
+  unsubscribed, dines again months later and asks for their invoice stays
+  unsubscribed — they have not said yes a second time. A `CASE` in the upsert
+  enforces it and `test/integration/guestContacts` asserts it; removing that
+  branch fails exactly that test.
+- **A withdrawal keeps the row.** Deleting it would destroy the evidence that
+  consent once existed, which is the thing to produce if someone complains about
+  a message they say they never asked for — and would let the same address walk
+  back into the list without anybody agreeing again.
+- **The contact belongs to the restaurant, not to Splite.** The unique key is
+  `(restaurant_id, lower(email))`, so the same person can want to hear from one
+  place and not another. Merging them across tenants would use the data for
+  something nobody authorised.
+
+`GET /api/v1/account/contacts` returns only the diners who said yes and have
+not withdrawn. There is deliberately **no parameter for "all the addresses"**:
+it would exist to be used, and the only thing to do with the rest is send them
+something they did not ask for.
+
+### The name, and why it is not a step
+
+`bill_split_participants.name` has been accepted by the split API since it
+existed; the guest screen simply never offered a field. It does now — one
+optional line just before the split is agreed, which is the moment it starts
+being worth anything.
+
+Without it the list reads "Comensal 2" and works fine. The value is for
+everyone *else* at the table: seeing who has already paid without asking out
+loud. That is why it is a line and not a step.
+
+### Asking for one
+
+`POST /api/v1/guest/bill/invoice`, offered after paying, beside the receipt.
+Before payment it would turn a dinner into paperwork.
+
+**Consumidor final is the main path.** Every recipient field is optional and a
+body carrying only `paymentId` is a complete request. Most people do not hand
+over their cédula for a dinner; if the minimal body did not suffice, the
+majority case would be the awkward one. Somebody who does give it usually needs
+it exact — they are claiming an expense — so `taxId` is validated against the
+same cédula/RIF pattern the rest of the API uses rather than accepted as free
+text.
+
+The bill comes from the QR session, so a diner can only invoice a payment on
+their own table. There is no field in which to name another.
+
+The response code carries the distinction that matters: **201 only when a
+document exists.** An attempt that ended `UNCERTAIN` or `FAILED` answers 202
+with `invoice: null`, because saying "created" about a document that may never
+exist is the kind of lie a client then renders to a diner. Every response also
+carries `paymentUnaffected: true` — worth saying out loud, since a failure here
+never means the payment failed. The money is taken and the receipt stands; what
+may be pending is the fiscal document.
+
+For the panel, `GET /api/v1/fiscal/requests?status=UNCERTAIN` is the queue,
+returned **oldest first** — the opposite of the invoice list — because a doubt
+from yesterday is more urgent than one from a minute ago.
 
 ## Where the money goes
 
@@ -2887,7 +3278,7 @@ what gets built, and they are parked deliberately rather than guessed at.
 | --- | --- | --- |
 | ~~**On what domain does Splite send?**~~ **Answered: `splite.lat`.** | Nothing. Onboarding mail sends over `MAIL_TRANSPORT=resend` from a verified domain. | Closed. It was answered earlier than planned because the host forced it: Railway disables outbound SMTP below Pro, so sending through the team's Gmail mailbox — which this table previously recommended — cannot work there at all. See [How the mail actually leaves](#how-the-mail-actually-leaves). No code changed; it was three variables. |
 | **Which card acquirer?** | Card payments entirely, and paying inside the app. | Diners declare Pago Móvil and staff confirm. |
-| **What does a lapsed trial lose?** | Nothing today — `plan_tier` and `trial_ends_at` are reported by `GET /api/v1/account` and enforced nowhere. | Clients can warn. The obvious answer is the wrong one: cutting off bills mid-service strands a dining room full of seated diners over an unpaid invoice. |
+| **What does a lapsed trial lose?** | Still nothing. `plan_tier` now drives a real capability table (`src/services/entitlements.js`), but only `fiscalInvoicing` actually refuses; an expiring trial does not downgrade anything by itself. | Clients can warn, and can read `plan.capabilities` to decide what to offer. The obvious answer is still the wrong one: cutting off bills mid-service strands a dining room full of seated diners over an unpaid invoice. Which of the already-shipped capabilities starts refusing, and with how much notice, is the open part. |
 | **Should a failing RIF check digit be rejected?** | Nothing. The mod-11 result is recorded in `restaurant_signups.rif_checksum_ok` and shown to the reviewer. | Accepted either way. Turning away a real restaurant at the form is worse than storing one malformed tax id, and the column is the evidence for deciding later. Note `J-00000000-0` passes — the checksum catches transcription slips, not invention. |
 
 Two smaller ones, same character:

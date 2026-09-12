@@ -12,6 +12,7 @@ const { logAudit, auditContext } = require('../services/audit');
 const banks = require('../payments/banks');
 const { ApiError } = require('../errors');
 const dto = require('../dto');
+const guestContacts = require('../services/guestContacts');
 
 const router = express.Router();
 router.use(authenticateToken);
@@ -34,7 +35,7 @@ router.get('/', async (req, res, next) => {
     const { rows } = await db.query(
       `SELECT id, name, rif, menu_currency, vat_bps, service_charge_bps,
               payout_bank_code, payout_account_number, payout_phone, payout_holder_id,
-              plan_tier, trial_ends_at, created_at
+              plan_tier, trial_ends_at, fiscal_invoice_policy, created_at
          FROM restaurants
         WHERE id = $1`,
       [req.user.restaurantId]
@@ -64,29 +65,82 @@ router.patch(
   validateBody(restaurantProfileSchema),
   async (req, res, next) => {
     try {
+      // Cambiar a quién se le factura no es editar un perfil: decide cómo
+      // declara el restaurante. Se reserva al dueño, igual que las decisiones
+      // de dinero, y queda auditado aparte para que se pueda responder «quién
+      // cambió esto y cuándo» sin leer un diff de la fila entera.
+      const setsPolicy = req.body.fiscalInvoicePolicy !== undefined;
+      if (setsPolicy && req.user.role !== 'OWNER') {
+        throw new ApiError('FORBIDDEN_ROLE', 'Only an owner can change the invoicing policy',
+          { requiredRoles: ['OWNER'] });
+      }
+
       const { rows } = await db.query(
         `UPDATE restaurants
-            SET name = $2, updated_at = NOW()
+            SET name = COALESCE($2, name),
+                fiscal_invoice_policy = COALESCE($3, fiscal_invoice_policy),
+                updated_at = NOW()
           WHERE id = $1
         RETURNING id, name, rif, menu_currency, vat_bps, service_charge_bps,
                   payout_bank_code, payout_account_number, payout_phone, payout_holder_id,
-                  plan_tier, trial_ends_at, created_at`,
-        [req.user.restaurantId, req.body.name]
+                  plan_tier, trial_ends_at, fiscal_invoice_policy, created_at`,
+        [req.user.restaurantId, req.body.name ?? null, req.body.fiscalInvoicePolicy ?? null]
       );
       if (!rows.length) throw new ApiError('RESTAURANT_NOT_FOUND', 'Restaurant not found');
 
-      await logAudit({
-        ...auditContext(req),
-        action: 'RESTAURANT_RENAMED',
-        resourceType: 'restaurant',
-        resourceId: req.user.restaurantId,
-        details: { name: rows[0].name }
-      });
+      if (req.body.name !== undefined) {
+        await logAudit({
+          ...auditContext(req),
+          action: 'RESTAURANT_RENAMED',
+          resourceType: 'restaurant',
+          resourceId: req.user.restaurantId,
+          details: { name: rows[0].name }
+        });
+      }
+      if (setsPolicy) {
+        await logAudit({
+          ...auditContext(req),
+          action: 'FISCAL_POLICY_CHANGED',
+          resourceType: 'restaurant',
+          resourceId: req.user.restaurantId,
+          details: { policy: rows[0].fiscal_invoice_policy }
+        });
+      }
 
       res.json(dto.account(rows[0]));
     } catch (err) { next(err); }
   }
 );
+
+/**
+ * Los comensales que quisieron saber del restaurante.
+ *
+ * No es «la gente que ha pagado aquí»: es sólo quien marcó una casilla vacía
+ * diciendo que sí, y no se ha dado de baja. La diferencia es el producto
+ * entero -- una lista de gente que aceptó vale para algo, y una lista de gente
+ * que sólo quería su factura es un problema esperando.
+ *
+ * Por eso no hay parámetro para ver «todos los correos». Existiría para ser
+ * usado, y lo único que se puede hacer con los demás correos es mandarles algo
+ * que no pidieron.
+ */
+router.get('/contacts', requireRole('OWNER', 'MANAGER'), async (req, res, next) => {
+  try {
+    const rows = await guestContacts.listConsented({
+      restaurantId: req.user.restaurantId,
+      limit: Number(req.query.limit) > 0 ? Math.min(Number(req.query.limit), 200) : 100,
+      offset: Number(req.query.offset) > 0 ? Number(req.query.offset) : 0
+    });
+    res.json({
+      data: rows.map(row => ({
+        id: row.id,
+        email: row.email,
+        name: row.name ?? null,
+        consentAt: row.consent_at ? new Date(row.consent_at).toISOString() : null
+      }))
+    });
+  } catch (err) { next(err); }
+});
 
 /**
  * The banks a payee can be configured against.
@@ -129,7 +183,7 @@ router.put(
           WHERE id = $1
         RETURNING id, name, rif, menu_currency, vat_bps, service_charge_bps,
                   payout_bank_code, payout_account_number, payout_phone, payout_holder_id,
-                  plan_tier, trial_ends_at, created_at`,
+                  plan_tier, trial_ends_at, fiscal_invoice_policy, created_at`,
         [req.user.restaurantId, bankCode ?? null, accountNumber ?? null,
          normalisedPhone, holderId ?? null]
       );
