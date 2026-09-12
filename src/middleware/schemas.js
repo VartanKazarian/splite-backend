@@ -772,11 +772,24 @@ function validate(schema, property) {
   return (req, res, next) => {
     const { error, value } = schema.validate(req[property], { abortEarly: false, stripUnknown: true, convert: true });
     if (error) {
-      // The per-field list moves into details.fields. It used to be the whole
-      // body -- `{ error: [...] }` -- which is a third shape a client had to
-      // recognise on top of the two others.
+      /*
+       * Dos listas, y la segunda es la que sirve para señalar un campo.
+       *
+       * `fields` son los mensajes de Joi, y un cliente no puede deducir de
+       * ellos a qué campo señalar: salen en tres formas distintas -- `"reference"
+       * length must be...` con el nombre entre comillas, `bankOrigin must be...`
+       * sin ellas, y los mensajes propios como `must be a cédula o RIF`, que
+       * **no nombran el campo en absoluto**. Un formulario que quiera marcar en
+       * rojo la casilla equivocada tiene que adivinar, y con `idOrigin` no hay
+       * nada que adivinar.
+       *
+       * `fieldPaths` sale de `d.path`, que Joi da siempre y no depende de cómo
+       * esté redactado el mensaje. Se añade en vez de sustituir porque `fields`
+       * está publicado y hay clientes enseñándolo tal cual.
+       */
       return next(new ApiError('VALIDATION_FAILED', 'Request validation failed', {
-        fields: error.details.map(d => d.message)
+        fields: error.details.map(d => d.message),
+        fieldPaths: [...new Set(error.details.map(d => d.path.join('.')).filter(Boolean))]
       }));
     }
     if (property === 'body') req[property] = value;
