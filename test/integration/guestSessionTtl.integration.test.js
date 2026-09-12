@@ -108,12 +108,113 @@ describe('guest sessions', { skip }, () => {
     assert.equal(await resolveGuestSession(session.sessionId, session.guestToken), null);
   });
 
-  it('a cached entry cannot outlive the ceiling by more than the idle timeout', async () => {
-    // The one gap the split leaves, stated rather than hidden: a session that
-    // passes its cap while a cache entry is live keeps working until that entry
-    // expires. The idle timeout bounds it, which is why the idle timeout has to
-    // be the shorter of the two.
-    assert.ok(config.guest.sessionTtlSeconds < config.guest.maxSessionAgeSeconds);
+  /*
+   * Aquí vivía una prueba llamada «a cached entry cannot outlive the ceiling by
+   * more than the idle timeout» cuyo cuerpo entero era
+   * `assert.ok(sessionTtlSeconds < maxSessionAgeSeconds)`: comprobaba que 2 < 12
+   * y nada más. No creaba sesión, no tocaba la caché y no llamaba al resolutor,
+   * así que no podía fallar -- y lo que afirmaba su nombre era falso. El
+   * deslizamiento reiniciaba el TTL entero en cada petición, de modo que una
+   * sesión usada cada menos de dos horas nunca perdía su entrada, y el camino
+   * de caché devuelve sin consultar Postgres.
+   *
+   * Las cinco que siguen son las que sí lo demuestran. El reloj se mueve
+   * escribiendo topes en el pasado o en el futuro, no esperando.
+   */
+
+  /** Deja la entrada de caché con el tope que se le diga, sin tocar la fila. */
+  const forgeCap = async (sessionId, absoluteExpiresAt, ttl) => {
+    const key = `guest:session:${sessionId}`;
+    const raw = JSON.parse(await redis.get(key));
+    raw.absoluteExpiresAt = absoluteExpiresAt;
+    await redis.set(key, JSON.stringify(raw), 'EX', ttl);
+  };
+
+  it('A · la sesión sigue viva y el ocio sigue deslizando dentro del tope', async () => {
+    const session = await newSession();
+    const key = `guest:session:${session.sessionId}`;
+    await redis.expire(key, 60);
+    assert.equal(await redis.ttl(key), 60);
+
+    const resolved = await resolveGuestSession(session.sessionId, session.guestToken);
+    assert.equal(resolved.restaurantId, restaurant.id);
+    // Vuelve a subir hacia el ocio completo, porque el tope está lejos.
+    assert.ok(await redis.ttl(key) > 60);
+  });
+
+  it('B · pasado el tope se rechaza, se borra la entrada y no resucita', async () => {
+    const session = await newSession();
+    const key = `guest:session:${session.sessionId}`;
+    // El tope ya pasó, pero la entrada sigue viva: es exactamente el estado que
+    // producía el fallo.
+    await forgeCap(session.sessionId, Date.now() - 1000, 3600);
+
+    assert.equal(await resolveGuestSession(session.sessionId, session.guestToken), null);
+    assert.equal(await redis.get(key), null, 'la entrada tiene que quedar borrada');
+    // Y no vuelve: el siguiente intento cae a Postgres, cuya fila también venció.
+    await db.query(
+      'UPDATE guest_sessions SET expires_at = NOW() - INTERVAL \'1 minute\' WHERE id = $1',
+      [session.sessionId]
+    );
+    assert.equal(await resolveGuestSession(session.sessionId, session.guestToken), null);
+  });
+
+  it('C · deslizar no puede pasarse del tope: 30 minutos, no 2 horas', async () => {
+    const session = await newSession();
+    const key = `guest:session:${session.sessionId}`;
+    const treintaMin = 30 * 60;
+    await forgeCap(session.sessionId, Date.now() + treintaMin * 1000, 3600);
+
+    assert.ok(await resolveGuestSession(session.sessionId, session.guestToken));
+
+    const ttl = await redis.ttl(key);
+    assert.ok(ttl <= treintaMin, `el TTL quedó en ${ttl}, por encima de lo que queda de tope`);
+    assert.ok(ttl > treintaMin - 60, `el TTL quedó en ${ttl}, demasiado corto`);
+    assert.ok(ttl < config.guest.sessionTtlSeconds, 'no puede ser el ocio entero');
+  });
+
+  it('D · la actividad continua no mantiene viva la sesión más allá del tope', async () => {
+    const session = await newSession();
+    const key = `guest:session:${session.sessionId}`;
+    // Doce peticiones seguidas, como un comensal que usa el teléfono toda la
+    // noche. El tope se acerca a cada vuelta y el TTL tiene que seguirlo hacia
+    // abajo, no rebotar al ocio completo.
+    let anterior = Infinity;
+    for (let i = 10; i >= 1; i--) {
+      await forgeCap(session.sessionId, Date.now() + i * 60 * 1000, 3600);
+      assert.ok(await resolveGuestSession(session.sessionId, session.guestToken),
+        `la vuelta ${i} debería seguir siendo válida`);
+      const ttl = await redis.ttl(key);
+      assert.ok(ttl <= i * 60, `vuelta ${i}: TTL ${ttl} por encima del tope restante`);
+      assert.ok(ttl < anterior, 'el TTL tiene que ir bajando, no rebotar');
+      anterior = ttl;
+    }
+    // Y la vuelta de después del tope ya no pasa, por muy seguida que venga.
+    await forgeCap(session.sessionId, Date.now() - 1, 3600);
+    assert.equal(await resolveGuestSession(session.sessionId, session.guestToken), null);
+  });
+
+  it('E · el tope se aplica en el camino de caché, sin consultar Postgres', async () => {
+    const session = await newSession();
+    await forgeCap(session.sessionId, Date.now() - 1000, 3600);
+
+    // La prueba de fondo: si el rechazo dependiera de la fila, bastaría con
+    // dejar la fila sana para que la sesión siguiera pasando. Se deja sana **y
+    // se cuentan las consultas**: tienen que ser cero.
+    await db.query(
+      'UPDATE guest_sessions SET expires_at = NOW() + INTERVAL \'6 hours\' WHERE id = $1',
+      [session.sessionId]
+    );
+    const real = db.query;
+    let consultas = 0;
+    db.query = (...args) => { consultas++; return real.apply(db, args); };
+    try {
+      assert.equal(await resolveGuestSession(session.sessionId, session.guestToken), null,
+        'el tope de la entrada manda aunque la fila diga que queda vida');
+    } finally {
+      db.query = real;
+    }
+    assert.equal(consultas, 0, 'el camino de caché no debe consultar Postgres');
   });
 
   it('stays revoked when the cache is flushed', async () => {

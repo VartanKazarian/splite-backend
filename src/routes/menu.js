@@ -39,9 +39,37 @@ const multer = require('multer');
  * persisting -- the extracted text is the product, the image is packaging --
  * and a file never written cannot be leaked or forgotten about.
  */
+/**
+ * Lo que un envío multipart puede traer, además del tamaño del fichero.
+ *
+ * Los cuatro puntos de subida ya acotaban `fileSize` y `files`, que es lo que
+ * evita que alguien mande un gigabyte o veinte ficheros. Lo que no acotaban es
+ * **todo lo demás del sobre**: sin `fields`, `parts` y `fieldNestingDepth`, un
+ * cliente puede mandar un fichero diminuto acompañado de cien mil campos, o de
+ * nombres anidados como `a[b][c][d]...`, y el analizador los recorre antes de
+ * que ninguna validación nuestra llegue a ejecutarse.
+ *
+ * Ninguno de estos cuatro endpoints recibe campos anidados: son un fichero y,
+ * como mucho, un par de campos planos al lado. Los valores son los de eso con
+ * holgura, no los del máximo imaginable.
+ */
+const MULTIPART_LIMITS = Object.freeze({
+  files: 1,
+  // Campos de texto junto al fichero. El frontend manda cero o uno.
+  fields: 8,
+  // Ficheros + campos. Con tope propio para que ni sumándolos se dispare.
+  parts: 12,
+  // `a[b][c]` son tres niveles. Aquí no se usa ninguno; cinco es holgura.
+  fieldNestingDepth: 5,
+  // Un nombre de campo largo no dice nada bueno.
+  fieldNameSize: 100,
+  // Un valor de campo de texto. Nada de lo que mandamos se acerca.
+  fieldSize: 8 * 1024
+});
+
 const upload = multer({
   storage: multer.memoryStorage(),
-  limits: { fileSize: config.menuOcr.maxUploadBytes, files: 1 }
+  limits: { ...MULTIPART_LIMITS, fileSize: config.menuOcr.maxUploadBytes }
 });
 
 /**
@@ -53,7 +81,7 @@ const upload = multer({
  */
 const pdfUpload = multer({
   storage: multer.memoryStorage(),
-  limits: { fileSize: config.menuPdf.maxUploadBytes, files: 1 }
+  limits: { ...MULTIPART_LIMITS, fileSize: config.menuPdf.maxUploadBytes }
 });
 
 /**
@@ -63,13 +91,13 @@ const pdfUpload = multer({
  */
 const imageUpload = multer({
   storage: multer.memoryStorage(),
-  limits: { fileSize: config.productImage.maxUploadBytes, files: 1 }
+  limits: { ...MULTIPART_LIMITS, fileSize: config.productImage.maxUploadBytes }
 });
 
 /** The cover and the logo. A little more headroom than a dish photo. */
 const brandingUpload = multer({
   storage: multer.memoryStorage(),
-  limits: { fileSize: config.branding.maxUploadBytes, files: 1 }
+  limits: { ...MULTIPART_LIMITS, fileSize: config.branding.maxUploadBytes }
 });
 
 /**

@@ -62,9 +62,32 @@ async function createGuestSession({ restaurantId, tableId, ip = null, userAgent 
     [sessionId, restaurantId, tableId, tokenHash, maxAge, agent, ip || null]
   );
 
-  await cache(sessionId, { restaurantId, tableId, tokenHash }, ttl);
+  // El tope absoluto viaja **en la entrada de caché**, no sólo en la fila.
+  // Sin él, el camino caliente no tiene forma de saber que ya venció: devuelve
+  // la sesión sin consultar Postgres jamás.
+  const absoluteExpiresAt = Date.now() + maxAge * 1000;
+  await cache(sessionId, { restaurantId, tableId, tokenHash, absoluteExpiresAt },
+    cappedTtl(absoluteExpiresAt));
 
   return { sessionId, guestToken, restaurantId, tableId, expiresIn: ttl };
+}
+
+/**
+ * Cuántos segundos puede vivir la entrada: lo que quede de ocio, o lo que quede
+ * hasta el tope, lo que antes se acabe.
+ *
+ * Éste es el arreglo. El TTL de ocio se reiniciaba entero en cada petición, así
+ * que una sesión usada cada menos de dos horas **nunca** perdía su entrada de
+ * caché -- y como el camino de caché devuelve sin tocar Postgres, el tope de
+ * doce horas no llegaba a consultarse nunca. Un teléfono con la pestaña abierta
+ * conservaba una credencial válida indefinidamente.
+ *
+ * Devuelve 0 si el tope ya pasó, que quien llama trata como vencida.
+ */
+function cappedTtl(absoluteExpiresAt) {
+  const left = Math.floor((absoluteExpiresAt - Date.now()) / 1000);
+  if (left <= 0) return 0;
+  return Math.min(config.guest.sessionTtlSeconds, left);
 }
 
 /**
@@ -103,16 +126,36 @@ async function resolveGuestSession(sessionId, guestToken) {
 
   if (cached) {
     if (!safeEqual(cached.tokenHash, presented)) return null;
-    // The cap is enforced in Postgres, and a cached entry cannot outlive it:
-    // the cache TTL is the idle timeout, which is shorter, and the row is
-    // re-read the moment the cache misses.
-    await slide(sessionId);
-    return { sessionId, restaurantId: cached.restaurantId, tableId: cached.tableId };
+
+    /*
+     * El tope, aquí, sin preguntar a Postgres.
+     *
+     * Antes esto decía que el tope «se aplica en Postgres y una entrada de
+     * caché no puede sobrevivirle». Era falso: el deslizamiento reiniciaba el
+     * TTL en cada petición, así que con actividad continua la entrada no
+     * caducaba nunca y la fila -- que es quien guarda el tope -- no se leía
+     * nunca. El razonamiento correcto es que la caché tiene que llevar el tope
+     * consigo, porque es la única que participa en el camino caliente.
+     */
+    if (typeof cached.absoluteExpiresAt !== 'number') {
+      // Entrada de una versión anterior, sin tope. No se le concede el camino
+      // rápido: cae a Postgres, que sí sabe cuándo muere. Se descarta para que
+      // la siguiente petición la reescriba ya con su tope.
+      await dropCache(sessionId);
+    } else if (cached.absoluteExpiresAt <= Date.now()) {
+      await dropCache(sessionId);
+      logger.info({ event: 'GUEST_SESSION_MAX_AGE_REACHED', sessionId },
+        'Guest session hit its absolute ceiling and was dropped from cache');
+      return null;
+    } else {
+      await slide(sessionId, cached.absoluteExpiresAt);
+      return { sessionId, restaurantId: cached.restaurantId, tableId: cached.tableId };
+    }
   }
 
   // Cache miss, cache flush, or Redis down. The row is the answer.
   const { rows } = await db.query(
-    `SELECT id, restaurant_id, table_id, token_hash
+    `SELECT id, restaurant_id, table_id, token_hash, expires_at
        FROM guest_sessions
       WHERE id = $1
         AND revoked_at IS NULL
@@ -123,14 +166,21 @@ async function resolveGuestSession(sessionId, guestToken) {
   if (!row) return null;
   if (!safeEqual(row.token_hash, presented)) return null;
 
+  // El tope sale de la fila, que es quien lo guarda, y se mete en la entrada
+  // para que el camino caliente no tenga que volver a preguntarlo.
+  const absoluteExpiresAt = new Date(row.expires_at).getTime();
+  const ttl = cappedTtl(absoluteExpiresAt);
+  if (ttl <= 0) return null;
+
   const session = {
     restaurantId: row.restaurant_id,
     tableId: row.table_id,
-    tokenHash: row.token_hash
+    tokenHash: row.token_hash,
+    absoluteExpiresAt
   };
   // Warm the cache so the outage costs one query per session rather than one
   // per request.
-  await cache(sessionId, session, config.guest.sessionTtlSeconds);
+  await cache(sessionId, session, ttl);
 
   return { sessionId, restaurantId: row.restaurant_id, tableId: row.table_id };
 }
@@ -159,10 +209,17 @@ async function readCache(sessionId) {
  * pushed back would turn a housekeeping problem into an outage, and the session
  * is still valid for whatever time it had left.
  */
-async function slide(sessionId) {
+async function slide(sessionId, absoluteExpiresAt) {
   try {
-    await redis.expire(`${KEY_PREFIX}${sessionId}`, config.guest.sessionTtlSeconds);
+    await redis.expire(`${KEY_PREFIX}${sessionId}`, cappedTtl(absoluteExpiresAt));
   } catch { /* keeps its remaining life */ }
+}
+
+/** Quita la entrada sin tocar la fila. La fila ya dice la verdad. */
+async function dropCache(sessionId) {
+  try {
+    await redis.del(`${KEY_PREFIX}${sessionId}`);
+  } catch { /* la entrada caduca sola por su TTL acotado */ }
 }
 
 /**
