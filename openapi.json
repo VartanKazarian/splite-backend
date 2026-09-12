@@ -2976,6 +2976,10 @@
       },
       "Readiness": {
         "type": "object",
+        "description": "El código de estado es la respuesta: 200 listo, 503 no listo o drenando.\n\n`postgres` y `redis` sólo aparecen cuando `HEALTH_DETAIL` está activo, que por\ndefecto es en desarrollo y no en producción. El endpoint no pide credenciales y\nel dominio es público: decir qué dependencia se cayó es contarle a cualquiera qué\nse rompió y cuándo reintentar. Un consumidor debe mirar el código, no el cuerpo.",
+        "required": [
+          "status"
+        ],
         "properties": {
           "status": {
             "type": "string",

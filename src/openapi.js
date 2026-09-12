@@ -1235,6 +1235,15 @@ const schemas = {
 
   Readiness: {
     type: 'object',
+    description: [
+      'El código de estado es la respuesta: 200 listo, 503 no listo o drenando.',
+      '',
+      '`postgres` y `redis` sólo aparecen cuando `HEALTH_DETAIL` está activo, que por',
+      'defecto es en desarrollo y no en producción. El endpoint no pide credenciales y',
+      'el dominio es público: decir qué dependencia se cayó es contarle a cualquiera qué',
+      'se rompió y cuándo reintentar. Un consumidor debe mirar el código, no el cuerpo.'
+    ].join('\n'),
+    required: ['status'],
     properties: {
       status: { type: 'string', enum: ['ready', 'not_ready', 'shutting_down'] },
       postgres: { type: 'string', enum: ['up', 'down'] },

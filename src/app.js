@@ -80,11 +80,19 @@ app.get('/health/ready', async (req, res) => {
 
   const checks = await Promise.allSettled([db.query('SELECT 1'), redis.ping()]);
   const ready = checks.every(c => c.status === 'fulfilled');
-  res.status(ready ? 200 : 503).json({
-    status: ready ? 'ready' : 'not_ready',
-    postgres: checks[0].status === 'fulfilled' ? 'up' : 'down',
-    redis: checks[1].status === 'fulfilled' ? 'up' : 'down'
-  });
+  // El código es la respuesta; el desglose es una cortesía para quien opera.
+  // En producción se calla: este endpoint no pide credenciales y el dominio es
+  // público, así que decir "postgres: down" es contarle a cualquiera qué se
+  // rompió y cuándo reintentar.
+  res.status(ready ? 200 : 503).json(
+    config.health.detail
+      ? {
+        status: ready ? 'ready' : 'not_ready',
+        postgres: checks[0].status === 'fulfilled' ? 'up' : 'down',
+        redis: checks[1].status === 'fulfilled' ? 'up' : 'down'
+      }
+      : { status: ready ? 'ready' : 'not_ready' }
+  );
 });
 
 /**

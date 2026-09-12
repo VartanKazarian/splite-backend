@@ -348,6 +348,25 @@ module.exports = {
      */
     token: process.env.METRICS_TOKEN || ''
   },
+  health: {
+    /*
+     * Si `/health/ready` dice **cuál** dependencia se cayó.
+     *
+     * El código de estado no cambia nunca: 200 listo, 503 no listo. Eso es lo
+     * que consume el orquestador y lo que decide si entra tráfico, y no se
+     * toca.
+     *
+     * Lo que se retira en producción es el cuerpo. `{"postgres":"down"}` en un
+     * endpoint sin autenticar y con dominio público le dice a cualquiera qué
+     * pieza de la infraestructura está mal y cuándo, que es media hora de
+     * reconocimiento regalada y una señal de cuándo volver a intentarlo. En
+     * desarrollo estorba más de lo que protege, así que allí sigue puesto.
+     *
+     * `HEALTH_DETAIL=true` lo devuelve en producción mientras dure una
+     * incidencia, sin necesidad de desplegar.
+     */
+    detail: boolean('HEALTH_DETAIL', !isProduction)
+  },
   docs: {
     // The spec is a contract that frontends and payment providers consume, so
     // it is served by default. It documents shapes and status codes, not
