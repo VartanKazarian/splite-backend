@@ -172,6 +172,7 @@ these do not** — they mean stop offering the feature on this server.
 | **Foreign-currency menus** | `FX_ENABLED` (on by default) and a reachable BCV | 503 `FX_UNAVAILABLE`, but only after the stored-rate fallback is exhausted | `GET /api/v1/exchange-rate` |
 | **Browsable contract at `/docs`** | `DOCS_ENABLED` (on by default) | Not served | — |
 | **Prometheus metrics at `/metrics`** | `METRICS_TOKEN` | Not mounted — 404, not 401 | — |
+| **Which dependency is down, on `/health/ready`** | `HEALTH_DETAIL` (on by default outside production) | The body is `{"status":"not_ready"}` and nothing else. The status code, 200 or 503, never changes either way | — |
 
 **Declared Pago Móvil needs none of this.** A diner declares a transfer and a
 member of staff confirms it against the bank app, which is why it is the rail
@@ -327,7 +328,7 @@ sliding session from costing a database write per request:
 | | holds | if it is lost |
 | --- | --- | --- |
 | **Postgres** | who the session is, the absolute expiry, whether it was revoked | nothing works anyway |
-| **Redis** | the idle timer, slid on every request | the next request re-reads the row and warms the cache |
+| **Redis** | the idle timer, slid on every request, and a copy of the absolute expiry | the next request re-reads the row and warms the cache |
 
 `guest_sessions.expires_at` is the **absolute cap**, set once at creation and
 never moved — the sliding TTL never touches Postgres. During a Redis outage the
@@ -341,10 +342,27 @@ authenticates only until Redis blinks. Revocation stamps `revoked_at` rather
 than deleting the row, so a flush cannot resurrect a session somebody
 deliberately ended by re-reading a row that never said so.
 
-The one gap this leaves, stated rather than hidden: a session that passes its
-cap while a cache entry is still live keeps working until that entry expires.
-The idle timeout bounds that window, which is why it has to be the shorter of
-the two numbers — there is a test asserting exactly that.
+### The cap, and where it used to not be enforced
+
+The cap was checked only when the cache missed. A cache **hit** read the entry,
+slid the idle timer and returned — so a session past its twelve hours kept
+authenticating for as long as something kept touching it, and something touching
+it is precisely what slides the timer. The idle timeout bounded nothing here:
+every request reset it.
+
+So the cached entry now carries `absoluteExpiresAt` beside the session, and the
+hit path checks it. Past the cap, the entry is dropped and the session refused,
+without a database round-trip. The Redis TTL is capped at whatever is left of
+the twelve hours instead of being set to the full idle window, so an entry
+cannot outlive the cap even if nothing ever reads it again. Entries written
+before this change carry no such field and are dropped on sight, which sends the
+request down the Postgres path where `expires_at` decides.
+
+The assertion that matters is in
+`test/integration/guestSessionTtl.integration.test.js`: an expired cap forged
+into the cache, while the row in Postgres is healthy and hours from expiring,
+must refuse the session **and** must do it without querying the database. The
+test counts the queries and expects zero.
 
 ## Bill lifecycle and the one-open-bill rule
 
@@ -362,6 +380,46 @@ current bill, which is what makes a permanent physical table QR usable.
 Closing or voiding a bill releases the table for the next one; the partial index
 only covers `OPEN`, so history is retained. Migration 004 also adds a composite
 foreign key so a bill's table must belong to the same restaurant as the bill.
+
+### Closing a bill for less than it owed
+
+A bill used to reach `CLOSED` on its own, and only when what had been collected
+equalled **exactly** what was due; voiding it required that not a cent had come
+in. Between those two paths was a hole half a dining room falls through: the
+table that pays 2,000 of 2,330 and leaves, the courtesy granted on a bill that
+already carries payments, the dish sent back after it was paid for, the extra
+zero somebody typed. In every one of those the bill could never be closed —
+voiding is refused because money moved, and deleting lines to make it balance is
+refused with `TOTAL_BELOW_AMOUNT_PAID` — and the table stayed occupied forever.
+
+`POST /api/v1/bills/{id}/settle` closes it and **writes the difference down with
+its reason and its author**:
+
+| | |
+| --- | --- |
+| Who | `OWNER` and `MANAGER` only. It is forgiving money |
+| Body | `reason`, required, one of `DISCOUNT`, `COMP`, `WRITE_OFF`; `note`, optional, 280 characters |
+| Writes | one row in `bill_adjustments` (migration 037) for the shortfall, then `status = 'CLOSED'` |
+| Audit | `BILL_SETTLED`, carrying the reason and the amount forgiven |
+| Refuses | `BILL_NOT_OPEN` on anything that is not `OPEN`, `BILL_NOT_FOUND` across tenants |
+
+**The reason has no default on purpose.** It is the only thing separating a
+negotiated reduction from the house's own courtesy from money that will not be
+collected, and those are three different questions for whoever reads the shift
+at the end: a night full of `WRITE_OFF` is a problem, a night full of `COMP` is
+a policy. A default would collapse all three into one.
+
+It deliberately does **not** touch `amount_paid_ves`. What was collected comes
+from the payment ledger and is what gets compared against the bank and against
+the till, so adding a payment nobody made here would balance the bill and
+unbalance the count. A bill that already owes nothing gets no adjustment row at
+all: closing something that owes nothing is closing it, not forgiving zero.
+
+The counterpart is on the dashboard rather than in a report nobody opens.
+`GET /api/v1/payments/dashboard` returns an `adjustments` block — total, number
+of bills, and a breakdown by reason — next to `taken`, and never summed into it,
+because it is not money that came in. Without it, fifty thousand bolívares
+forgiven in one shift appears on no screen, and the only trace is the audit log.
 
 ### Deleting a table, and creating it again
 
@@ -909,7 +967,9 @@ Every mutation recomputes the bill total from its lines and re-converts at the
 rate **frozen when the bill opened**, never at today's rate: otherwise adding a
 coffee silently reprices the meal. Removing a line that would drop the total
 below what has already been settled is refused with `TOTAL_BELOW_AMOUNT_PAID`,
-because reversing money that has moved is a refund, not an edit.
+because reversing money that has moved is a refund, not an edit. Deleting lines
+is not how a bill that will never be paid in full gets closed — see
+[Closing a bill for less than it owed](#closing-a-bill-for-less-than-it-owed).
 
 Items are optional. A bill opened with a fixed non-zero total refuses
 itemisation (`BILL_NOT_ITEMISED`) rather than silently discarding that figure or
@@ -1816,6 +1876,14 @@ leaves `outstandingVes` alone, because a diner saying they paid is not money
 until somebody has found it in the bank app. The takings figure reads settlement
 from the transition to SUCCEEDED rather than from when the row was created, for
 the same reason the tips report does.
+
+**Neither is what was forgiven.** `adjustments` carries what closing bills wrote
+off in the window — a total, a count of bills, and a breakdown into `DISCOUNT`,
+`COMP` and `WRITE_OFF` — and is never added into `taken`, because it is money
+that did not come in. It sits here rather than in a separate report because it
+is the counterpart of the takings figure: without it, a shift that forgave fifty
+thousand bolívares looks like a shift that simply took less. See
+[Closing a bill for less than it owed](#closing-a-bill-for-less-than-it-owed).
 
 ### On "today"
 
@@ -2908,7 +2976,9 @@ From the working copy, onto the current model:
   staff subject and the guest session respectively.
 - **`/health/ready` is an unauthenticated database round-trip**, deliberately
   ahead of the rate limiter so probes do not consume client budget. That also
-  makes it free load for anyone who finds it.
+  makes it free load for anyone who finds it. What it is no longer is free
+  reconnaissance: in production the body is only `{"status":"not_ready"}`, and
+  naming the dependency that fell over is behind `HEALTH_DETAIL`.
 
 ### Tooling
 
