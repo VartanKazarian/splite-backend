@@ -1859,6 +1859,119 @@ Object.assign(schemas, {
     }
   },
 
+  FiscalInvoiceTax: {
+    type: 'object',
+    description: 'One row per rate. This is what a fiscal document actually declares, and it is kept separate from the lines because an AGGREGATE invoice has a single line and still has to separate the 16% from the exempt part.',
+    properties: {
+      taxCategory: { type: 'string', enum: ['TAXABLE', 'EXEMPT', 'EXONERATED', 'NON_TAXABLE'] },
+      vatBps: { type: 'integer', minimum: 0, maximum: 10000 },
+      baseMinor: minorUnits,
+      vatMinor: minorUnits
+    }
+  },
+
+  FiscalInvoiceLine: {
+    type: 'object',
+    properties: {
+      position: { type: 'integer' },
+      description: { type: 'string' },
+      quantityMilli: {
+        type: 'string', pattern: '^[0-9]+$',
+        description: 'Quantity in thousandths: 338 is 0.338 of a dish. A prorated line really is a fraction of a plate, and rounding it to a whole would misstate the amount — which is the one thing that cannot move. Sent as an integer string for the same reason money is: a float stops being exact sooner than you would think.'
+      },
+      unitPriceMinor: minorUnits,
+      taxCategory: { type: 'string', enum: ['TAXABLE', 'EXEMPT', 'EXONERATED', 'NON_TAXABLE'] },
+      vatBps: { type: 'integer' },
+      baseMinor: minorUnits,
+      vatMinor: minorUnits
+    }
+  },
+
+  FiscalInvoice: {
+    type: 'object',
+    description: 'An issued fiscal document. `documentNumber` and `controlNumber` are assigned by the authorised imprenta digital and returned as given — Splite never generates either.',
+    properties: {
+      id: { type: 'string', format: 'uuid' },
+      billId: { type: 'string', format: 'uuid' },
+      paymentId: { type: ['string', 'null'], format: 'uuid' },
+      documentType: { type: 'string', enum: ['INVOICE', 'CREDIT_NOTE', 'DEBIT_NOTE'] },
+      compensatesId: {
+        type: ['string', 'null'], format: 'uuid',
+        description: 'Which document this credit note compensates. An issued invoice is never corrected; it is compensated by another document.'
+      },
+      documentNumber: { type: 'string' },
+      controlNumber: { type: 'string' },
+      provider: { type: 'string' },
+      lineBasis: {
+        type: 'string', enum: ['ITEMISED', 'PRORATED', 'AGGREGATE'],
+        description: 'How the lines were built. ITEMISED when the split was by product and the payment matched that share, so the real dishes are known. PRORATED scales the bill lines by what was paid. AGGREGATE is one descriptive line. Published so a panel can explain why an invoice reads "0.338 x Hamburguesa" instead of leaving the restaurant guessing.'
+      },
+      currency: { type: 'string', enum: ['VES'] },
+      subtotalMinor: minorUnits,
+      vatMinor: minorUnits,
+      serviceMinor: minorUnits,
+      totalMinor: minorUnits,
+      customer: {
+        type: ['object', 'null'],
+        description: 'Null means consumidor final, which is the majority case and a complete answer rather than a half-filled form.',
+        properties: {
+          name: { type: ['string', 'null'] },
+          taxId: { type: ['string', 'null'] },
+          email: { type: ['string', 'null'] }
+        }
+      },
+      issuedAt: { type: 'string', format: 'date-time' },
+      lines: { type: 'array', items: ref('FiscalInvoiceLine'), description: 'Only on a single-invoice read.' },
+      taxes: { type: 'array', items: ref('FiscalInvoiceTax'), description: 'Only on a single-invoice read.' }
+    }
+  },
+
+  FiscalRequest: {
+    type: 'object',
+    description: 'An attempt to issue, which is not the same thing as an invoice. UNCERTAIN means the provider answered something that does not say whether it issued — nobody may blindly retry one of these.',
+    properties: {
+      id: { type: 'string', format: 'uuid' },
+      billId: { type: 'string', format: 'uuid' },
+      paymentId: { type: ['string', 'null'], format: 'uuid' },
+      documentType: { type: 'string', enum: ['INVOICE', 'CREDIT_NOTE', 'DEBIT_NOTE'] },
+      status: { type: 'string', enum: ['PENDING', 'SENT', 'ISSUED', 'FAILED', 'UNCERTAIN'] },
+      provider: { type: ['string', 'null'] },
+      attempts: { type: 'integer' },
+      lastErrorCode: { type: ['string', 'null'] },
+      lastAttemptAt: { type: ['string', 'null'], format: 'date-time' },
+      createdAt: { type: 'string', format: 'date-time' },
+      invoiceId: { type: ['string', 'null'], format: 'uuid', description: 'The invoice this attempt produced, if it produced one.' }
+    }
+  },
+
+  RequestInvoiceRequest: {
+    type: 'object',
+    required: ['paymentId'],
+    description: 'Every recipient field is optional, and a body carrying only `paymentId` is a complete request meaning consumidor final. That is the majority case, not a degraded one: most people do not hand over their cédula for a dinner. Somebody who does usually needs it exact, so `taxId` is validated rather than accepted as free text.',
+    properties: {
+      paymentId: { type: 'string', format: 'uuid', description: 'A settled payment on the scanning diner\'s own table. The bill comes from the QR session, so there is no field in which to name somebody else\'s.' },
+      name: { type: 'string', minLength: 1, maxLength: 160 },
+      taxId: { type: 'string', pattern: '^[VEJGPC][0-9]{6,9}$', examples: ['V12345678'] },
+      email: { type: 'string', format: 'email', maxLength: 255 }
+    }
+  },
+
+  RequestInvoiceResponse: {
+    type: 'object',
+    properties: {
+      status: {
+        type: 'string', enum: ['ISSUED', 'UNCERTAIN', 'FAILED'],
+        description: 'ISSUED comes with 201 and an invoice. UNCERTAIN and FAILED come with 202 and none: no document has been created, and with UNCERTAIN one may yet be, once a person resolves it.'
+      },
+      requestId: { type: 'string', format: 'uuid' },
+      invoice: { oneOf: [ref('FiscalInvoice'), { type: 'null' }] },
+      paymentUnaffected: {
+        type: 'boolean',
+        description: 'Always true, and worth saying out loud: a failure here never means the payment failed. The money is taken and the receipt stands; what may be pending is the fiscal document. A client that renders this as a failed payment is wrong.'
+      }
+    }
+  },
+
   UpdateAccountRequest: {
     type: 'object',
     minProperties: 1,
@@ -3999,6 +4112,193 @@ const paths = {
       ],
       responses: {
         204: { description: 'Deactivated.' },
+        ...commonErrors,
+        403: response('Forbidden'),
+        404: response('NotFound')
+      }
+    }
+  },
+
+  '/api/v1/guest/bill/invoice': {
+    post: {
+      tags: ['Guest'],
+      summary: 'Ask for a fiscal invoice',
+      operationId: 'requestGuestInvoice',
+      description: [
+        'Offered after paying, beside the receipt, once the money has moved. A tax form before',
+        'payment turns a dinner into paperwork, and most people do not need one.',
+        '',
+        '**Consumidor final is the main path, not the exception.** A body carrying only `paymentId`',
+        'is complete. Do not render the recipient fields as a form to be filled in.',
+        '',
+        'The bill comes from the QR session, so a diner can only invoice a payment on their own',
+        'table — there is no field in which to name another.',
+        '',
+        'Requires the restaurant to be on a plan that includes `fiscalInvoicing` (403',
+        '`PLAN_UPGRADE_REQUIRED`) and the deployment to have an imprenta digital configured (503',
+        '`FISCAL_PROVIDER_NOT_CONFIGURED`).',
+        '',
+        '**A failure here never means the payment failed.** 202 with `UNCERTAIN` means the provider',
+        'answered something that does not say whether it issued; it goes to a queue a person looks',
+        'at, and blindly retrying would risk declaring the sale twice.'
+      ].join('\n'),
+      security: [{ guestAuth: [] }],
+      requestBody: { required: true, content: { 'application/json': { schema: ref('RequestInvoiceRequest') } } },
+      responses: {
+        201: { description: 'Issued.', content: { 'application/json': { schema: ref('RequestInvoiceResponse') } } },
+        202: { description: 'Not issued: in doubt, or refused by the provider. No document exists.', content: { 'application/json': { schema: ref('RequestInvoiceResponse') } } },
+        ...commonErrors,
+        403: response('Forbidden'),
+        404: response('NotFound'),
+        409: response('Conflict'),
+        503: response('ServiceUnavailable')
+      }
+    }
+  },
+
+  '/api/v1/fiscal/invoices': {
+    get: {
+      tags: ['Fiscal'],
+      summary: 'List issued invoices',
+      operationId: 'listFiscalInvoices',
+      description: [
+        'Any signed-in member of staff, and **never gated by plan**. Issuing is a paid capability;',
+        'reading a document already issued is not and cannot be. The legal duty to keep them',
+        'outlives the subscription, and an invoice that became unreadable because an invoice went',
+        'unpaid would be a problem Splite created.',
+        '',
+        'Newest first.'
+      ].join('\n'),
+      security: staff,
+      parameters: [
+        { name: 'limit', in: 'query', schema: { type: 'integer', minimum: 1, maximum: 100, default: 25 } },
+        { name: 'offset', in: 'query', schema: { type: 'integer', minimum: 0, default: 0 } }
+      ],
+      responses: {
+        200: {
+          description: 'Issued invoices.',
+          content: {
+            'application/json': {
+              schema: {
+                type: 'object',
+                properties: {
+                  data: { type: 'array', items: ref('FiscalInvoice') },
+                  limit: { type: 'integer' },
+                  offset: { type: 'integer' }
+                }
+              }
+            }
+          }
+        },
+        ...commonErrors
+      }
+    }
+  },
+
+  '/api/v1/fiscal/invoices/{id}': {
+    get: {
+      tags: ['Fiscal'],
+      summary: 'Read one invoice, with its lines and tax breakdown',
+      operationId: 'getFiscalInvoice',
+      description: [
+        'Never gated by plan, for the reason on the list endpoint.',
+        '',
+        '`taxes` is separate from `lines` and is not derived from them: it is what the document',
+        'declares. An AGGREGATE invoice has one line and still separates the 16% from the exempt',
+        'part.'
+      ].join('\n'),
+      security: staff,
+      parameters: [{ name: 'id', in: 'path', required: true, schema: { type: 'string', format: 'uuid' } }],
+      responses: {
+        200: { description: 'The invoice.', content: { 'application/json': { schema: ref('FiscalInvoice') } } },
+        ...commonErrors,
+        404: response('NotFound')
+      }
+    }
+  },
+
+  '/api/v1/fiscal/requests': {
+    get: {
+      tags: ['Fiscal'],
+      summary: 'The issuing queue',
+      operationId: 'listFiscalRequests',
+      description: [
+        '`?status=UNCERTAIN` is the query that matters: attempts where the provider answered',
+        'something that does not say whether it issued. Oldest first — the opposite of the invoice',
+        'list — because a doubt from yesterday is more urgent than one from a minute ago.',
+        '',
+        'Not gated by plan: this is a read.'
+      ].join('\n'),
+      security: staff,
+      parameters: [
+        { name: 'status', in: 'query', schema: { type: 'string', enum: ['PENDING', 'SENT', 'ISSUED', 'FAILED', 'UNCERTAIN'] } },
+        { name: 'limit', in: 'query', schema: { type: 'integer', minimum: 1, maximum: 100, default: 25 } },
+        { name: 'offset', in: 'query', schema: { type: 'integer', minimum: 0, default: 0 } }
+      ],
+      responses: {
+        200: {
+          description: 'Issuing attempts.',
+          content: {
+            'application/json': {
+              schema: {
+                type: 'object',
+                properties: {
+                  data: { type: 'array', items: ref('FiscalRequest') },
+                  limit: { type: 'integer' },
+                  offset: { type: 'integer' }
+                }
+              }
+            }
+          }
+        },
+        ...commonErrors
+      }
+    }
+  },
+
+  '/api/v1/fiscal/requests/{id}/resolve': {
+    post: {
+      tags: ['Fiscal'],
+      summary: 'Ask the provider what happened to an attempt in doubt',
+      operationId: 'resolveFiscalRequest',
+      'x-required-roles': ['OWNER', 'MANAGER'],
+      description: [
+        'Roles: OWNER, MANAGER.',
+        '',
+        '**This never re-requests issuance.** It asks the provider about the idempotency key. That',
+        'is the only safe action on something that may already have been issued, which is why the',
+        'route is called resolve and not retry — a duplicate invoice cannot be deleted and has',
+        'already been declared.',
+        '',
+        'If the provider says it did issue, the document is recorded from the draft that was',
+        '*sent*, not from a fresh computation: by now other diners have paid and the bill would',
+        'produce a different draft.',
+        '',
+        '`stillUnknown` means the question could not be answered either, and the attempt stays in',
+        'the queue. That is a correct outcome, not a failure.',
+        '',
+        'Gated by plan, because it can end up recording a document.'
+      ].join('\n'),
+      security: staff,
+      parameters: [{ name: 'id', in: 'path', required: true, schema: { type: 'string', format: 'uuid' } }],
+      responses: {
+        200: {
+          description: 'What the provider said.',
+          content: {
+            'application/json': {
+              schema: {
+                type: 'object',
+                properties: {
+                  requestId: { type: 'string', format: 'uuid' },
+                  status: { type: 'string', enum: ['PENDING', 'SENT', 'ISSUED', 'FAILED', 'UNCERTAIN'] },
+                  stillUnknown: { type: 'boolean' },
+                  unchanged: { type: 'boolean', description: 'The attempt was not in doubt, so nothing was asked.' },
+                  invoice: { oneOf: [ref('FiscalInvoice'), { type: 'null' }] }
+                }
+              }
+            }
+          }
+        },
         ...commonErrors,
         403: response('Forbidden'),
         404: response('NotFound')

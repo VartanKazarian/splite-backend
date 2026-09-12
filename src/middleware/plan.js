@@ -49,4 +49,26 @@ function requirePlan(capability) {
   };
 }
 
-module.exports = { requirePlan };
+/**
+ * La misma puerta, para quien no llega con un token de personal.
+ *
+ * El comensal no tiene `req.user`: su sesión la firma el QR. Pero el plan es
+ * del restaurante y no de quien pide, así que la comprobación es idéntica y lo
+ * único que cambia es de dónde sale el identificador.
+ */
+async function assertPlanAllows(restaurantId, capability) {
+  const { rows } = await db.query('SELECT plan_tier FROM restaurants WHERE id = $1', [restaurantId]);
+  if (!rows.length) throw new ApiError('RESTAURANT_NOT_FOUND', 'Restaurant not found');
+
+  const tier = rows[0].plan_tier;
+  if (!entitlements.isAllowed(tier, capability)) {
+    throw new ApiError(
+      'PLAN_UPGRADE_REQUIRED',
+      'The restaurant plan does not include this capability',
+      { capability, currentTier: tier, requiredTiers: entitlements.tiersOffering(capability) }
+    );
+  }
+  return tier;
+}
+
+module.exports = { requirePlan, assertPlanAllows };

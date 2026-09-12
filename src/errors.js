@@ -195,6 +195,11 @@ const CODES = {
   WEBHOOK_REPLAY_PROTECTION_UNAVAILABLE: 503,
   SHUTTING_DOWN: 503,
 
+  // Este despliegue no tiene imprenta digital configurada, así que no puede
+  // emitir nada válido. 503 y no 500: no es un fallo, es una capacidad que
+  // no está montada, y el remedio es de quien despliega.
+  FISCAL_PROVIDER_NOT_CONFIGURED: 503,
+
   // 503 -- the deployment cannot handle credentials right now. Not 500: this is
   // configuration, and saying so is what stops somebody hunting a bug.
   PAYMENT_CREDENTIALS_KEY_MISSING: 503,

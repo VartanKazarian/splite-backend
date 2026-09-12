@@ -518,6 +518,35 @@ const c2pBankGuideQuerySchema = Joi.object({
  * Bounded to the column (VARCHAR(120)) and required to have something in it
  * after trimming, so a name cannot be blanked into an empty landing page.
  */
+/**
+ * Pedir factura, con el consumidor final como camino principal.
+ *
+ * Los tres datos del receptor son **opcionales**, y eso no es laxitud: la
+ * mayoría de la gente no da su cédula por una cena, y un cuerpo vacío significa
+ * consumidor final, que es una respuesta completa y no un formulario a medio
+ * llenar. Exigir la identificación convertiría el caso mayoritario en el caso
+ * raro.
+ *
+ * Quien sí la da suele necesitarla exacta -- va a justificar el gasto -- así que
+ * el RIF se valida con el mismo patrón que ya usa el resto de la API en vez de
+ * aceptarlo como texto libre.
+ */
+const requestInvoiceSchema = Joi.object({
+  paymentId: uuid.required(),
+  name: Joi.string().trim().min(1).max(160),
+  taxId: venezuelanId,
+  email: Joi.string().trim().email().max(255)
+});
+
+/** La cola de facturación que mira una persona. */
+const fiscalRequestQuerySchema = Joi.object({
+  status: Joi.string().valid('PENDING', 'SENT', 'ISSUED', 'FAILED', 'UNCERTAIN'),
+  limit: Joi.number().integer().min(1).max(100).default(25),
+  offset: Joi.number().integer().min(0).default(0)
+});
+
+const fiscalIdParamSchema = Joi.object({ id: uuid.required() });
+
 const restaurantProfileSchema = Joi.object({
   // `name` deja de ser obligatorio porque el cuerpo ya no es sólo el nombre.
   // Pedirlo siempre obligaría a reenviarlo para cambiar otra cosa, que es cómo
@@ -868,6 +897,9 @@ module.exports = {
   splitPaymentSchema,
   payoutSchema,
   restaurantProfileSchema,
+  requestInvoiceSchema,
+  fiscalRequestQuerySchema,
+  fiscalIdParamSchema,
   paymentProviderParamSchema,
   declareClaimSchema,
   c2pChargeSchema,

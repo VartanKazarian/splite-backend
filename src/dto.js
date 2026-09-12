@@ -572,6 +572,98 @@ function account(row) {
   };
 }
 
+/**
+ * Una factura fiscal emitida.
+ *
+ * `documentNumber` y `controlNumber` los pone la imprenta digital autorizada.
+ * Se devuelven tal cual y nunca se construyen aquí: inventar un número de
+ * control sería falsificar.
+ */
+function fiscalInvoice(row) {
+  return {
+    id: row.id,
+    billId: row.bill_id,
+    paymentId: row.payment_id ?? null,
+    documentType: row.document_type,
+    // Qué documento compensa, si es una nota de crédito. Una factura emitida no
+    // se corrige: se compensa con otra.
+    compensatesId: row.compensates_id ?? null,
+    documentNumber: row.document_number,
+    controlNumber: row.control_number,
+    provider: row.provider,
+    // Cómo se construyeron las líneas -- ver el README. Se publica para que un
+    // panel pueda explicar por qué una factura dice «0,338 x Hamburguesa» en
+    // vez de dejar al restaurante adivinando.
+    lineBasis: row.line_basis,
+    currency: row.currency,
+    subtotalMinor: row.subtotal_minor,
+    vatMinor: row.vat_minor,
+    serviceMinor: row.service_minor,
+    totalMinor: row.total_minor,
+    // Nulo es consumidor final, que es el caso mayoritario y no un dato que
+    // falte.
+    customer: row.customer_name || row.customer_tax_id || row.customer_email
+      ? {
+        name: row.customer_name ?? null,
+        taxId: row.customer_tax_id ?? null,
+        email: row.customer_email ?? null
+      }
+      : null,
+    issuedAt: isoTimestamp(row.issued_at),
+    ...(row.lines ? { lines: row.lines.map(fiscalInvoiceLine) } : {}),
+    ...(row.taxes ? { taxes: row.taxes.map(fiscalInvoiceTax) } : {})
+  };
+}
+
+function fiscalInvoiceLine(row) {
+  return {
+    position: row.position,
+    description: row.description,
+    // Milésimas, porque una línea prorrateada es una fracción de plato. Va como
+    // entero en milésimas y no como decimal por la misma razón que el dinero:
+    // un número de coma flotante deja de ser exacto antes de lo que parece.
+    quantityMilli: String(row.quantity_milli),
+    unitPriceMinor: row.unit_price_minor,
+    taxCategory: row.tax_category,
+    vatBps: row.vat_bps,
+    baseMinor: row.base_minor,
+    vatMinor: row.vat_minor
+  };
+}
+
+/** El desglose por alícuota: lo que un documento fiscal declara de verdad. */
+function fiscalInvoiceTax(row) {
+  return {
+    taxCategory: row.tax_category,
+    vatBps: row.vat_bps,
+    baseMinor: row.base_minor,
+    vatMinor: row.vat_minor
+  };
+}
+
+/**
+ * Un intento de emisión, que no es lo mismo que una factura.
+ *
+ * Es lo que alimenta la cola: `UNCERTAIN` significa que el proveedor contestó
+ * algo que no dice si emitió, y que nadie debe reintentar a ciegas.
+ */
+function fiscalRequest(row) {
+  return {
+    id: row.id,
+    billId: row.bill_id,
+    paymentId: row.payment_id ?? null,
+    documentType: row.document_type,
+    status: row.status,
+    provider: row.provider ?? null,
+    attempts: row.attempts,
+    lastErrorCode: row.last_error_code ?? null,
+    lastAttemptAt: isoTimestamp(row.last_attempt_at),
+    createdAt: isoTimestamp(row.created_at),
+    // La factura que salió de él, si salió alguna.
+    invoiceId: row.invoice_id ?? null
+  };
+}
+
 function menuSettings(row) {
   return {
     id: row.id,
@@ -770,5 +862,6 @@ function staffMember(row) {
 module.exports = {
   isoDate, isoTimestamp, staffMember, guestOrder, billAdjustment,
   bill, billItem, billWithItems, guestBill,
+  fiscalInvoice, fiscalInvoiceLine, fiscalInvoiceTax, fiscalRequest,
   table, floorTable, product, publicProduct, menuCategory, menuDocument, brandingImage, qrContext, menuSettings, menuCharges, account, payout, guestPayee, paymentProviderConfig, paymentClaim, staffPaymentClaim, c2pCharge, billSplit
 };

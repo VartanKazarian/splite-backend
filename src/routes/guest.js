@@ -5,7 +5,8 @@ const { signQrPayload, verifyQrToken } = require('../utils/tokens');
 const { authenticateToken, requireRole } = require('../middleware/auth');
 const {
   validateBody, validateParams, validateQuery, guestSessionSchema, tableIdParamSchema, splitPreviewSchema,
-  declareClaimSchema, c2pChargeSchema, c2pBankGuideQuerySchema, guestOrderSchema
+  declareClaimSchema, c2pChargeSchema, c2pBankGuideQuerySchema, guestOrderSchema,
+  requestInvoiceSchema
 } = require('../middleware/schemas');
 const { createGuestSession, destroyGuestSession, authenticateGuest } = require('../services/guest');
 const rateLimit = require('../middleware/rateLimit');
@@ -21,6 +22,8 @@ const splits = require('../services/splits');
 const dto = require('../dto');
 const { logAudit, auditContext } = require('../services/audit');
 const { ApiError } = require('../errors');
+const invoicing = require('../services/fiscalInvoicing');
+const { assertPlanAllows } = require('../middleware/plan');
 
 const router = express.Router();
 
@@ -406,6 +409,73 @@ router.post('/bill/payment-claims', authenticateGuest, perSession, validateBody(
  * Guest-session gated for consistency with the rest of this surface; the data
  * itself is public and per-bank, never per-diner.
  */
+/**
+ * «¿Necesitas factura?», después de pagar.
+ *
+ * El sitio importa: va al final, junto al recibo, cuando el dinero ya se movió.
+ * Un formulario fiscal antes de pagar convierte una cena en un trámite, y la
+ * mayoría de la gente no lo necesita.
+ *
+ * **Consumidor final es el camino principal, no la excepción.** Los tres datos
+ * del receptor son opcionales y un cuerpo con sólo `paymentId` es una petición
+ * completa: la mayoría no va a dar su cédula. Quien sí la da suele necesitarla
+ * exacta -- va a justificar el gasto -- y por eso el RIF se valida en vez de
+ * aceptarse como texto libre.
+ *
+ * El comensal sólo puede facturar un cobro de **su propia mesa**: el `billId`
+ * sale de la sesión que firmó el QR y no del cuerpo, así que no hay campo en el
+ * que nombrar la cuenta de otro. Es la misma regla que ya gobierna el resto de
+ * esta superficie.
+ *
+ * Un fallo aquí **nunca** significa que el pago fallara. El dinero ya está
+ * cobrado y el recibo ya es válido; lo que puede quedar pendiente es el
+ * documento fiscal, y el cliente tiene que contarlo así.
+ */
+router.post(
+  '/bill/invoice',
+  authenticateGuest,
+  perSession,
+  validateBody(requestInvoiceSchema),
+  async (req, res, next) => {
+    try {
+      await assertPlanAllows(req.guest.restaurantId, 'fiscalInvoicing');
+
+      const provider = config.fiscal.provider || (config.fiscal.mockEnabled ? 'mock' : '');
+      if (!provider) {
+        // Sin imprenta configurada no hay forma de emitir nada válido. Se dice,
+        // en vez de fallar de una manera que parezca culpa del comensal.
+        throw new ApiError('FISCAL_PROVIDER_NOT_CONFIGURED',
+          'This deployment has no fiscal provider configured');
+      }
+
+      const bill = await openBillForGuest(req.guest);
+      const result = await invoicing.issueForPayment({
+        restaurantId: req.guest.restaurantId,
+        billId: bill.id,
+        paymentId: req.body.paymentId,
+        provider,
+        customer: {
+          name: req.body.name ?? null,
+          taxId: req.body.taxId ?? null,
+          email: req.body.email ?? null
+        }
+      });
+
+      // 202 y no 201 cuando queda en duda: no se ha creado ningún documento
+      // todavía, y puede que nunca se cree. Decir 201 sería prometer una
+      // factura que quizá no exista.
+      const created = result.status === 'ISSUED';
+      res.status(created ? 201 : 202).json({
+        status: result.status,
+        requestId: result.requestId,
+        invoice: result.invoice ? dto.fiscalInvoice(result.invoice) : null,
+        // Lo que el comensal necesita saber, y que no es el estado interno.
+        paymentUnaffected: true
+      });
+    } catch (err) { next(err); }
+  }
+);
+
 router.get('/c2p/banks', authenticateGuest, perSession, validateQuery(c2pBankGuideQuerySchema), (req, res) => {
   const identity = { idType: req.query.idType, idNumber: req.query.idNumber };
   const data = claveGuide.supportedC2PBanks()

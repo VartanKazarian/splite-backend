@@ -123,6 +123,11 @@ jobs:
       # y fallaba aquí.
       PAYMENT_CREDENTIALS_KEYS: '1:Y2ktb25seS1wYXltZW50LWtleS0zMi1ieXRlcy0hISE='
       PAYMENT_CREDENTIALS_ACTIVE_KEY_VERSION: '1'
+      # El proveedor fiscal simulado, sin el cual la suite de facturación no
+      # puede emitir nada y se salta entera sin decirlo. `assertProductionConfig`
+      # rechaza esta bandera en producción, así que sólo puede estar aquí y en
+      # una máquina de desarrollo.
+      FISCAL_MOCK_ENABLED: 'true'
 
     steps:
       - uses: actions/checkout@v4

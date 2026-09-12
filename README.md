@@ -167,6 +167,7 @@ these do not** — they mean stop offering the feature on this server.
 | **Second factor** | `MFA_SECRET_KEYS` | 503 `MFA_KEY_MISSING` on enrolment. Existing accounts keep signing in on passwords | `GET /api/v1/auth/mfa` |
 | **Self-service registration** | `ONBOARDING_ENABLED=true`, plus everything the boot guard above then demands | 503 `ONBOARDING_NOT_CONFIGURED`. The router is not mounted at all — a stub answers, so no lead is recorded and no mail is sent | The code itself. It answered a bare 404 until a frontend, unable to tell that from a mistyped path, rendered an invented support address to a restaurant mid-application |
 | **Store bank credentials** | `PAYMENT_CREDENTIALS_KEYS` | 503 `PAYMENT_CREDENTIALS_KEY_MISSING` | — |
+| **Issue fiscal invoices** | `FISCAL_PROVIDER`, naming an authorised imprenta digital with an adapter. `FISCAL_MOCK_ENABLED=true` registers the mock instead, and **the boot guard refuses it in production** — its documents carry invented `MOCK-` numbers | 503 `FISCAL_PROVIDER_NOT_CONFIGURED` | `plan.capabilities.fiscalInvoicing` on `GET /api/v1/account`, which answers the separate question of whether the plan includes it |
 | **Charge through Mercantil C2P** | `MERCANTIL_C2P_URL`, **and** credentials stored per restaurant, **and** those credentials proven by a real call | 503 `PAYMENT_PROVIDER_MISCONFIGURED` | `chargeable` on `GET /api/v1/account/banks` |
 | **Self-service signup** | `ONBOARDING_ENABLED=true` and a mail provider | The routes are **not mounted at all** — 404, not 503 | — |
 | **Foreign-currency menus** | `FX_ENABLED` (on by default) and a reachable BCV | 503 `FX_UNAVAILABLE`, but only after the stored-rate fallback is exhausted | `GET /api/v1/exchange-rate` |
@@ -1651,6 +1652,40 @@ Issuing is an `ENTERPRISE` capability (see the plan table above). Reading an
 already-issued invoice is gated by nothing at all, ever. The duty to keep them
 outlives the subscription, and an invoice that became unreadable because an
 invoice went unpaid would be a problem Splite created.
+
+So `requirePlan` appears on `POST /api/v1/fiscal/requests/{id}/resolve` — which
+can end up recording a document — and on nothing else in
+`src/routes/fiscal.js`. `test/integration/fiscalRoutes` drops a restaurant to
+`TRIAL` *after* it has issued and asserts that the list, the document and the
+queue all still answer 200.
+
+### Asking for one
+
+`POST /api/v1/guest/bill/invoice`, offered after paying, beside the receipt.
+Before payment it would turn a dinner into paperwork.
+
+**Consumidor final is the main path.** Every recipient field is optional and a
+body carrying only `paymentId` is a complete request. Most people do not hand
+over their cédula for a dinner; if the minimal body did not suffice, the
+majority case would be the awkward one. Somebody who does give it usually needs
+it exact — they are claiming an expense — so `taxId` is validated against the
+same cédula/RIF pattern the rest of the API uses rather than accepted as free
+text.
+
+The bill comes from the QR session, so a diner can only invoice a payment on
+their own table. There is no field in which to name another.
+
+The response code carries the distinction that matters: **201 only when a
+document exists.** An attempt that ended `UNCERTAIN` or `FAILED` answers 202
+with `invoice: null`, because saying "created" about a document that may never
+exist is the kind of lie a client then renders to a diner. Every response also
+carries `paymentUnaffected: true` — worth saying out loud, since a failure here
+never means the payment failed. The money is taken and the receipt stands; what
+may be pending is the fiscal document.
+
+For the panel, `GET /api/v1/fiscal/requests?status=UNCERTAIN` is the queue,
+returned **oldest first** — the opposite of the invoice list — because a doubt
+from yesterday is more urgent than one from a minute ago.
 
 ## Where the money goes
 
