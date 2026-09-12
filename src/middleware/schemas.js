@@ -563,6 +563,9 @@ const fiscalRequestQuerySchema = Joi.object({
 
 const fiscalIdParamSchema = Joi.object({ id: uuid.required() });
 
+/** Un pago que el comensal declaró y del que conoce el identificador. */
+const guestPaymentParamSchema = Joi.object({ id: uuid.required() });
+
 const restaurantProfileSchema = Joi.object({
   // `name` deja de ser obligatorio porque el cuerpo ya no es sólo el nombre.
   // Pedirlo siempre obligaría a reenviarlo para cambiar otra cosa, que es cómo
@@ -917,6 +920,7 @@ module.exports = {
   guestContactSchema,
   fiscalRequestQuerySchema,
   fiscalIdParamSchema,
+  guestPaymentParamSchema,
   paymentProviderParamSchema,
   declareClaimSchema,
   c2pChargeSchema,
