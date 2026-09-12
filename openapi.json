@@ -366,6 +366,7 @@
                   "WEBHOOK_SIGNATURE_INVALID",
                   "WEBHOOK_TIMESTAMP_OUT_OF_TOLERANCE",
                   "FORBIDDEN_ROLE",
+                  "PLAN_UPGRADE_REQUIRED",
                   "CROSS_TENANT_DENIED",
                   "CORS_ORIGIN_NOT_ALLOWED",
                   "STAFF_OUTRANKED",
@@ -3230,6 +3231,42 @@
               "null"
             ],
             "description": "Computed server-side, and negative once past. A browser doing this subtraction uses the visitor's clock and timezone, which reads as expired a day early for anyone whose laptop is set wrong."
+          },
+          "capabilities": {
+            "type": "object",
+            "description": "What this tier is sold as including, as one boolean per capability. Read it instead of hard-coding the pricing table in the client: a button that answers 403 is a worse experience than a button that is not offered, and a copy of this table on the frontend is the same table maintained twice. Every capability is always present, true or false, so a client can ask about one it does not yet know how to use without treating absence as denial. A false means 'not sold with this plan', which is not always the same as 'the API will refuse it' — several capabilities shipped before this table existed and are still served on every tier, because taking them away mid-service is a pricing decision rather than a wiring one. Today only fiscalInvoicing actually refuses, with 403 PLAN_UPGRADE_REQUIRED.",
+            "additionalProperties": {
+              "type": "boolean"
+            },
+            "properties": {
+              "bills": {
+                "type": "boolean"
+              },
+              "splitting": {
+                "type": "boolean"
+              },
+              "declaredMobilePayment": {
+                "type": "boolean"
+              },
+              "c2pCharge": {
+                "type": "boolean"
+              },
+              "guestOrdering": {
+                "type": "boolean"
+              },
+              "tipReports": {
+                "type": "boolean"
+              },
+              "menuOcr": {
+                "type": "boolean"
+              },
+              "mfa": {
+                "type": "boolean"
+              },
+              "fiscalInvoicing": {
+                "type": "boolean"
+              }
+            }
           }
         }
       },

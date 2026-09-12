@@ -1,5 +1,6 @@
 const { usdReference } = require('./services/split');
 const banks = require('./payments/banks');
+const entitlements = require('./services/entitlements');
 
 /**
  * The boundary between the database and the wire.
@@ -549,7 +550,18 @@ function account(row) {
       trialEndsAt: isoTimestamp(row.trial_ends_at),
       trialDaysRemaining: trialEndsAt
         ? Math.ceil((trialEndsAt.getTime() - Date.now()) / msPerDay)
-        : null
+        : null,
+      // What this tier includes, as a flat object of booleans. Published so a
+      // client asks before it acts: offering a button that answers 403 is a
+      // worse experience than not offering it, and reading the tier name and
+      // hard-coding the table on the frontend is the same table maintained
+      // twice.
+      //
+      // Note that a false here means "not sold with this plan", which is not
+      // always the same as "the API will refuse it" -- see
+      // src/services/entitlements.js for why those two sets differ, and which
+      // capabilities actually refuse today.
+      capabilities: entitlements.capabilitiesFor(row.plan_tier)
     },
     createdAt: isoTimestamp(row.created_at)
   };

@@ -793,6 +793,47 @@ A restaurant is created with IVA at 1600 bps and servicio at 1000 bps. Migration
 restaurant's open bills; one created today has no such history. Both are
 changeable through `PATCH /api/v1/menu/settings/charges`.
 
+### What a plan includes, and what actually refuses
+
+`restaurants.plan_tier` has existed since migration 012 and for a long time
+nothing read it. `src/services/entitlements.js` is where it now means
+something, and it keeps two sets apart on purpose:
+
+**`INCLUDED`** is what each tier is sold as including. `GET /api/v1/account`
+publishes it as `plan.capabilities`, one boolean per capability, so a client
+asks before it acts instead of offering a button that answers 403 — and so the
+pricing table is not maintained a second time on the frontend.
+
+**`ENFORCED`** is the much shorter list the API actually refuses without. Today
+it holds one entry: `fiscalInvoicing`.
+
+Those differ because every other capability in the table already shipped and is
+already in use by restaurants on whatever tier they happen to sit on. Switching
+on enforcement for those has a dining room attached: a TRIAL restaurant taking
+C2P payments tonight would start getting refusals mid-service. That is the same
+reasoning the trial row above states — the decision is a pricing one, made
+deliberately and with notice, not a side effect of wiring up a permission
+layer. `test/entitlements.test.js` asserts the exact contents of `ENFORCED`, so
+growing it is a visible act rather than a quiet one.
+
+Refusals are `403 PLAN_UPGRADE_REQUIRED`, and carry `details.requiredTiers` so
+a client is not left guessing which upgrade is the one that helps. 403 rather
+than 402: the request is refused on what was bought, and nothing about it
+becomes payable by retrying.
+
+`requirePlan(capability)` in `src/middleware/plan.js` reads the tier from the
+row on each gated request rather than from the access token. A token lives
+fifteen minutes and this gate stands in front of issuing fiscal documents: a
+restaurant that upgrades should be able to invoice now, and one whose plan
+ended should stop now. An unknown capability name throws when the route is
+mounted rather than when the first request arrives, so a typo stops the process
+instead of silently refusing everyone and looking like a pricing rule.
+
+**Gate the writes, never the reads.** A downgrade stops a restaurant issuing
+new fiscal documents; the legal duty to keep the ones it already issued
+outlives the subscription. An invoice that becomes unreadable because an
+invoice went unpaid is a problem Splite would have created.
+
 Mail goes through `src/services/mailer.js`, a port with two adapters. `log`
 writes the message and its link to the logger and sends nothing; it is refused
 in production once onboarding is on. `resend` posts to api.resend.com over
@@ -2949,7 +2990,7 @@ what gets built, and they are parked deliberately rather than guessed at.
 | --- | --- | --- |
 | ~~**On what domain does Splite send?**~~ **Answered: `splite.lat`.** | Nothing. Onboarding mail sends over `MAIL_TRANSPORT=resend` from a verified domain. | Closed. It was answered earlier than planned because the host forced it: Railway disables outbound SMTP below Pro, so sending through the team's Gmail mailbox — which this table previously recommended — cannot work there at all. See [How the mail actually leaves](#how-the-mail-actually-leaves). No code changed; it was three variables. |
 | **Which card acquirer?** | Card payments entirely, and paying inside the app. | Diners declare Pago Móvil and staff confirm. |
-| **What does a lapsed trial lose?** | Nothing today — `plan_tier` and `trial_ends_at` are reported by `GET /api/v1/account` and enforced nowhere. | Clients can warn. The obvious answer is the wrong one: cutting off bills mid-service strands a dining room full of seated diners over an unpaid invoice. |
+| **What does a lapsed trial lose?** | Still nothing. `plan_tier` now drives a real capability table (`src/services/entitlements.js`), but only `fiscalInvoicing` actually refuses; an expiring trial does not downgrade anything by itself. | Clients can warn, and can read `plan.capabilities` to decide what to offer. The obvious answer is still the wrong one: cutting off bills mid-service strands a dining room full of seated diners over an unpaid invoice. Which of the already-shipped capabilities starts refusing, and with how much notice, is the open part. |
 | **Should a failing RIF check digit be rejected?** | Nothing. The mod-11 result is recorded in `restaurant_signups.rif_checksum_ok` and shown to the reviewer. | Accepted either way. Turning away a real restaurant at the form is worse than storing one malformed tax id, and the column is the evidence for deciding later. Note `J-00000000-0` passes — the checksum catches transcription slips, not invention. |
 
 Two smaller ones, same character:

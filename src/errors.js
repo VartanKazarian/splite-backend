@@ -72,6 +72,12 @@ const CODES = {
 
   // 403 -- the caller is known and still not allowed.
   FORBIDDEN_ROLE: 403,
+  // The restaurant's plan does not include this. 403 rather than 402: the
+  // request is refused on what was bought, not on an unpaid invoice, and
+  // nothing about it becomes payable by retrying. `details.requiredTiers`
+  // names the plans that would allow it, so a client is not left guessing
+  // which upgrade is the one that helps.
+  PLAN_UPGRADE_REQUIRED: 403,
   CROSS_TENANT_DENIED: 403,
   CORS_ORIGIN_NOT_ALLOWED: 403,
   // Staff administration. Three separate codes because they are three separate
