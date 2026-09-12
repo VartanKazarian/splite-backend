@@ -43,11 +43,31 @@ describe('esquema fiscal', { skip }, () => {
     await db.close();
   });
 
+  /**
+   * Una cuenta nueva por petición, salvo que se diga otra cosa.
+   *
+   * No es cosmético: desde la migración 040 una cuenta admite **una sola**
+   * petición a nivel de cuenta -- las que van sin pago, que son las de factura
+   * única de mesa. Compartir la cuenta entre peticiones haría que estas pruebas
+   * chocaran con esa regla en vez de con la que cada una quiere comprobar.
+   */
   const newRequest = async (overrides = {}) => {
+    let billId = overrides.billId;
+    if (!billId) {
+      if (overrides.paymentId) {
+        billId = bill.id;
+      } else {
+        const t = await fixtures.createTable(restaurant.id, { name: `R${++seq}` });
+        const b = await fixtures.createBill({
+          restaurantId: restaurant.id, tableId: t.id, totalDue: 0, totalDueVes: 0
+        });
+        billId = b.id;
+      }
+    }
     const { rows } = await db.query(
       `INSERT INTO fiscal_invoice_requests (restaurant_id, bill_id, idempotency_key, status, payment_id)
        VALUES ($1, $2, $3, $4, $5) RETURNING *`,
-      [restaurant.id, bill.id, overrides.key ?? `k-${++seq}`,
+      [restaurant.id, billId, overrides.key ?? `k-${++seq}`,
         overrides.status ?? 'ISSUED', overrides.paymentId ?? null]
     );
     return rows[0];
@@ -62,7 +82,7 @@ describe('esquema fiscal', { skip }, () => {
           document_type, compensates_id)
        VALUES ($1, $2, $3, $4, $5, 'mock', $6, $7, $8, $9, $10, now(), $11, $12)
        RETURNING *`,
-      [restaurant.id, request.id, bill.id,
+      [restaurant.id, request.id, request.bill_id,
         overrides.number ?? `F-${seq}`, overrides.control ?? `CTRL-${seq}`,
         overrides.basis ?? 'AGGREGATE',
         overrides.subtotal ?? 1000, overrides.vat ?? 160, overrides.service ?? 0,
@@ -209,6 +229,36 @@ describe('esquema fiscal', { skip }, () => {
 
     // Otra alícuota sí, que es justo para lo que existe la tabla.
     await addTax(0, 200, 0);
+  });
+
+  it('en factura única de mesa, la cuenta no puede tener dos', async () => {
+    /*
+     * SINGLE_BILL emite una factura por la cuenta y no por un cobro, así que va
+     * sin `payment_id`. Eso deja sin efecto al índice por pago -- todos serían
+     * NULL -- y sin uno propio una mesa podría acabar con dos facturas por el
+     * total, que es declarar la misma venta dos veces.
+     */
+    const otherTable = await fixtures.createTable(restaurant.id, { name: `S${++seq}` });
+    const otherBill = await fixtures.createBill({
+      restaurantId: restaurant.id, tableId: otherTable.id, totalDue: 0, totalDueVes: 0
+    });
+
+    const billLevel = (type = 'INVOICE') => db.query(
+      `INSERT INTO fiscal_invoice_requests (restaurant_id, bill_id, idempotency_key, status, document_type)
+       VALUES ($1, $2, $3, 'ISSUED', $4) RETURNING id`,
+      [restaurant.id, otherBill.id, `bill-${++seq}`, type]
+    );
+
+    await billLevel();
+    await assert.rejects(() => billLevel(), err => {
+      assert.equal(err.code, '23505');
+      return true;
+    }, 'una segunda factura por la misma cuenta declararía la venta dos veces');
+
+    // Una nota de crédito sobre esa misma cuenta sí tiene que caber: es
+    // justamente lo que hace falta después para corregirla.
+    const note = await billLevel('CREDIT_NOTE');
+    assert.ok(note.rows[0].id);
   });
 
   it('no admite un estado ni un tipo de documento inventados', async () => {

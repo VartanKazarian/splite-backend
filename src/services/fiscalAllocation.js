@@ -58,6 +58,64 @@ const { allocate } = require('./split');
  * se declara en esta factura.
  */
 
+/**
+ * Reparte `amount` entre bolsas con pesos propios, sin pasarse de lo que hay.
+ *
+ * El reparto normal usa como peso lo que queda en cada bolsa -- eso es el
+ * prorrateo. Cuando **sí** se sabe qué consumió el comensal, los pesos son otra
+ * cosa: la composición de lo que reclamó. Alguien que sólo pidió algo exento
+ * tiene que tirar de la bolsa exenta, no de todas a proporción.
+ *
+ * El problema que eso abre es que los pesos pueden pedir de una bolsa más de lo
+ * que le queda. Ocurre de verdad: dos personas reclaman el mismo plato y una
+ * paga antes. Así que se reparte, se recorta a lo disponible, y el sobrante se
+ * vuelve a repartir entre las que aún tienen sitio. Se repite hasta colocarlo
+ * todo -- lo cual termina siempre, porque `amount` nunca supera la suma de las
+ * capacidades y cada vuelta llena al menos una bolsa.
+ *
+ * Si los pesos se quedan sin bolsas con sitio, se pasa a repartir por capacidad
+ * restante. Es el único desenlace honesto: el dinero está pagado y tiene que
+ * declararse en alguna parte.
+ */
+function allocateCapped(amount, initialWeights, caps) {
+  let weights = initialWeights;
+  const parts = new Array(caps.length).fill(0n);
+  let remaining = amount;
+  let active = caps.map((_, i) => i).filter(i => weights[i] > 0n && caps[i] > 0n);
+
+  let guard = 0;
+  while (remaining > 0n) {
+    if (++guard > caps.length + 2) {
+      throw new Error('El reparto por pesos no converge');
+    }
+    if (active.length === 0) {
+      // Los pesos ya no alcanzan a ninguna bolsa con sitio: se reparte por lo
+      // que queda, que es el prorrateo de toda la vida.
+      active = caps.map((_, i) => i).filter(i => caps[i] - parts[i] > 0n);
+      if (active.length === 0) throw new Error('No queda dónde declarar el importe');
+      weights = caps.map((cap, i) => cap - parts[i]);
+    }
+
+    const allocated = allocate(remaining, active.map(i => weights[i]));
+    let overflow = 0n;
+    const next = [];
+
+    active.forEach((index, k) => {
+      const room = caps[index] - parts[index];
+      const wanted = BigInt(allocated[k]);
+      const give = wanted > room ? room : wanted;
+      parts[index] += give;
+      overflow += wanted - give;
+      if (caps[index] - parts[index] > 0n) next.push(index);
+    });
+
+    remaining = overflow;
+    active = next;
+  }
+
+  return parts;
+}
+
 /** Suma de todo lo que queda por declarar. */
 function outstandingOf(state) {
   const groups = state.groups.reduce((sum, g) => sum + g.baseMinor + g.vatMinor, 0n);
@@ -76,7 +134,7 @@ function outstandingOf(state) {
  * `amount` iguala lo que queda, el reparto de resto mayor le asigna a cada
  * bolsa todo su contenido.
  */
-function allocatePayment(state, amount) {
+function allocatePayment(state, amount, { composition = null } = {}) {
   const outstanding = outstandingOf(state);
   if (amount < 0n) throw new Error('A payment cannot be negative');
   if (amount > outstanding) {
@@ -95,12 +153,12 @@ function allocatePayment(state, amount) {
     ...state.groups.map(g => g.baseMinor + g.vatMinor),
     state.serviceMinor
   ];
-  const contributing = [];
-  buckets.forEach((value, index) => { if (value > 0n) contributing.push(index); });
-
-  const parts = new Array(buckets.length).fill(0n);
-  const allocated = allocate(amount, contributing.map(i => buckets[i]));
-  contributing.forEach((index, i) => { parts[index] = BigInt(allocated[i]); });
+  // Sin pesos propios, el peso es lo que queda: eso es el prorrateo. Con ellos,
+  // el comensal tira de las bolsas que de verdad consumió.
+  const weights = composition
+    ? buckets.map((_, i) => BigInt(composition[i] ?? 0n))
+    : buckets.slice();
+  const parts = allocateCapped(amount, weights, buckets);
 
   const serviceShare = parts[buckets.length - 1];
   const groups = [];

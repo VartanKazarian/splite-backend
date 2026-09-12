@@ -1403,6 +1403,10 @@ const onboardingSchemas = {
       serviceChargeBps: { type: 'integer' },
       payout: { oneOf: [ref('Payout'), { type: 'null' }] },
       plan: ref('Plan'),
+      fiscalInvoicePolicy: {
+        type: 'string', enum: ['PER_DINER', 'SINGLE_BILL'],
+        description: 'Who gets the fiscal invoice. PER_DINER issues one per diner who pays, which is what somebody claiming their own dinner as an expense needs. SINGLE_BILL issues one document for the whole bill and derives each diner\'s breakdown from it -- those breakdowns are not fiscal documents. Both are legitimate and it is the restaurant\'s call, so it is a setting rather than a rule. Only an OWNER may change it: it decides how the restaurant declares.'
+      },
       createdAt: { type: 'string', format: 'date-time' }
     }
   }
@@ -1857,11 +1861,18 @@ Object.assign(schemas, {
 
   UpdateAccountRequest: {
     type: 'object',
-    required: ['name'],
+    minProperties: 1,
     description:
-      "The restaurant's own name, as a diner reads it on the QR landing page. Trimmed; something has to be left after trimming, so a name cannot be blanked into an empty landing page.",
+      'A partial update: send only what changes. `name` stopped being required when this body grew past the name, because requiring it would mean resending it to change anything else — which is how a restaurant gets renamed without meaning to.',
     properties: {
-      name: { type: 'string', minLength: 1, maxLength: 120, examples: ['Casa 72'] }
+      name: {
+        type: 'string', minLength: 1, maxLength: 120, examples: ['Casa 72'],
+        description: "The restaurant's own name, as a diner reads it on the QR landing page. Trimmed; something has to be left after trimming, so a name cannot be blanked into an empty landing page."
+      },
+      fiscalInvoicePolicy: {
+        type: 'string', enum: ['PER_DINER', 'SINGLE_BILL'],
+        description: 'OWNER only — a MANAGER sending this gets 403 FORBIDDEN_ROLE. PER_DINER issues one fiscal invoice per diner who pays; SINGLE_BILL issues one for the whole bill and derives each diner\'s breakdown from it, those breakdowns not being fiscal documents themselves.'
+      }
     }
   },
 
@@ -5031,18 +5042,24 @@ const paths = {
     },
     patch: {
       tags: ['Account'],
-      summary: "Rename the restaurant",
+      summary: 'Update the restaurant',
       operationId: 'updateAccount',
       'x-required-roles': ['OWNER', 'MANAGER'],
       description: [
-        'Roles: OWNER, MANAGER.',
+        'Roles: OWNER, MANAGER. Partial update; at least one field is required. Omitting a field',
+        'leaves it as it is — in particular, changing the invoicing policy does not require',
+        'resending the name, which is how a restaurant gets renamed by accident.',
         '',
-        'The name a diner reads on their phone the moment they scan the code on the table, above',
-        'the table number. It could previously only be set during onboarding, which left whatever',
-        'was typed that day in front of every customer with no way to correct it.',
+        '`name` is what a diner reads on their phone the moment they scan the code on the table,',
+        'above the table number. It could previously only be set during onboarding, which left',
+        'whatever was typed that day in front of every customer with no way to correct it.',
         '',
-        'Nothing else in the record is touched here — menu currency, charges and the payee each',
-        'have their own endpoint, because each is a different decision with a different reach.'
+        '`fiscalInvoicePolicy` is **OWNER only**, and answers with 403 `FORBIDDEN_ROLE` for a',
+        'MANAGER. It is not profile editing: it decides how the restaurant declares, so it sits',
+        'with the money decisions and is audited separately as `FISCAL_POLICY_CHANGED`.',
+        '',
+        'Menu currency, charges and the payee each still have their own endpoint, because each is',
+        'a different decision with a different reach.'
       ].join('\n'),
       security: staff,
       requestBody: { required: true, content: { 'application/json': { schema: ref('UpdateAccountRequest') } } },

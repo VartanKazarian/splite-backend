@@ -217,3 +217,110 @@ test('el IVA de cada factura no se aleja de su propia base más de un céntimo',
     }
   }
 });
+
+/* ------------------------------------------------------------------ pesos */
+
+test('con pesos propios, el comensal tira de las bolsas que consumió', () => {
+  // Alguien que sólo pidió el exento no puede declarar IVA. Con prorrateo lo
+  // declararía, porque el prorrateo no sabe qué comió.
+  const state = stateFromLines([
+    { vatBps: 1600, subtotalMinor: 50000n },
+    { vatBps: 0, subtotalMinor: 20000n }
+  ], { vatOf });
+
+  const exentoIndex = state.groups.findIndex(g => g.vatBps === 0);
+  const composition = state.groups.map((_, i) => (i === exentoIndex ? 1n : 0n)).concat([0n]);
+
+  const { invoice } = allocatePayment(state, 20000n, { composition });
+  assert.equal(invoice.groups[exentoIndex].baseMinor, 20000n, 'todo suyo es exento');
+  assert.equal(invoice.groups[exentoIndex].vatMinor, 0n);
+
+  const gravado = state.groups.findIndex(g => g.vatBps === 1600);
+  assert.equal(invoice.groups[gravado].baseMinor, 0n, 'no declara base gravada que no consumió');
+  assert.equal(invoice.groups[gravado].vatMinor, 0n);
+});
+
+test('los pesos no pueden sacar de una bolsa más de lo que queda', () => {
+  /*
+   * El caso que de verdad ocurre: dos personas reclaman el mismo plato y una
+   * paga antes. Los pesos de la segunda piden de una bolsa que ya se vació.
+   *
+   * Sin tope, la bolsa se iría en negativo y la declaración dejaría de cuadrar.
+   * Con tope, el sobrante se coloca donde sí hay sitio -- porque el dinero está
+   * pagado y tiene que declararse en alguna parte.
+   */
+  const state = stateFromLines([
+    { vatBps: 1600, subtotalMinor: 1000n },
+    { vatBps: 0, subtotalMinor: 5000n }
+  ], { vatOf });
+
+  const gravado = state.groups.findIndex(g => g.vatBps === 1600);
+  const soloGravado = state.groups.map((_, i) => (i === gravado ? 1n : 0n)).concat([0n]);
+
+  // Pide 3000 tirando sólo del grupo gravado, que tiene 1160 contando su IVA.
+  const { invoice, remaining } = allocatePayment(state, 3000n, { composition: soloGravado });
+
+  assert.equal(invoice.totalMinor, 3000n, 'la factura vale lo que se pagó');
+  const declarado = invoice.groups.reduce((s, g) => s + g.baseMinor + g.vatMinor, 0n)
+    + invoice.serviceMinor;
+  assert.equal(declarado, 3000n, 'y lo declarado es exactamente eso');
+
+  assert.equal(remaining.groups[gravado].baseMinor, 0n, 'la bolsa gravada quedó vacía');
+  assert.equal(remaining.groups[gravado].vatMinor, 0n);
+  for (const g of remaining.groups) {
+    assert.ok(g.baseMinor >= 0n && g.vatMinor >= 0n, 'ninguna bolsa en negativo');
+  }
+});
+
+test('cien secuencias con pesos al azar siguen sumando la cuenta al céntimo', () => {
+  /*
+   * La misma propiedad que ya se afirma para el prorrateo, ahora con la parte
+   * que puede romperla: pesos arbitrarios, que piden de donde les parece y a
+   * veces de donde ya no queda nada.
+   */
+  const random = rng(31415);
+
+  for (let run = 0; run < 100; run++) {
+    const lines = [];
+    const lineCount = 1 + Math.floor(random() * 5);
+    for (let i = 0; i < lineCount; i++) {
+      lines.push({
+        vatBps: [0, 800, 1600][Math.floor(random() * 3)],
+        subtotalMinor: BigInt(1 + Math.floor(random() * 50000))
+      });
+    }
+    const subtotal = lines.reduce((s, l) => s + l.subtotalMinor, 0n);
+    const state = stateFromLines(lines, {
+      serviceMinor: random() < 0.5 ? applyBps(subtotal, 1000, 's') : 0n, vatOf
+    });
+
+    const invoices = [];
+    let current = state;
+    let guard = 0;
+    while (outstandingOf(current) > 0n) {
+      if (++guard > 500) throw new Error('no cierra');
+      const left = outstandingOf(current);
+      const draw = BigInt(Math.floor(random() * Number(left))) + 1n;
+      const amount = draw > left ? left : draw;
+
+      // Pesos al azar, incluida la posibilidad de que sean todos cero -- en
+      // cuyo caso tiene que caer al prorrateo por capacidad y no quedarse
+      // colgado.
+      const composition = [...current.groups, null].map(() =>
+        (random() < 0.35 ? 0n : BigInt(Math.floor(random() * 10))));
+
+      const step = allocatePayment(current, amount, { composition });
+      invoices.push(step.invoice);
+      current = step.remaining;
+    }
+
+    assertExact(state, invoices, current, `pesos run ${run}`);
+  }
+});
+
+test('pesos todos a cero caen al prorrateo en vez de colgarse', () => {
+  const state = stateFromLines([{ vatBps: 1600, subtotalMinor: 1000n }], { vatOf });
+  const { invoice, remaining } = allocatePayment(state, 500n, { composition: [0n, 0n] });
+  assert.equal(invoice.totalMinor, 500n);
+  assert.equal(outstandingOf(remaining), outstandingOf(state) - 500n);
+});

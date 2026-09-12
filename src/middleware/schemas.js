@@ -519,8 +519,13 @@ const c2pBankGuideQuerySchema = Joi.object({
  * after trimming, so a name cannot be blanked into an empty landing page.
  */
 const restaurantProfileSchema = Joi.object({
-  name: Joi.string().trim().min(1).max(120).required()
-});
+  // `name` deja de ser obligatorio porque el cuerpo ya no es sólo el nombre.
+  // Pedirlo siempre obligaría a reenviarlo para cambiar otra cosa, que es cómo
+  // se renombra un restaurante sin querer.
+  name: Joi.string().trim().min(1).max(120),
+  // Quién recibe la factura: cada comensal, o la mesa. Ver la migración 040.
+  fiscalInvoicePolicy: Joi.string().valid('PER_DINER', 'SINGLE_BILL')
+}).min(1);
 
 const payoutSchema = Joi.object({
   bankCode: Joi.string().trim().pattern(/^[0-9]{4}$/)

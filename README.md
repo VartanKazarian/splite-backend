@@ -1501,6 +1501,69 @@ total: each invoice is worth exactly what that person paid.
 When what each diner ate *is* known — the "Lo mío" mode — nothing is prorated
 and the lines are computed from theirs.
 
+### Which lines a diner's invoice carries
+
+The rule is a product one: **if we know what this person ate, that is what gets
+invoiced; if we do not, it is prorated.** Only one split mode records who
+claimed what — splitting by product — and even then only when that person pays
+exactly their share. Every other case, nobody knows what of the table was
+theirs, and saying otherwise on a tax document would be inventing it.
+
+| | |
+|---|---|
+| `ITEMISED` | Split by product, and the payment matches what was claimed. Real dish lines. |
+| `PRORATED` | The bill's lines, scaled by what was paid. |
+| `AGGREGATE` | One line: "Consumo — parte de la cuenta de la mesa N". |
+
+`ITEMISED` asks for two things at once and both matter. That the split is by
+product, because it is the only mode that records claims. And that the amount
+paid *is* their share: somebody who claimed 400 and put in 250 has not bought
+their dishes, and issuing the dish lines would declare 400 against a 250
+receipt. Splitting equally is prorated among the payers, because equal shares
+say nothing about who ate what.
+
+The basis is stored on the document itself, so in two years it is readable
+rather than deducible.
+
+**Amounts do not come from the lines.** They come from the allocation engine,
+which is what guarantees the table's invoices sum exactly. The lines are built
+afterwards by spreading what the engine already assigned across the lines of
+each rate group. That is backwards from the obvious way — sum the lines, then
+compute the IVA — and deliberately so: summing independently rounded lines is
+precisely where the céntimo goes that turns a split into a false declaration.
+
+A prorated line carries a fractional quantity in thousandths — 0.338 of a
+burger. It is ugly, and it is what prorating means. Rounding the quantity to 1
+would misstate the amount, which is the one thing that cannot move; if the
+ugliness is unacceptable on paper, the answer is `AGGREGATE`, not a rounded
+quantity.
+
+### Per diner, or per table
+
+Both are legitimate, so it is a restaurant setting
+(`restaurants.fiscal_invoice_policy`) rather than a rule:
+
+- **`PER_DINER`** (default) — one fiscal invoice per diner who pays. This is
+  what somebody claiming their own dinner as an expense needs, and it is the
+  case that motivated the work.
+- **`SINGLE_BILL`** — one fiscal invoice for the whole bill. Diners still get
+  their breakdown, derived from that one document, but those breakdowns are not
+  fiscal documents. Firmer regulatory ground — one sale, one invoice — and the
+  right answer for a restaurant that does not want to issue N documents a
+  table.
+
+A partial unique index enforces the second: a bill may hold only one
+bill-level invoice request, so the same sale cannot be declared twice. Credit
+notes are excluded from it, since correcting that invoice is exactly what has
+to remain possible.
+
+Changing the policy is `OWNER` only and audited as `FISCAL_POLICY_CHANGED`. It
+is not profile editing — it decides how the restaurant declares — so it sits
+with the money decisions. `name` stopped being required on `PATCH
+/api/v1/account` when that body grew past the name: requiring it would mean
+resending it to change anything else, which is how a restaurant gets renamed by
+accident in front of every diner who scans the QR.
+
 ### Why the document and the attempt are different tables
 
 A fiscal invoice does not have states: it exists or it does not. What has

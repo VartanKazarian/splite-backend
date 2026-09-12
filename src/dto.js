@@ -563,6 +563,11 @@ function account(row) {
       // capabilities actually refuse today.
       capabilities: entitlements.capabilitiesFor(row.plan_tier)
     },
+    // A quién se le factura: cada comensal, o la mesa. Se publica siempre,
+    // incluso sin la facturación contratada, porque es un ajuste del
+    // restaurante y no una capacidad del plan -- y porque un panel que lo
+    // muestra en gris explica mejor lo que se compra que uno que lo esconde.
+    fiscalInvoicePolicy: row.fiscal_invoice_policy ?? 'PER_DINER',
     createdAt: isoTimestamp(row.created_at)
   };
 }
