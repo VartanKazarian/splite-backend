@@ -1659,6 +1659,55 @@ can end up recording a document — and on nothing else in
 `TRIAL` *after* it has issued and asserts that the list, the document and the
 queue all still answer 200.
 
+### The email, and the two things it is for
+
+The address is asked for with a concrete reason — so the invoice can arrive —
+and the restaurant would also like to send promotions. **Those are two
+purposes.** Somebody who typed their email so a document would reach them has
+not, by doing that, agreed to receive advertising. Putting both behind one
+"yes" is precisely what gets challenged later.
+
+So `guest_contacts` keeps them as two columns. `invoice_opt_in` is why the row
+exists. `marketing_consent` defaults to **false** and reaches true only when
+someone ticks a box that was empty — there is no default on the field, and it is
+never inferred from the address being present.
+
+A boolean on its own would be worthless in a complaint, so consent carries
+`consent_at` and `consent_source`: what has to be shown is *when* it was given
+and *from which screen*, not that a flag is set.
+
+Three behaviours follow, and none is a detail:
+
+- **Leaving the address again does not reactivate a withdrawal.** Somebody who
+  unsubscribed, dines again months later and asks for their invoice stays
+  unsubscribed — they have not said yes a second time. A `CASE` in the upsert
+  enforces it and `test/integration/guestContacts` asserts it; removing that
+  branch fails exactly that test.
+- **A withdrawal keeps the row.** Deleting it would destroy the evidence that
+  consent once existed, which is the thing to produce if someone complains about
+  a message they say they never asked for — and would let the same address walk
+  back into the list without anybody agreeing again.
+- **The contact belongs to the restaurant, not to Splite.** The unique key is
+  `(restaurant_id, lower(email))`, so the same person can want to hear from one
+  place and not another. Merging them across tenants would use the data for
+  something nobody authorised.
+
+`GET /api/v1/account/contacts` returns only the diners who said yes and have
+not withdrawn. There is deliberately **no parameter for "all the addresses"**:
+it would exist to be used, and the only thing to do with the rest is send them
+something they did not ask for.
+
+### The name, and why it is not a step
+
+`bill_split_participants.name` has been accepted by the split API since it
+existed; the guest screen simply never offered a field. It does now — one
+optional line just before the split is agreed, which is the moment it starts
+being worth anything.
+
+Without it the list reads "Comensal 2" and works fine. The value is for
+everyone *else* at the table: seeing who has already paid without asking out
+loud. That is why it is a line and not a step.
+
 ### Asking for one
 
 `POST /api/v1/guest/bill/invoice`, offered after paying, beside the receipt.

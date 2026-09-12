@@ -6,7 +6,7 @@ const { authenticateToken, requireRole } = require('../middleware/auth');
 const {
   validateBody, validateParams, validateQuery, guestSessionSchema, tableIdParamSchema, splitPreviewSchema,
   declareClaimSchema, c2pChargeSchema, c2pBankGuideQuerySchema, guestOrderSchema,
-  requestInvoiceSchema
+  requestInvoiceSchema, guestContactSchema
 } = require('../middleware/schemas');
 const { createGuestSession, destroyGuestSession, authenticateGuest } = require('../services/guest');
 const rateLimit = require('../middleware/rateLimit');
@@ -23,6 +23,7 @@ const dto = require('../dto');
 const { logAudit, auditContext } = require('../services/audit');
 const { ApiError } = require('../errors');
 const invoicing = require('../services/fiscalInvoicing');
+const guestContacts = require('../services/guestContacts');
 const { assertPlanAllows } = require('../middleware/plan');
 
 const router = express.Router();
@@ -409,6 +410,52 @@ router.post('/bill/payment-claims', authenticateGuest, perSession, validateBody(
  * Guest-session gated for consistency with the rest of this surface; the data
  * itself is public and per-bank, never per-diner.
  */
+/**
+ * El correo del comensal, y qué se puede hacer con él.
+ *
+ * Se pide con una excusa concreta -- que le llegue su factura -- y el
+ * restaurante querría además mandarle promociones. **Son dos finalidades**, y
+ * este endpoint las guarda como dos cosas: `marketingConsent` sólo llega a
+ * `true` si quien está delante marcó una casilla que estaba vacía.
+ *
+ * Omitir el campo no consiente ni retira nada. Para darse de baja está el
+ * borrado explícito, y una baja previa no se reactiva por volver a dejar el
+ * correo: alguien que se dio de baja y vuelve a cenar sigue de baja, porque no
+ * ha vuelto a decir que sí.
+ *
+ * Sin puerta de plan: dejar tu correo no es una capacidad que se venda, y el
+ * comensal no tiene por qué enterarse de lo que su restaurante tiene
+ * contratado.
+ */
+router.post(
+  '/bill/contact',
+  authenticateGuest,
+  perSession,
+  validateBody(guestContactSchema),
+  async (req, res, next) => {
+    try {
+      const bill = await openBillForGuest(req.guest).catch(() => null);
+      const contact = await guestContacts.upsert({
+        restaurantId: req.guest.restaurantId,
+        billId: bill?.id ?? null,
+        email: req.body.email,
+        name: req.body.name ?? null,
+        marketingConsent: req.body.marketingConsent === true,
+        source: 'GUEST_CHECKOUT'
+      });
+
+      res.status(201).json({
+        email: contact.email,
+        // Se devuelve lo que quedó guardado y no lo que se pidió: si había una
+        // baja previa, el comensal tiene derecho a ver que sigue de baja en vez
+        // de creer que acaba de apuntarse.
+        marketingConsent: contact.marketing_consent,
+        withdrawn: contact.withdrawn_at !== null
+      });
+    } catch (err) { next(err); }
+  }
+);
+
 /**
  * «¿Necesitas factura?», después de pagar.
  *

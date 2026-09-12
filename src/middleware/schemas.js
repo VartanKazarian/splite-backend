@@ -538,6 +538,22 @@ const requestInvoiceSchema = Joi.object({
   email: Joi.string().trim().email().max(255)
 });
 
+/**
+ * El contacto que deja un comensal.
+ *
+ * `marketingConsent` **no tiene valor por defecto y no es obligatorio**. Un
+ * cliente que no lo manda no está consintiendo ni retirando nada: está
+ * diciendo sólo «aquí va mi correo para la factura». Ponerle `.default(true)`
+ * -- o darlo por hecho a partir de que haya correo -- convertiría un dato
+ * transaccional en una lista de publicidad sin que nadie dijera que sí, que es
+ * justo lo que este campo existe para impedir.
+ */
+const guestContactSchema = Joi.object({
+  email: Joi.string().trim().email().max(255).required(),
+  name: Joi.string().trim().min(1).max(160),
+  marketingConsent: Joi.boolean()
+});
+
 /** La cola de facturación que mira una persona. */
 const fiscalRequestQuerySchema = Joi.object({
   status: Joi.string().valid('PENDING', 'SENT', 'ISSUED', 'FAILED', 'UNCERTAIN'),
@@ -898,6 +914,7 @@ module.exports = {
   payoutSchema,
   restaurantProfileSchema,
   requestInvoiceSchema,
+  guestContactSchema,
   fiscalRequestQuerySchema,
   fiscalIdParamSchema,
   paymentProviderParamSchema,

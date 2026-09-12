@@ -1944,6 +1944,32 @@ Object.assign(schemas, {
     }
   },
 
+  GuestContactRequest: {
+    type: 'object',
+    required: ['email'],
+    description: 'The diner leaving their details, asked for with a concrete reason: so their invoice can reach them.',
+    properties: {
+      email: { type: 'string', format: 'email', maxLength: 255 },
+      name: { type: 'string', minLength: 1, maxLength: 160 },
+      marketingConsent: {
+        type: 'boolean',
+        description: 'Only true when the diner ticked a box that was empty. Giving an email so an invoice can arrive is NOT consent to marketing -- they are two purposes, and this field is what keeps them apart. Omitting it consents to nothing and withdraws nothing. A previous withdrawal is never reactivated by leaving the address again: somebody who unsubscribed and dines again has not said yes a second time.'
+      }
+    }
+  },
+
+  GuestContactResponse: {
+    type: 'object',
+    properties: {
+      email: { type: 'string' },
+      marketingConsent: {
+        type: 'boolean',
+        description: 'What was stored, not what was asked for. If a withdrawal was on file this comes back false, because the diner is entitled to see they are still unsubscribed rather than believe they just signed up.'
+      },
+      withdrawn: { type: 'boolean' }
+    }
+  },
+
   RequestInvoiceRequest: {
     type: 'object',
     required: ['paymentId'],
@@ -4119,6 +4145,32 @@ const paths = {
     }
   },
 
+  '/api/v1/guest/bill/contact': {
+    post: {
+      tags: ['Guest'],
+      summary: 'Leave an email for the invoice',
+      operationId: 'saveGuestContact',
+      description: [
+        'The address is asked for with a concrete reason -- so the invoice can arrive -- and the',
+        'restaurant would also like to send promotions. **Those are two purposes**, and this',
+        'endpoint stores them as two things.',
+        '',
+        '`marketingConsent` reaches true only when the person in front ticked an empty box. There',
+        'is no default and no inference from the address being present: a transactional detail must',
+        'not become a mailing list because nobody said no.',
+        '',
+        'Not gated by plan. Leaving your email is not a capability that is sold, and a diner has no',
+        'business finding out what their restaurant has subscribed to.'
+      ].join('\n'),
+      security: [{ guestAuth: [] }],
+      requestBody: { required: true, content: { 'application/json': { schema: ref('GuestContactRequest') } } },
+      responses: {
+        201: { description: 'Stored.', content: { 'application/json': { schema: ref('GuestContactResponse') } } },
+        ...commonErrors
+      }
+    }
+  },
+
   '/api/v1/guest/bill/invoice': {
     post: {
       tags: ['Guest'],
@@ -5155,6 +5207,59 @@ const paths = {
         403: response('Forbidden'),
         404: response('NotFound'),
         ...commonErrors
+      }
+    }
+  },
+
+  '/api/v1/account/contacts': {
+    get: {
+      tags: ['Account'],
+      summary: 'Diners who asked to hear from the restaurant',
+      operationId: 'listGuestContacts',
+      'x-required-roles': ['OWNER', 'MANAGER'],
+      description: [
+        'Roles: OWNER, MANAGER.',
+        '',
+        'Not "everyone who has paid here": only the diners who ticked an empty box saying yes, and',
+        'have not withdrawn since. That difference is the whole product — a list of people who',
+        'agreed is worth something, and a list of people who merely wanted their invoice is a',
+        'problem waiting.',
+        '',
+        'There is deliberately no parameter for "all the addresses". It would exist to be used, and',
+        'the only thing to do with the others is send them something they did not ask for.'
+      ].join('\n'),
+      security: staff,
+      parameters: [
+        { name: 'limit', in: 'query', schema: { type: 'integer', minimum: 1, maximum: 200, default: 100 } },
+        { name: 'offset', in: 'query', schema: { type: 'integer', minimum: 0, default: 0 } }
+      ],
+      responses: {
+        200: {
+          description: 'Consented contacts, newest first.',
+          content: {
+            'application/json': {
+              schema: {
+                type: 'object',
+                properties: {
+                  data: {
+                    type: 'array',
+                    items: {
+                      type: 'object',
+                      properties: {
+                        id: { type: 'string', format: 'uuid' },
+                        email: { type: 'string' },
+                        name: { type: ['string', 'null'] },
+                        consentAt: { type: ['string', 'null'], format: 'date-time' }
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          }
+        },
+        ...commonErrors,
+        403: response('Forbidden')
       }
     }
   },

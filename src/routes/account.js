@@ -12,6 +12,7 @@ const { logAudit, auditContext } = require('../services/audit');
 const banks = require('../payments/banks');
 const { ApiError } = require('../errors');
 const dto = require('../dto');
+const guestContacts = require('../services/guestContacts');
 
 const router = express.Router();
 router.use(authenticateToken);
@@ -110,6 +111,36 @@ router.patch(
     } catch (err) { next(err); }
   }
 );
+
+/**
+ * Los comensales que quisieron saber del restaurante.
+ *
+ * No es «la gente que ha pagado aquí»: es sólo quien marcó una casilla vacía
+ * diciendo que sí, y no se ha dado de baja. La diferencia es el producto
+ * entero -- una lista de gente que aceptó vale para algo, y una lista de gente
+ * que sólo quería su factura es un problema esperando.
+ *
+ * Por eso no hay parámetro para ver «todos los correos». Existiría para ser
+ * usado, y lo único que se puede hacer con los demás correos es mandarles algo
+ * que no pidieron.
+ */
+router.get('/contacts', requireRole('OWNER', 'MANAGER'), async (req, res, next) => {
+  try {
+    const rows = await guestContacts.listConsented({
+      restaurantId: req.user.restaurantId,
+      limit: Number(req.query.limit) > 0 ? Math.min(Number(req.query.limit), 200) : 100,
+      offset: Number(req.query.offset) > 0 ? Number(req.query.offset) : 0
+    });
+    res.json({
+      data: rows.map(row => ({
+        id: row.id,
+        email: row.email,
+        name: row.name ?? null,
+        consentAt: row.consent_at ? new Date(row.consent_at).toISOString() : null
+      }))
+    });
+  } catch (err) { next(err); }
+});
 
 /**
  * The banks a payee can be configured against.
