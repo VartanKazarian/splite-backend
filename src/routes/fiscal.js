@@ -61,7 +61,7 @@ router.get('/invoices/:id', validateParams(fiscalIdParamSchema), async (req, res
     );
     if (!rows.length) throw new ApiError('NOT_FOUND', 'Invoice not found');
 
-    const [lines, taxes] = await Promise.all([
+    const [lines, taxes, delivery] = await Promise.all([
       db.query(
         `SELECT position, description, quantity_milli, unit_price_minor,
                 tax_category, vat_bps, base_minor, vat_minor
@@ -72,10 +72,20 @@ router.get('/invoices/:id', validateParams(fiscalIdParamSchema), async (req, res
         `SELECT tax_category, vat_bps, base_minor, vat_minor
            FROM fiscal_invoice_taxes WHERE invoice_id = $1 ORDER BY vat_bps`,
         [req.params.id]
+      ),
+      // El envío por correo, si lo hubo. La pregunta que se le hace a esta
+      // pantalla cuando alguien llama diciendo que no le llegó su factura.
+      db.query(
+        `SELECT email, status, attempts, sent_at, last_error
+           FROM fiscal_invoice_deliveries WHERE invoice_id = $1
+          ORDER BY created_at DESC LIMIT 1`,
+        [req.params.id]
       )
     ]);
 
-    res.json(dto.fiscalInvoice({ ...rows[0], lines: lines.rows, taxes: taxes.rows }));
+    res.json(dto.fiscalInvoice({
+      ...rows[0], lines: lines.rows, taxes: taxes.rows, delivery: delivery.rows[0] ?? null
+    }));
   } catch (err) { next(err); }
 });
 

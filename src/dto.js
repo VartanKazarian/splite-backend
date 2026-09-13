@@ -614,7 +614,26 @@ function fiscalInvoice(row) {
       : null,
     issuedAt: isoTimestamp(row.issued_at),
     ...(row.lines ? { lines: row.lines.map(fiscalInvoiceLine) } : {}),
-    ...(row.taxes ? { taxes: row.taxes.map(fiscalInvoiceTax) } : {})
+    ...(row.taxes ? { taxes: row.taxes.map(fiscalInvoiceTax) } : {}),
+    // El envío, cuando se ha pedido el documento completo. Aparte del documento
+    // porque no forma parte de él: la factura vale igual si el correo no llegó.
+    // Se publica para que el restaurante pueda responder «no me llegó» mirando
+    // una pantalla en vez de adivinando.
+    ...(row.delivery !== undefined ? { delivery: fiscalDelivery(row.delivery) } : {})
+  };
+}
+
+/** Nulo cuando nadie dejó un correo: no hay envío que contar, y no es un fallo. */
+function fiscalDelivery(row) {
+  if (!row) return null;
+  return {
+    email: row.email,
+    status: row.status,
+    attempts: row.attempts,
+    sentAt: isoTimestamp(row.sent_at),
+    // El motivo del último intento fallido, recortado. Lo lee el personal para
+    // distinguir «la dirección está mal escrita» de «el proveedor estaba caído».
+    lastError: row.last_error ?? null
   };
 }
 

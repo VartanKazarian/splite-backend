@@ -8,6 +8,7 @@ const { allocate } = require('./split');
 const { stateFromLines, outstandingOf } = require('./fiscalAllocation');
 const { resolveLineBasis, buildDraft } = require('./fiscalInvoiceBuilder');
 const providers = require('../fiscal/providers');
+const fiscalMail = require('./fiscalMail');
 
 /**
  * Emitir la factura de un pago, sin llegar nunca a emitirla dos veces.
@@ -302,7 +303,24 @@ async function sendAndRecord({ restaurantId, billId, paymentId, provider, reques
     return { status, requestId: request.id, reason: result.reason ?? null };
   }
 
-  return persistIssued({ restaurantId, billId, paymentId, provider, request, draft, bill, customer, result });
+  const issued = await persistIssued({
+    restaurantId, billId, paymentId, provider, request, draft, bill, customer, result
+  });
+
+  /*
+   * El correo sale **sin esperarlo**.
+   *
+   * El comensal ya tiene su número de control en pantalla; colgar esa respuesta
+   * de un SMTP que puede tardar diez segundos (`MAIL_TIMEOUT_MS`) sería cobrarle
+   * la latencia del correo a quien ya terminó. La fila de entrega quedó escrita
+   * en la transacción de arriba, así que un proceso que muera a mitad la deja en
+   * PENDING y la recoge el barrido -- que existe exactamente por esto.
+   */
+  fiscalMail.deliverInBackground(issued.deliveryId);
+
+  // `deliveryId` es de dentro de casa: al comensal se le contesta la factura.
+  delete issued.deliveryId;
+  return issued;
 }
 
 /** Escribe el documento, sus líneas y su desglose, de una vez y sin volver atrás. */
@@ -352,7 +370,20 @@ async function persistIssued({ restaurantId, billId, paymentId, provider, reques
       `UPDATE fiscal_invoice_requests SET status = 'ISSUED' WHERE id = $1`, [request.id]
     );
 
-    return { status: 'ISSUED', requestId: request.id, invoice: invoice.rows[0] };
+    /*
+     * Si dejó su correo, la entrega se anota **aquí dentro**.
+     *
+     * En la misma transacción que el documento para que no pueda existir una
+     * factura con correo y sin rastro de envío: si se anotara después y el
+     * proceso muriera en medio, esa factura no se mandaría nunca y nada lo
+     * diría. El envío en sí ocurre fuera, y puede fallar sin consecuencias
+     * para el documento.
+     */
+    const deliveryId = await fiscalMail.scheduleDelivery(client, {
+      restaurantId, invoiceId, email: customer.email ?? null
+    });
+
+    return { status: 'ISSUED', requestId: request.id, invoice: invoice.rows[0], deliveryId };
   });
 }
 

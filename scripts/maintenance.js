@@ -21,7 +21,12 @@ const path = require('node:path');
 
 const STEPS = [
   { name: 'purge', script: 'purge.js' },
-  { name: 'reconcile', script: 'reconcile.js' }
+  { name: 'reconcile', script: 'reconcile.js' },
+  // Las facturas que quedaron sin entregar. Va la última porque no compite con
+  // las otras dos por nada y porque su fallo es el menos grave de los tres: un
+  // correo que no salió se vuelve a intentar en el pase siguiente, mientras que
+  // el descuadre que reporta `reconcile` no se arregla solo.
+  { name: 'fiscal-mail', script: 'fiscal-mail.js' }
 ];
 
 let worst = 0;
@@ -38,7 +43,9 @@ for (const step of STEPS) {
     console.error(`${step.name} could not be started: ${result.error.message}`);
   }
   // Reconcile's 1 (drift found) outranks a purge failure: one is money not
-  // adding up, the other is disk.
+  // adding up, the other is disk. `fiscal-mail` deliberately never exits 1 for
+  // an undelivered invoice -- it prints a WARNING line instead -- so that a 1
+  // here keeps meaning exactly one thing.
   if (code > worst) worst = code;
 }
 

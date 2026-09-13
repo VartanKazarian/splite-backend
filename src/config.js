@@ -131,23 +131,35 @@ function assertProductionConfig() {
     throw new Error('FISCAL_MOCK_ENABLED must not be set in production: it issues documents with invented numbers');
   }
 
-  // Scoped to the flag rather than asserted unconditionally, so that deploying
-  // self-service onboarding does not stop a running production API that has no
-  // mail provider configured yet. Turning ONBOARDING_ENABLED on is what makes
-  // these mandatory -- and it must, because a registration flow whose
-  // verification mail goes to a log file is a flow where nobody ever finishes
-  // registering.
-  if (!onboardingEnabled) return;
+  /*
+   * Quién necesita que el correo funcione de verdad.
+   *
+   * Eran las altas, y ahora también la facturación: una factura fiscal se le
+   * manda por correo a quien la pidió, y con MAIL_TRANSPORT=log ese correo se
+   * escribe en un fichero de log y no sale. El comensal ve «Factura emitida»
+   * con su número de control y no recibe nada, sin que nada falle a la vista.
+   *
+   * Sigue acotado a una condición y no exigido siempre, por la misma razón de
+   * antes: un despliegue que ni da altas ni emite facturas no tiene por qué
+   * configurar un proveedor de correo para arrancar.
+   */
+  const fiscalConfigured = Boolean(process.env.FISCAL_PROVIDER);
+  if (!onboardingEnabled && !fiscalConfigured) return;
 
+  const because = onboardingEnabled ? 'ONBOARDING_ENABLED=true' : 'FISCAL_PROVIDER set';
   if (mailTransport === 'log') {
-    throw new Error('MAIL_TRANSPORT=log cannot be used in production with ONBOARDING_ENABLED=true');
+    throw new Error(`MAIL_TRANSPORT=log cannot be used in production with ${because}`);
   }
-  if (!process.env.MAIL_FROM) throw new Error('MAIL_FROM is required when onboarding is enabled');
-  if (!process.env.APP_BASE_URL) throw new Error('APP_BASE_URL is required when onboarding is enabled');
+  if (!process.env.MAIL_FROM) throw new Error(`MAIL_FROM is required with ${because}`);
+  // Éstas dos sí son sólo del alta: el enlace de verificación y el buzón al
+  // que llega el formulario. Facturar no usa ninguna de las dos.
+  if (onboardingEnabled && !process.env.APP_BASE_URL) {
+    throw new Error('APP_BASE_URL is required when onboarding is enabled');
+  }
   // The registration form's entire purpose is to reach this address. Defaulting
   // it in production would mean submissions succeed, return 202, and are read
   // by nobody -- the failure mode a lead-capture form cannot be allowed to have.
-  if (!process.env.ONBOARDING_TEAM_EMAIL) {
+  if (onboardingEnabled && !process.env.ONBOARDING_TEAM_EMAIL) {
     throw new Error('ONBOARDING_TEAM_EMAIL is required when onboarding is enabled');
   }
   if (mailTransport === 'resend' && !process.env.MAIL_API_KEY) {
