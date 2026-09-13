@@ -957,8 +957,18 @@ a rule enforced in a router is a rule enforced on the paths somebody remembered:
    owner, only an owner may act on an owner, the only one left is themselves,
    and rule 2 refuses that. Rules 1 and 2 *are* the serial guard. The check
    exists for the race — both of the last two owners removing each other at the
-   same instant, each reading the other as remaining — and so it is counted
-   inside the transaction with the row already locked.
+   same instant, each reading the other as remaining.
+
+   The target row being locked is **not** enough for that, and it used to be all
+   there was. When the last two owners remove each other the two targets are
+   different rows: neither transaction waits for the other, both count against a
+   state that does not yet include the other's uncommitted change, and both
+   proceed. Measured against that code, the restaurant was left with no active
+   owner in 39 of 40 attempts — locked out of its own panel with nobody able to
+   reopen it. The count is now preceded by `SELECT 1 FROM restaurants WHERE
+   id = $1 FOR UPDATE`, the one row both transactions have in common, so the
+   second waits there and then finds nobody left. Both take their target first
+   and the restaurant second, never the reverse, so no deadlock cycle can form.
 
 **Deactivating is not instant, and the response says so.** It revokes every
 refresh session the person holds, so they cannot mint a new access token, and
@@ -1349,6 +1359,41 @@ replaced image is a new address, `immutable` for a year because of it, the
 file's own signature checked against the declared type, and
 `Cross-Origin-Resource-Policy: cross-origin` so a browser will actually render
 it from another site.
+
+## The receipt
+
+`GET /api/v1/guest/payments/{id}/receipt` gives the diner **the whole table's
+bill, and only then what they themselves paid**: every product with its quantity
+and unit price, the subtotal, the service charge, the VAT broken out by rate, the
+total — and after that, their own payment, tip and method.
+
+That ordering is the point, not a layout preference. Four receipts from a table
+of four have to line up and tell the same dinner: same products, same subtotal,
+same VAT, same total, with only the last block differing. A receipt showing one
+person's share alone lets them check nothing — not that they were charged for
+what they ordered, nor that the parts sum to the whole.
+
+So the `bill` block is derived from the bill and nothing else. `billSection`
+takes a bill id and no payment; there is no parameter through which one diner's
+figures could reach it, and an integration test deep-compares two diners'
+receipts from the same table to hold that. The per-rate breakdown comes from
+`summariseTaxGroups`, the same function that writes the bill's stored totals,
+rather than a second implementation that would drift by a rounding céntimo.
+
+It is anchored to the payment rather than to the open bill, for the same reason
+the invoice is: the receipt is read right after the charge is confirmed, which is
+the instant the bill closes.
+
+**A receipt is not a fiscal invoice.** It evidences that a charge happened. It
+carries no control number, no authorised printer issued it, and it does not serve
+to deduct tax. The screen says exactly that at the foot, rather than letting the
+look of a document imply otherwise. The fiscal invoice is requested separately —
+see *Fiscal invoicing* below.
+
+The header carries the restaurant's name, its RIF and its `fiscalAddress`, set
+through `PATCH /api/v1/account`. Any of them that is missing is omitted rather
+than shown as a gap, and never invented. Sending `fiscalAddress: ""` clears it:
+without that, a mistyped address could never be removed.
 
 ## The restaurant's own name
 

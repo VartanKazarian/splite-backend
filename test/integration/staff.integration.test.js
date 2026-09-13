@@ -171,6 +171,46 @@ describe('staff administration', { skip }, () => {
     assert.equal(remaining.rows[0].n, 1, 'the restaurant still has an owner');
   });
 
+  /**
+   * La misma carrera, repetida hasta que deje de depender de la suerte.
+   *
+   * La prueba de arriba corre una sola vez y pasaba casi siempre contra código
+   * que **sí** tenía el fallo: las dos transacciones tienen que solaparse de
+   * verdad para que se cuele, y en una sola tirada normalmente no lo hacen. Con
+   * el fallo presente, medido, el restaurante acababa sin ningún dueño activo
+   * en 39 de cada 40 rondas -- así que cinco rondas lo convierten en una
+   * certeza en vez de en una moneda al aire.
+   *
+   * Y lo que se comprueba es la consecuencia, no el mecanismo: un restaurante
+   * sin dueño activo es un restaurante cuyo panel no puede volver a abrir
+   * nadie.
+   */
+  it('la carrera de los dos últimos dueños no deja nunca un restaurante sin dueño', async () => {
+    for (let round = 0; round < 5; round++) {
+      await db.query(
+        "UPDATE users SET active = false WHERE restaurant_id = $1 AND role = 'OWNER'",
+        [restaurant.id]
+      );
+      const one = await makeUser('OWNER');
+      const two = await makeUser('OWNER');
+
+      await Promise.allSettled([
+        staff.updateStaff({
+          restaurantId: restaurant.id, actor: actorFor(two), userId: one.id, active: false
+        }),
+        staff.updateStaff({
+          restaurantId: restaurant.id, actor: actorFor(one), userId: two.id, active: false
+        })
+      ]);
+
+      const { rows } = await db.query(
+        "SELECT count(*)::int AS n FROM users WHERE restaurant_id = $1 AND role = 'OWNER' AND active = true",
+        [restaurant.id]
+      );
+      assert.equal(rows[0].n, 1, `ronda ${round}: el restaurante se quedó con ${rows[0].n} dueños activos`);
+    }
+  });
+
   it('ends every refresh session when somebody is deactivated', async () => {
     // A removal that leaves the refresh tokens alive has not removed anybody.
     const cashier = await makeUser('CASHIER');

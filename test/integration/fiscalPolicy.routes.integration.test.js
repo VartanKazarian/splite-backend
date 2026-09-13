@@ -129,4 +129,41 @@ describe('política de facturación sobre HTTP', { skip }, () => {
     assert.equal(bogus.status, 400);
     assert.ok(bogus.body.error.details.fieldPaths.includes('fiscalInvoicePolicy'));
   });
+
+  /**
+   * El domicilio del local, que es lo que encabeza el recibo.
+   *
+   * Lo que importa aquí es el tercer estado. Ausente deja lo que hay, texto lo
+   * cambia y cadena vacía lo borra: sin ese último caso una dirección mal
+   * escrita se quedaría para siempre, porque no habría forma de quitarla.
+   */
+  it('el domicilio se pone, se conserva y se puede borrar', async () => {
+    const set = await request('PATCH', '/api/v1/account',
+      { fiscalAddress: 'Av. Francisco de Miranda, Chacao, Caracas' }, ownerToken);
+    assert.equal(set.status, 200);
+    assert.equal(set.body.fiscalAddress, 'Av. Francisco de Miranda, Chacao, Caracas');
+
+    // Un cuerpo que no lo menciona no lo toca. Sin esto, renombrar el local
+    // borraría su dirección.
+    const rename = await request('PATCH', '/api/v1/account', { name: 'Policy Tenant' }, ownerToken);
+    assert.equal(rename.status, 200);
+    assert.equal(rename.body.fiscalAddress, 'Av. Francisco de Miranda, Chacao, Caracas');
+
+    const cleared = await request('PATCH', '/api/v1/account', { fiscalAddress: '' }, ownerToken);
+    assert.equal(cleared.status, 200);
+    assert.equal(cleared.body.fiscalAddress, null);
+
+    // Y la lectura coincide con lo que devolvió la escritura.
+    const read = await request('GET', '/api/v1/account', null, ownerToken);
+    assert.equal(read.body.fiscalAddress, null);
+  });
+
+  it('el domicilio no es una decisión de dueño: un encargado puede corregirlo', async () => {
+    // A diferencia de la política de facturación. Una dirección mal escrita la
+    // ve cada comensal en su recibo, y esperar al dueño para arreglarla no
+    // protege nada.
+    const res = await request('PATCH', '/api/v1/account', { fiscalAddress: 'Calle 5, Mérida' }, managerToken);
+    assert.equal(res.status, 200);
+    assert.equal(res.body.fiscalAddress, 'Calle 5, Mérida');
+  });
 });
