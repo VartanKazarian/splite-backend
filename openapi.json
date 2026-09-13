@@ -4644,6 +4644,44 @@
               "$ref": "#/components/schemas/FiscalInvoiceTax"
             },
             "description": "Only on a single-invoice read."
+          },
+          "delivery": {
+            "description": "Only on a single-invoice read. The emailing of this document, and **null when nobody left an address** — the majority case, not a gap. It is deliberately not part of the document: an invoice is valid whether or not the email arrived, and a mail provider outage can never undo or block an issue. Published so the restaurant can answer \"it never reached me\" from a screen.",
+            "oneOf": [
+              {
+                "type": "object",
+                "properties": {
+                  "email": {
+                    "type": "string"
+                  },
+                  "status": {
+                    "type": "string",
+                    "enum": [
+                      "PENDING",
+                      "SENT",
+                      "FAILED"
+                    ],
+                    "description": "PENDING: written but not yet out, or an attempt whose process died. SENT: the provider accepted it — not a read receipt, and not proof of delivery to the inbox. FAILED: attempted and refused. PENDING and FAILED are both retried by the scheduled sweep until the attempt cap."
+                  },
+                  "attempts": {
+                    "type": "integer"
+                  },
+                  "sentAt": {
+                    "type": "string",
+                    "format": "date-time",
+                    "nullable": true
+                  },
+                  "lastError": {
+                    "type": "string",
+                    "nullable": true,
+                    "description": "The last failure reason, truncated. Staff read it to tell a mistyped address from a provider outage."
+                  }
+                }
+              },
+              {
+                "type": "null"
+              }
+            ]
           }
         }
       },

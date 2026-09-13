@@ -142,7 +142,7 @@ fail loudly at deploy time rather than at the first request:
 | `JWT_ACCESS_SECRET`, `JWT_REFRESH_SECRET`, `QR_SIGNING_SECRET`, `WEBHOOK_SECRET` | All four. Long, not the placeholder, and **all different** — reusing one secret for two purposes means a token minted for one is valid for the other |
 | `DATABASE_URL` (or `DB_PASSWORD` with the discrete `DB_*` set) | One or the other |
 | `CORS_ORIGINS` | Required, and `*` is refused |
-| `MAIL_*`, `APP_BASE_URL`, `ONBOARDING_TEAM_EMAIL` | Only when `ONBOARDING_ENABLED=true`. Scoped to the flag so turning onboarding on is what makes them mandatory. `resend` requires `MAIL_API_KEY` and refuses a `MAIL_FROM` at a mailbox provider; `smtp` additionally requires `MAIL_SMTP_HOST`, `MAIL_SMTP_USER` and `MAIL_SMTP_PASSWORD` — **and a host that permits outbound SMTP, which Railway does not below Pro** |
+| `MAIL_*`, `APP_BASE_URL`, `ONBOARDING_TEAM_EMAIL` | The `MAIL_*` settings are required when `ONBOARDING_ENABLED=true` **or** when `FISCAL_PROVIDER` is set, because both send mail that a person is waiting for — a verification link, or their invoice. `APP_BASE_URL` and `ONBOARDING_TEAM_EMAIL` stay tied to onboarding alone; invoicing uses neither. Scoped to a condition rather than always, so a deployment that does neither still boots without a mail provider. `resend` requires `MAIL_API_KEY` and refuses a `MAIL_FROM` at a mailbox provider; `smtp` additionally requires `MAIL_SMTP_HOST`, `MAIL_SMTP_USER` and `MAIL_SMTP_PASSWORD` — **and a host that permits outbound SMTP, which Railway does not below Pro** |
 
 `LOG_LEVEL` is refused above `warn` in production. Metrics are counted where
 failures are logged, and pino skips its hook for a line below the configured
@@ -167,7 +167,7 @@ these do not** — they mean stop offering the feature on this server.
 | **Second factor** | `MFA_SECRET_KEYS` | 503 `MFA_KEY_MISSING` on enrolment. Existing accounts keep signing in on passwords | `GET /api/v1/auth/mfa` |
 | **Self-service registration** | `ONBOARDING_ENABLED=true`, plus everything the boot guard above then demands | 503 `ONBOARDING_NOT_CONFIGURED`. The router is not mounted at all — a stub answers, so no lead is recorded and no mail is sent | The code itself. It answered a bare 404 until a frontend, unable to tell that from a mistyped path, rendered an invented support address to a restaurant mid-application |
 | **Store bank credentials** | `PAYMENT_CREDENTIALS_KEYS` | 503 `PAYMENT_CREDENTIALS_KEY_MISSING` | — |
-| **Issue fiscal invoices** | `FISCAL_PROVIDER`, naming an authorised imprenta digital with an adapter. `FISCAL_MOCK_ENABLED=true` registers the mock instead, and **the boot guard refuses it in production** — its documents carry invented `MOCK-` numbers | 503 `FISCAL_PROVIDER_NOT_CONFIGURED` | `plan.capabilities.fiscalInvoicing` on `GET /api/v1/account`, which answers the separate question of whether the plan includes it |
+| **Issue fiscal invoices** | `FISCAL_PROVIDER`, naming an authorised imprenta digital with an adapter. `FISCAL_MOCK_ENABLED=true` registers the mock instead, and **the boot guard refuses it in production** — its documents carry invented `MOCK-` numbers. Setting `FISCAL_PROVIDER` in production also makes the `MAIL_*` settings mandatory, because an issued invoice is emailed to whoever asked for it | 503 `FISCAL_PROVIDER_NOT_CONFIGURED` | `plan.capabilities.fiscalInvoicing` on `GET /api/v1/account`, which answers the separate question of whether the plan includes it |
 | **Charge through Mercantil C2P** | `MERCANTIL_C2P_URL`, **and** credentials stored per restaurant, **and** those credentials proven by a real call | 503 `PAYMENT_PROVIDER_MISCONFIGURED` | `chargeable` on `GET /api/v1/account/banks` |
 | **Self-service signup** | `ONBOARDING_ENABLED=true` and a mail provider | The routes are **not mounted at all** — 404, not 503 | — |
 | **Foreign-currency menus** | `FX_ENABLED` (on by default) and a reachable BCV | 503 `FX_UNAVAILABLE`, but only after the stored-rate fallback is exhausted | `GET /api/v1/exchange-rate` |
@@ -1715,6 +1715,57 @@ The provider call happens outside the transaction that created the request. A
 network call inside one holds a locked row open for as long as the far end takes
 to answer — or not to answer.
 
+### Getting the invoice to the diner
+
+An issued invoice is emailed to whoever left an address. Two rules govern it,
+and both are about what must *not* happen.
+
+**A mail failure never touches the invoice.** The document is issued, declared
+and valid whether or not the email arrives; what is missing when sending fails
+is a delivery, not an invoice. So nothing in `fiscalMail` runs inside the
+transaction that writes the document, and nothing in it can throw into one. A
+test holds this by breaking the transport and asserting the invoice is still
+`ISSUED` with its control number — it fails if the send is ever awaited into the
+issuing path.
+
+**A simulated document is never dressed as a fiscal invoice.** The `mock`
+provider issues invented `MOCK-` numbers, and its email says so in its first
+line and its subject. The boot guard already refuses the mock in production;
+this is the second fence.
+
+`fiscal_invoice_deliveries` is a separate table because `fiscal_invoices` is
+immutable by trigger (migration 039) and a send status is the opposite — it
+moves from PENDING to SENT, counts attempts, keeps the last error. Putting it on
+the document would mean lifting the immutability of a legal record to move a
+progress field.
+
+The delivery row is written **inside** the issuing transaction so an invoice
+with an address cannot exist with no trace of a send. The send itself happens
+after, and **is not awaited**: the diner already has their control number on
+screen and should not wait on an SMTP dialogue that may take
+`MAIL_TIMEOUT_MS`. The price is that a process restarted mid-send leaves the row
+PENDING — which is why `npm run fiscal:mail` exists and runs as the third step
+of the scheduled maintenance pass. It retries PENDING and FAILED alike up to
+five attempts, then leaves the row alone and prints a WARNING: a mistyped
+address is not fixed by retrying. It deliberately never exits 1, so that a 1
+from the maintenance pass keeps meaning exactly one thing — reconciliation
+drift.
+
+A unique index on `(invoice_id, lower(email))` makes a second copy impossible:
+two taps, or a sweep racing the original send, cannot become two emails carrying
+the same document.
+
+`GET /api/v1/fiscal/invoices/{id}` carries `delivery`, so the restaurant can
+answer "it never reached me" from a screen rather than by guessing. It is null
+when nobody left an address, which is the majority case and not a gap.
+
+**What is not built.** There is no attachment: the mailer is a port with one
+body field and three adapters (`mailer.js`), and the email carries the
+document's fiscal data as text rather than a PDF. A real imprenta typically
+returns a PDF or a URL, and there is nowhere to keep one yet — `fiscal_invoices`
+has `provider_document_id` and no document URL. There is also no staff-facing
+resend endpoint; a stuck delivery is visible but has to be retried by the sweep.
+
 ### Reads are never gated
 
 Issuing is an `ENTERPRISE` capability (see the plan table above). Reading an
@@ -3215,9 +3266,13 @@ would surface.
 
 ## Scheduled maintenance
 
-`npm run maintenance` runs the purge and then the reconciler, and exits with the
-worse of the two — drift outranks a housekeeping failure, because one is money
-not adding up and the other is disk.
+`npm run maintenance` runs the purge, then the reconciler, then the undelivered
+invoice emails, and exits with the worst of the three — drift outranks a
+housekeeping failure, because one is money not adding up and the other is disk.
+
+`fiscal-mail` deliberately never exits 1 for an invoice it could not deliver: it
+prints a WARNING line instead, so that a 1 from the pass keeps meaning exactly
+one thing. See *Getting the invoice to the diner*.
 
 Deploy it as a second Railway service from the same image, pointed at
 `railway.maintenance.json` (Settings → Config-as-code path), which carries a
