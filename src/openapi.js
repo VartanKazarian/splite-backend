@@ -4367,7 +4367,17 @@ const paths = {
         '',
         '**A failure here never means the payment failed.** 202 with `UNCERTAIN` means the provider',
         'answered something that does not say whether it issued; it goes to a queue a person looks',
-        'at, and blindly retrying would risk declaring the sale twice.'
+        'at, and blindly retrying would risk declaring the sale twice.',
+        '',
+        'Asking twice for the same payment — two taps, or a retry after a dropped connection —',
+        'answers 409 `FISCAL_ALREADY_REQUESTED`. One payment, one document: that was already',
+        'guaranteed by a unique index, but the collision used to surface as a bare 500, leaving a',
+        'client unable to tell the diner the one thing worth saying, which is that their invoice is',
+        'already on file.',
+        '',
+        '**Only 202 `UNCERTAIN` means "pending, somebody is looking at it".** Every other',
+        'non-success is a refusal, and a client must not present them as an invoice in progress:',
+        'no request row exists, no queue entry exists, and nobody is resolving anything.'
       ].join('\n'),
       security: [{ guestAuth: [] }],
       requestBody: { required: true, content: { 'application/json': { schema: ref('RequestInvoiceRequest') } } },

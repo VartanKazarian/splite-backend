@@ -152,6 +152,44 @@ describe('facturación sobre HTTP', { skip }, () => {
     assert.equal(res.body.paymentUnaffected, true);
   });
 
+  it('pedirla dos veces lo dice; no revienta ni emite un segundo documento', async () => {
+    /*
+     * Dos pulsaciones seguidas, o una red que se cortó y un reintento.
+     *
+     * El índice único ya impedía el segundo documento, y eso no cambia. Lo que
+     * cambia es cómo se cuenta: el choque salía en crudo como 500
+     * INTERNAL_ERROR, y un cliente que sólo ve «error interno» no puede
+     * decirle al comensal lo único que hay que decirle -- que su factura ya
+     * está pedida. Medido contra el código anterior: la segunda y la tercera
+     * devolvían 500.
+     *
+     * Se usa un pago **parcial** a propósito: con la cuenta entera pagada el
+     * segundo intento choca antes, contra FISCAL_NOTHING_TO_DECLARE, y el
+     * camino que este arreglo cubre no llegaría a recorrerse.
+     */
+    const { paymentId } = await billWithPayment(3000);
+    const { session, token } = await scan();
+
+    const first = await request('POST', '/api/v1/guest/bill/invoice', {
+      body: { paymentId }, token, session
+    });
+    assert.equal(first.status, 201, JSON.stringify(first.body));
+
+    for (const attempt of ['segunda', 'tercera']) {
+      const again = await request('POST', '/api/v1/guest/bill/invoice', {
+        body: { paymentId }, token, session
+      });
+      assert.equal(again.status, 409, `${attempt}: ${JSON.stringify(again.body)}`);
+      assert.equal(again.body.error.code, 'FISCAL_ALREADY_REQUESTED');
+    }
+
+    // Y lo que de verdad importa: un cobro, un documento.
+    const { rows } = await db.query(
+      'SELECT count(*)::int AS n FROM fiscal_invoices WHERE payment_id = $1', [paymentId]
+    );
+    assert.equal(rows[0].n, 1, 'un cobro no puede acabar con dos facturas');
+  });
+
   it('quien da su cédula la recibe en el documento', async () => {
     const { paymentId } = await billWithPayment();
     const { session, token } = await scan();

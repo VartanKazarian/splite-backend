@@ -229,15 +229,36 @@ async function issueForPayment({ restaurantId, billId, paymentId, customer = {},
     // la primera llamada: si el proceso muere a mitad, lo que queda es una
     // petición que se puede consultar, no una emisión de la que no hay rastro.
     const idempotencyKey = `${billId}:${paymentId}:${crypto.randomBytes(8).toString('hex')}`;
-    const request = await client.query(
-      `INSERT INTO fiscal_invoice_requests
-         (restaurant_id, bill_id, payment_id, idempotency_key, status, provider, draft_json)
-       VALUES ($1, $2, $3, $4, 'PENDING', $5, $6)
-       RETURNING id, idempotency_key`,
-      [restaurantId, billId, paymentId, idempotencyKey, provider, JSON.stringify(serialiseDraft(draft))]
-    );
+    /*
+     * El índice único es lo que impide un segundo documento del mismo cobro, y
+     * hace bien en existir. Lo que no puede es salir en crudo: un 23505 se
+     * traduce en 500 INTERNAL_ERROR, y un cliente que sólo ve «error interno»
+     * no tiene forma de decirle al comensal lo único que hay que decirle, que
+     * es que su factura **ya está pedida**. Medido antes de arreglarlo: pulsar
+     * dos veces devolvía 500 las dos veces siguientes.
+     *
+     * Se comprueba por el choque y no consultando antes a propósito: entre la
+     * consulta y la inserción cabe la segunda pulsación, y entonces el 500
+     * volvería exactamente igual pero más difícil de reproducir.
+     */
+    let request;
+    try {
+      request = (await client.query(
+        `INSERT INTO fiscal_invoice_requests
+           (restaurant_id, bill_id, payment_id, idempotency_key, status, provider, draft_json)
+         VALUES ($1, $2, $3, $4, 'PENDING', $5, $6)
+         RETURNING id, idempotency_key`,
+        [restaurantId, billId, paymentId, idempotencyKey, provider, JSON.stringify(serialiseDraft(draft))]
+      )).rows[0];
+    } catch (err) {
+      if (err?.code === '23505' && err?.constraint === 'fiscal_requests_payment_idx') {
+        throw new ApiError('FISCAL_ALREADY_REQUESTED',
+          'This payment already has an invoice request', { paymentId });
+      }
+      throw err;
+    }
 
-    return { request: request.rows[0], draft, bill, customer };
+    return { request, draft, bill, customer };
   });
 
   return sendAndRecord({ restaurantId, billId, paymentId, provider, ...prepared });
