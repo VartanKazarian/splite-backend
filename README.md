@@ -1676,6 +1676,30 @@ provider's name. `assertProductionConfig` refuses to boot with it set: one of
 those documents handed to a diner as an invoice is a tax problem with a penalty
 attached, caused by an environment variable.
 
+### Asking twice, and what the diner is told
+
+Two taps, or a retry after a dropped connection, answer **409
+`FISCAL_ALREADY_REQUESTED`**. One payment, one document — that was already
+guaranteed by a unique index on `fiscal_invoice_requests (payment_id)`, and it
+still is. What changed is how the collision is reported: it used to escape as a
+bare `23505`, which the error handler turned into **500 `INTERNAL_ERROR`**.
+Measured before the fix, on a partial payment: the second and third attempts
+both answered 500.
+
+That matters beyond tidiness, because of what a client can say. There is exactly
+one outcome that means *pending, and somebody is looking at it*: **202 with
+`UNCERTAIN`**. A request row exists, it sits in the queue, and a person will
+resolve it. Every other non-success is a refusal — no request row, no queue
+entry, nobody resolving anything.
+
+The diner-facing client used to collapse all of them into "your invoice is on
+its way, the restaurant is resolving it". On the deployment as it stands, with
+no `FISCAL_PROVIDER` configured, the common case was a 503 painted as a promise
+nobody could keep. The offer now distinguishes them: the restaurant does not
+issue from the app (503 or 403 — which of the two is not the diner's business),
+already requested, already declared in full, the payment not yet confirmed, and
+a genuine failure that is worth retrying. Only `UNCERTAIN` says "on its way".
+
 ### The draft is stored before the call
 
 `fiscal_invoice_requests.draft_json` holds what was sent, because of the

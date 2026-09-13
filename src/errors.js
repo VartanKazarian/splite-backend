@@ -144,6 +144,7 @@ const CODES = {
   // otra factura. Es un conflicto con el estado y no un cuerpo mal formado --
   // la misma petición valdría sobre una cuenta con saldo sin declarar.
   FISCAL_NOTHING_TO_DECLARE: 409,
+  FISCAL_ALREADY_REQUESTED: 409,
   MENU_CURRENCY_MISMATCH: 409,
   CATEGORY_NAME_TAKEN: 409,
   WEBHOOK_ALREADY_PROCESSED: 409,
