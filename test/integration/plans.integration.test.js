@@ -45,25 +45,9 @@ describe('planes', { skip }, () => {
   });
 
   after(async () => {
+    await fixtures.purgeFiscal(restaurant?.id);
     if (restaurant) {
-      for (const table of ['fiscal_invoices', 'fiscal_invoice_lines', 'fiscal_invoice_taxes']) {
-        await db.query(`ALTER TABLE ${table} DISABLE TRIGGER ${table}_immutable`);
-      }
-      for (const sql of [
-        'DELETE FROM fiscal_invoice_deliveries WHERE restaurant_id = $1',
-        'DELETE FROM fiscal_invoice_lines WHERE restaurant_id = $1',
-        'DELETE FROM fiscal_invoice_taxes WHERE restaurant_id = $1',
-        'DELETE FROM fiscal_invoices WHERE restaurant_id = $1',
-        'DELETE FROM fiscal_invoice_requests WHERE restaurant_id = $1',
-        'DELETE FROM fiscal_counters WHERE restaurant_id = $1',
-        'DELETE FROM fiscal_series WHERE restaurant_id = $1',
-        'DELETE FROM menu_products WHERE restaurant_id = $1'
-      ]) {
-        await db.query(sql, [restaurant.id]);
-      }
-      for (const table of ['fiscal_invoices', 'fiscal_invoice_lines', 'fiscal_invoice_taxes']) {
-        await db.query(`ALTER TABLE ${table} ENABLE TRIGGER ${table}_immutable`);
-      }
+      await db.query('DELETE FROM menu_products WHERE restaurant_id = $1', [restaurant.id]);
     }
     await fixtures.destroyRestaurant(restaurant?.id);
     await db.close();

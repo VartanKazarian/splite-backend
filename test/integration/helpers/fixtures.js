@@ -86,4 +86,52 @@ async function destroyRestaurant(restaurantId) {
   }
 }
 
-module.exports = { createRestaurant, createTable, createBill, readBill, destroyRestaurant };
+/**
+ * Borra el rastro fiscal de un restaurante **sin apagárselo a nadie más**.
+ *
+ * Los documentos fiscales son inmutables por trigger, que es lo que los hace
+ * servir de prueba, así que limpiarlos exige desactivarlo. Lo que no se puede
+ * es hacerlo con `ALTER TABLE ... DISABLE TRIGGER`: **eso es global, no de la
+ * sesión**. El runner corre los ficheros en paralelo, así que mientras un
+ * teardown lo tiene apagado, otro fichero que comprueba precisamente que la
+ * inmutabilidad funciona ve pasar su UPDATE y falla.
+ *
+ * Medido, no deducido: apagarlo en una conexión deja `pg_trigger.tgenabled` en
+ * 'D' para cualquier otra. Así se cayó `fiscalSchema` -- «una factura emitida
+ * no se puede modificar ni borrar», con *Missing expected rejection* -- en una
+ * vuelta de CI donde no había cambiado nada suyo. El fallo existía desde que
+ * hubo dos ficheros haciéndolo; añadir más sólo ensanchó la ventana.
+ *
+ * `session_replication_role = replica` hace lo mismo **sólo en esta sesión**:
+ * en ese modo no disparan los triggers de usuario. Va con `SET LOCAL` dentro
+ * de una transacción, así que revierte al COMMIT y no puede quedarse pegado a
+ * una conexión del pool que luego preste otra prueba.
+ *
+ * De paso desactiva las claves ajenas, pero el orden sigue siendo hijos antes
+ * que padres: lo que este borrado hace tiene que leerse igual de bien el día
+ * que alguien lo copie a un sitio sin esa red.
+ */
+async function purgeFiscal(restaurantId) {
+  if (!restaurantId) return;
+  await db.withTransaction(async (client) => {
+    await client.query("SET LOCAL session_replication_role = 'replica'");
+    for (const sql of [
+      // Las entregas por correo son ON DELETE RESTRICT sobre la factura: el
+      // rastro de a quién se le mandó su documento no puede desaparecer porque
+      // se borre otra cosa.
+      'DELETE FROM fiscal_invoice_deliveries WHERE restaurant_id = $1',
+      'DELETE FROM fiscal_invoice_lines WHERE restaurant_id = $1',
+      'DELETE FROM fiscal_invoice_taxes WHERE restaurant_id = $1',
+      'DELETE FROM fiscal_invoices WHERE restaurant_id = $1',
+      'DELETE FROM fiscal_invoice_requests WHERE restaurant_id = $1',
+      'DELETE FROM fiscal_counters WHERE restaurant_id = $1',
+      'DELETE FROM fiscal_series WHERE restaurant_id = $1'
+    ]) {
+      await client.query(sql, [restaurantId]);
+    }
+  });
+}
+
+module.exports = {
+  createRestaurant, createTable, createBill, readBill, destroyRestaurant, purgeFiscal
+};
