@@ -418,6 +418,7 @@
                   "FISCAL_SERIES_MISSING",
                   "FISCAL_RANGE_EXHAUSTED",
                   "FISCAL_SERIES_LOCKED",
+                  "PLAN_DOWNGRADE_BLOCKED",
                   "MENU_CURRENCY_MISMATCH",
                   "CATEGORY_NAME_TAKEN",
                   "WEBHOOK_ALREADY_PROCESSED",
