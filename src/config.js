@@ -467,12 +467,19 @@ module.exports = {
   },
   fiscal: {
     /**
-     * Qué imprenta digital emite las facturas fiscales.
+     * Quién emite las facturas fiscales.
      *
-     * Vacío por defecto: un despliegue sin proveedor simplemente no puede
-     * emitir, y lo dice. En Venezuela el número de control lo asigna una
-     * imprenta **autorizada**, así que no hay «modo sin proveedor» que
-     * produzca algo válido -- sólo produciría documentos falsos.
+     * Dos valores con sentido:
+     *
+     * - `own` -- **emisión por medios propios**. Los números los reparte
+     *   Splite contra la serie que cada restaurante tenga autorizada
+     *   (`fiscal_series`), y un restaurante sin serie configurada no emite.
+     * - el nombre de una imprenta digital, cuando haya contrato con una y su
+     *   adaptador escrito. Entonces el número lo pone ella.
+     *
+     * Vacío por defecto: un despliegue sin ninguna de las dos cosas
+     * simplemente no puede emitir, y lo dice con 503 en vez de producir un
+     * documento de mentira con apariencia de bueno.
      */
     provider: process.env.FISCAL_PROVIDER || '',
 

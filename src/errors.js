@@ -145,6 +145,17 @@ const CODES = {
   // la misma petición valdría sobre una cuenta con saldo sin declarar.
   FISCAL_NOTHING_TO_DECLARE: 409,
   FISCAL_ALREADY_REQUESTED: 409,
+  // Emitiendo por medios propios: sin serie autorizada no hay con qué numerar,
+  // y un rango agotado no es una errata sino un documento sin amparo.
+  //
+  // `_MISSING` y no `_NOT_CONFIGURED`: en este repo ese sufijo significa que al
+  // **despliegue** le falta una variable de entorno, y esto es otra cosa -- le
+  // falta una fila a **un restaurante**, y quien la escribe es su dueño desde
+  // el panel, no quien despliega. Un guardarraíl obliga a documentar los
+  // primeros en la tabla de configuración, y meter éste ahí mandaría a buscar
+  // una variable que no existe.
+  FISCAL_SERIES_MISSING: 409,
+  FISCAL_RANGE_EXHAUSTED: 409,
   MENU_CURRENCY_MISMATCH: 409,
   CATEGORY_NAME_TAKEN: 409,
   WEBHOOK_ALREADY_PROCESSED: 409,

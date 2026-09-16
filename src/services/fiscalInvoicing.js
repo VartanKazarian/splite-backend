@@ -9,6 +9,7 @@ const { stateFromLines, outstandingOf } = require('./fiscalAllocation');
 const { resolveLineBasis, buildDraft } = require('./fiscalInvoiceBuilder');
 const providers = require('../fiscal/providers');
 const fiscalMail = require('./fiscalMail');
+const numbering = require('./fiscalNumbering');
 
 /**
  * Emitir la factura de un pago, sin llegar nunca a emitirla dos veces.
@@ -189,6 +190,17 @@ async function claimedLines(client, { paymentId, lines }) {
  * reconoce por clave. La primera evita el duplicado desde este lado; la segunda,
  * desde el suyo.
  */
+/**
+ * El nombre reservado de la emisión por medios propios.
+ *
+ * No es un adaptador y no está en el registro de proveedores a propósito: no
+ * hay nadie a quien llamar. Se compara por nombre en el único sitio que
+ * bifurca, y `FISCAL_PROVIDER=own` es lo que la enciende.
+ */
+const OWN = 'own';
+
+const isOwnIssuer = (provider) => provider === OWN;
+
 async function issueForPayment({ restaurantId, billId, paymentId, customer = {}, provider }) {
   const prepared = await db.withTransaction(async (client) => {
     const { bill, lines, state } = await stateForBill(client, { restaurantId, billId });
@@ -262,6 +274,30 @@ async function issueForPayment({ restaurantId, billId, paymentId, customer = {},
     return { request, draft, bill, customer };
   });
 
+  /*
+   * Emitiendo nosotros **no hay a quién llamar**, y eso borra el problema que
+   * justifica toda la maquinaria de abajo.
+   *
+   * `sendAndRecord` existe para un caso: que un tercero conteste algo que no
+   * dice si emitió. De ahí la clave de idempotencia, la consulta antes de
+   * reintentar y la cola que mira una persona. Si el documento lo escribimos
+   * nosotros no queda duda posible: la transacción confirmó o no confirmó, y en
+   * el segundo caso no se gastó ni el número.
+   *
+   * Así que `UNCERTAIN` deja de ser alcanzable por este camino. No se finge que
+   * puede pasar.
+   */
+  if (isOwnIssuer(provider)) {
+    await db.query(
+      `UPDATE fiscal_invoice_requests
+          SET status = 'SENT', attempts = attempts + 1, last_attempt_at = now()
+        WHERE id = $1`, [prepared.request.id]
+    );
+    return finishIssue(await persistIssued({
+      restaurantId, billId, paymentId, provider, ...prepared, result: null
+    }));
+  }
+
   return sendAndRecord({ restaurantId, billId, paymentId, provider, ...prepared });
 }
 
@@ -303,21 +339,25 @@ async function sendAndRecord({ restaurantId, billId, paymentId, provider, reques
     return { status, requestId: request.id, reason: result.reason ?? null };
   }
 
-  const issued = await persistIssued({
+  return finishIssue(await persistIssued({
     restaurantId, billId, paymentId, provider, request, draft, bill, customer, result
-  });
+  }));
+}
 
-  /*
-   * El correo sale **sin esperarlo**.
-   *
-   * El comensal ya tiene su número de control en pantalla; colgar esa respuesta
-   * de un SMTP que puede tardar diez segundos (`MAIL_TIMEOUT_MS`) sería cobrarle
-   * la latencia del correo a quien ya terminó. La fila de entrega quedó escrita
-   * en la transacción de arriba, así que un proceso que muera a mitad la deja en
-   * PENDING y la recoge el barrido -- que existe exactamente por esto.
-   */
+/**
+ * Lo que pasa después de que el documento esté escrito, venga de donde venga.
+ *
+ * Compartido por los dos caminos -- imprenta y emisión propia -- porque es la
+ * misma decisión en los dos: el correo sale **sin esperarlo**.
+ *
+ * El comensal ya tiene su número de control en pantalla; colgar esa respuesta
+ * de un SMTP que puede tardar diez segundos (`MAIL_TIMEOUT_MS`) sería cobrarle
+ * la latencia del correo a quien ya terminó. La fila de entrega quedó escrita
+ * en la transacción que guardó la factura, así que un proceso que muera a mitad
+ * la deja en PENDING y la recoge el barrido -- que existe exactamente por esto.
+ */
+function finishIssue(issued) {
   fiscalMail.deliverInBackground(issued.deliveryId);
-
   // `deliveryId` es de dentro de casa: al comensal se le contesta la factura.
   delete issued.deliveryId;
   return issued;
@@ -326,6 +366,20 @@ async function sendAndRecord({ restaurantId, billId, paymentId, provider, reques
 /** Escribe el documento, sus líneas y su desglose, de una vez y sin volver atrás. */
 async function persistIssued({ restaurantId, billId, paymentId, provider, request, draft, bill, customer, result }) {
   return db.withTransaction(async (client) => {
+    /*
+     * El par de números, repartido **aquí dentro** cuando el emisor somos
+     * nosotros. Dentro y no antes: un número asignado cuya factura no llega a
+     * guardarse es un hueco en el libro de ventas, y un hueco es lo que se
+     * pregunta en una fiscalización. Si esta transacción no confirma, el
+     * contador vuelve solo a donde estaba.
+     *
+     * Con imprenta los números llegan en la respuesta y este código no genera
+     * ninguno -- que sigue siendo lo correcto para ese caso.
+     */
+    const numbers = result === null
+      ? await numbering.allocate(client, { restaurantId, documentType: 'INVOICE' })
+      : { documentNumber: result.documentNumber, controlNumber: result.controlNumber };
+
     const invoice = await client.query(
       `INSERT INTO fiscal_invoices
          (restaurant_id, request_id, bill_id, payment_id, document_number, control_number,
@@ -335,12 +389,12 @@ async function persistIssued({ restaurantId, billId, paymentId, provider, reques
        VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,'VES',$10,$11,$12,$13,$14,$15,$16,$17,$18)
        RETURNING *`,
       [restaurantId, request.id, billId, paymentId,
-        result.documentNumber, result.controlNumber, provider, result.providerDocumentId ?? null,
+        numbers.documentNumber, numbers.controlNumber, provider, result?.providerDocumentId ?? null,
         draft.lineBasis, bill.fx_rate_ves_per_unit,
         draft.subtotalMinor.toString(), draft.vatMinor.toString(),
         draft.serviceMinor.toString(), draft.totalMinor.toString(),
         customer.name ?? null, customer.taxId ?? null, customer.email ?? null,
-        result.issuedAt ?? new Date().toISOString()]
+        result?.issuedAt ?? new Date().toISOString()]
     );
     const invoiceId = invoice.rows[0].id;
 
