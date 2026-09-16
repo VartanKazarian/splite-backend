@@ -156,6 +156,10 @@ const CODES = {
   // una variable que no existe.
   FISCAL_SERIES_MISSING: 409,
   FISCAL_RANGE_EXHAUSTED: 409,
+  // Y la serie ya no se puede reescribir a voluntad en cuanto ha numerado algo:
+  // cambiar el prefijo, el ancho o el primero dejaría el libro de ventas con
+  // dos formatos y documentos emitidos que ya no cuadran con su propia serie.
+  FISCAL_SERIES_LOCKED: 409,
   MENU_CURRENCY_MISMATCH: 409,
   CATEGORY_NAME_TAKEN: 409,
   WEBHOOK_ALREADY_PROCESSED: 409,

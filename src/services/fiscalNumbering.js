@@ -123,4 +123,87 @@ async function allocate(client, { restaurantId, documentType = 'INVOICE' }) {
   };
 }
 
-module.exports = { allocate, CONTROL, _internals: { format } };
+/** Qué serie tiene este restaurante, y por dónde van sus contadores. */
+async function readSeries(client, restaurantId) {
+  const { rows } = await client.query(
+    `SELECT s.control_prefix, s.document_prefix, s.pad_to, s.control_first,
+            s.control_last, s.authorisation_ref, s.updated_at,
+            c.next_value AS control_next
+       FROM fiscal_series s
+       LEFT JOIN fiscal_counters c
+         ON c.restaurant_id = s.restaurant_id AND c.scope = $2
+      WHERE s.restaurant_id = $1`,
+    [restaurantId, CONTROL]
+  );
+  return rows[0] ?? null;
+}
+
+/**
+ * Guarda la serie autorizada, y deja de dejarla cambiar en cuanto ha numerado.
+ *
+ * Mientras no se haya emitido nada se puede escribir entera: es un formulario
+ * que se rellena y se corrige. En cuanto sale el primer documento, cuatro
+ * campos se congelan -- los dos prefijos, el ancho y el primer número --
+ * porque cambiarlos no cambia la serie de aquí en adelante, **contradice lo ya
+ * emitido**: el libro de ventas pasaría a tener dos formatos y documentos cuyo
+ * número no se corresponde con la serie que dice llevarlos.
+ *
+ * Lo que sí sigue abierto es el tope y la referencia, que es justo lo que
+ * cambia en la vida real: llega una autorización nueva que amplía el rango.
+ * Bajarlo por debajo de lo ya emitido no, porque dejaría documentos fuera de su
+ * propio rango.
+ *
+ * Una errata en el prefijo descubierta después de emitir no se arregla aquí. Ya
+ * hay un documento impreso mal, y eso se resuelve con una nota de crédito, no
+ * reescribiendo la serie para que el error deje de verse.
+ */
+async function writeSeries(client, restaurantId, next) {
+  const current = await readSeries(client, restaurantId);
+  const issued = current?.control_next != null;
+
+  if (issued) {
+    const frozen = [
+      ['controlPrefix', 'control_prefix', next.controlPrefix, current.control_prefix],
+      ['documentPrefix', 'document_prefix', next.documentPrefix, current.document_prefix],
+      ['padTo', 'pad_to', next.padTo, Number(current.pad_to)],
+      ['controlFirst', 'control_first', next.controlFirst, Number(current.control_first)]
+    ].filter(([, , wanted, has]) => wanted !== has).map(([field]) => field);
+
+    if (frozen.length) {
+      throw new ApiError('FISCAL_SERIES_LOCKED',
+        'These fields cannot change once the series has numbered a document', { fields: frozen });
+    }
+
+    const lastIssued = BigInt(current.control_next) - 1n;
+    if (next.controlLast !== null && BigInt(next.controlLast) < lastIssued) {
+      throw new ApiError('FISCAL_SERIES_LOCKED',
+        'controlLast is below a number already issued',
+        { lastIssued: lastIssued.toString() });
+    }
+  }
+
+  const { rows } = await client.query(
+    `INSERT INTO fiscal_series
+       (restaurant_id, control_prefix, document_prefix, pad_to,
+        control_first, control_last, authorisation_ref)
+     VALUES ($1, $2, $3, $4, $5, $6, $7)
+     ON CONFLICT (restaurant_id) DO UPDATE
+       SET control_prefix = EXCLUDED.control_prefix,
+           document_prefix = EXCLUDED.document_prefix,
+           pad_to = EXCLUDED.pad_to,
+           control_first = EXCLUDED.control_first,
+           control_last = EXCLUDED.control_last,
+           authorisation_ref = EXCLUDED.authorisation_ref,
+           updated_at = now()
+     RETURNING restaurant_id`,
+    [restaurantId, next.controlPrefix, next.documentPrefix, next.padTo,
+      String(next.controlFirst),
+      next.controlLast === null ? null : String(next.controlLast),
+      next.authorisationRef || null]
+  );
+  if (!rows.length) throw new ApiError('RESTAURANT_NOT_FOUND', 'Restaurant not found');
+
+  return readSeries(client, restaurantId);
+}
+
+module.exports = { allocate, readSeries, writeSeries, CONTROL, _internals: { format } };

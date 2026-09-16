@@ -3,7 +3,7 @@ const db = require('../connectors/base');
 const { authenticateToken, requireRole } = require('../middleware/auth');
 const {
   validateBody, validateParams, payoutSchema, paymentProviderParamSchema,
-  restaurantProfileSchema,
+  restaurantProfileSchema, fiscalSeriesSchema,
   createStaffSchema, updateStaffSchema, resetStaffPasswordSchema, userIdParamSchema
 } = require('../middleware/schemas');
 const staff = require('../services/staff');
@@ -13,6 +13,7 @@ const banks = require('../payments/banks');
 const { ApiError } = require('../errors');
 const dto = require('../dto');
 const guestContacts = require('../services/guestContacts');
+const numbering = require('../services/fiscalNumbering');
 
 const router = express.Router();
 router.use(authenticateToken);
@@ -118,6 +119,60 @@ router.patch(
       }
 
       res.json(dto.account(rows[0]));
+    } catch (err) { next(err); }
+  }
+);
+
+/**
+ * La serie fiscal autorizada: el rango y el formato con los que se numera.
+ *
+ * Endpoint aparte y no un campo más del perfil, porque no es un dato del
+ * restaurante sino la transcripción de un documento del SENIAT, con sus propias
+ * reglas sobre cuándo se puede tocar. Mezclarlo en `PATCH /` habría significado
+ * que renombrar el local y reescribir la serie pasan por el mismo permiso y la
+ * misma auditoría, y no son la misma decisión.
+ *
+ * Se lee con cualquier rol -- el personal puede necesitar comprobar por qué
+ * número va -- y sólo lo escribe el dueño, igual que las decisiones de dinero.
+ */
+router.get('/fiscal-series', async (req, res, next) => {
+  try {
+    const row = await numbering.readSeries(db, req.user.restaurantId);
+    // Nulo y no 404: «este restaurante todavía no la ha configurado» es una
+    // respuesta, y es justo la que el panel necesita para pintar el formulario
+    // vacío en vez de una pantalla de error.
+    res.json({ fiscalSeries: dto.fiscalSeries(row) });
+  } catch (err) { next(err); }
+});
+
+router.put(
+  '/fiscal-series',
+  requireRole('OWNER'),
+  validateBody(fiscalSeriesSchema),
+  async (req, res, next) => {
+    try {
+      // Dentro de una transacción porque `writeSeries` decide qué se puede
+      // cambiar leyendo el contador: entre esa lectura y la escritura no puede
+      // colarse una emisión, o se congelarían campos con un documento ya
+      // emitido detrás.
+      const row = await db.withTransaction(client =>
+        numbering.writeSeries(client, req.user.restaurantId, req.body));
+
+      await logAudit({
+        ...auditContext(req),
+        action: 'FISCAL_SERIES_CHANGED',
+        resourceType: 'restaurant',
+        resourceId: req.user.restaurantId,
+        // La referencia de la autorización y el rango, que es lo que hay que
+        // poder responder después: con qué papel se emitió y desde qué número.
+        details: {
+          authorisationRef: row.authorisation_ref,
+          controlFirst: String(row.control_first),
+          controlLast: row.control_last === null ? null : String(row.control_last)
+        }
+      });
+
+      res.json({ fiscalSeries: dto.fiscalSeries(row) });
     } catch (err) { next(err); }
   }
 );

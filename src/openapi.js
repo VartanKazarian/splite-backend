@@ -2122,6 +2122,65 @@ Object.assign(schemas, {
     }
   },
 
+  FiscalSeriesRequest: {
+    type: 'object',
+    required: ['controlPrefix', 'documentPrefix', 'padTo', 'controlFirst'],
+    description:
+      'The series a SENIAT authorisation grants this taxpayer, transcribed. Not a partial update: a half-filled series cannot number anything, and storing one only moves the failure to the moment somebody is waiting for their invoice. Nothing here validates the authorisation itself — that it matches the paper is the restaurant\'s responsibility.',
+    properties: {
+      controlPrefix: {
+        type: 'string', maxLength: 20, examples: ['00-'],
+        description: 'Exactly as the authorisation writes it, empty string included — some carry no prefix, and there the empty string is the right value rather than an unfilled field.'
+      },
+      documentPrefix: { type: 'string', maxLength: 20, examples: ['F-'] },
+      padTo: {
+        type: 'integer', minimum: 1, maximum: 20, examples: [8],
+        description: 'How many digits the correlative is padded to. Part of the document\'s identity, not cosmetics: 00-000123 and 00-123 are two different documents to anyone looking one up.'
+      },
+      controlFirst: {
+        type: 'integer', minimum: 1, examples: [1],
+        description: 'The first authorised control number.'
+      },
+      controlLast: {
+        type: ['integer', 'null'], minimum: 1, examples: [5000],
+        description: 'The last authorised control number, or null for no known ceiling. Issuing past it answers 409 FISCAL_RANGE_EXHAUSTED rather than counting on silently, because a number outside the authorised range is not a typo — it is a document nothing covers.'
+      },
+      authorisationRef: {
+        type: 'string', maxLength: 120,
+        description: 'The authorisation\'s own reference, so where the range comes from can be shown without digging out the paper.'
+      }
+    }
+  },
+
+  FiscalSeriesResponse: {
+    type: 'object',
+    required: ['fiscalSeries'],
+    properties: {
+      fiscalSeries: {
+        type: ['object', 'null'],
+        description: 'Null when this restaurant has not configured one. That is an answer, not an error: it is what tells a client to render the empty form.',
+        required: ['controlPrefix', 'documentPrefix', 'padTo', 'controlFirst', 'controlLast', 'nextControlNumber', 'locked'],
+        properties: {
+          controlPrefix: { type: 'string' },
+          documentPrefix: { type: 'string' },
+          padTo: { type: 'integer' },
+          controlFirst: { type: 'string', description: 'Decimal string; the range can exceed a safe integer.' },
+          controlLast: { type: ['string', 'null'] },
+          authorisationRef: { type: ['string', 'null'] },
+          nextControlNumber: {
+            type: 'string', examples: ['00-00000001'],
+            description: 'Formatted, not raw: it is what will be printed on the next invoice, and showing it this way is what lets somebody check the prefix and width against the authorisation before issuing with them rather than after.'
+          },
+          locked: {
+            type: 'boolean',
+            description: 'True once the series has numbered a document. From then on controlPrefix, documentPrefix, padTo and controlFirst are frozen, and a PUT changing any of them answers 409 FISCAL_SERIES_LOCKED with the offending field names in details.fields.'
+          },
+          updatedAt: { type: ['string', 'null'], format: 'date-time' }
+        }
+      }
+    }
+  },
+
   PayoutRequest: {
     type: 'object',
     description:
@@ -5687,6 +5746,64 @@ const paths = {
         ...commonErrors,
         403: response('Forbidden'),
         404: response('NotFound')
+      }
+    }
+  },
+
+  '/api/v1/account/fiscal-series': {
+    get: {
+      tags: ['Account'],
+      summary: 'The authorised invoice series',
+      operationId: 'getFiscalSeries',
+      description: [
+        'Any authenticated staff role — staff may legitimately need to check which number the',
+        'restaurant is on.',
+        '',
+        'Answers `{ "fiscalSeries": null }` when none is configured, rather than 404.',
+        '',
+        'Only relevant where the deployment issues by its own means. Where an imprenta digital',
+        'assigns the numbers, this is not what governs them.'
+      ].join('\n'),
+      security: staff,
+      responses: {
+        200: { description: 'The series, or null.', content: { 'application/json': { schema: ref('FiscalSeriesResponse') } } },
+        ...commonErrors
+      }
+    },
+    put: {
+      tags: ['Account'],
+      summary: 'Set the authorised invoice series',
+      operationId: 'setFiscalSeries',
+      'x-required-roles': ['OWNER'],
+      description: [
+        'Roles: OWNER. Not profile editing — it transcribes a SENIAT authorisation and decides how',
+        'the restaurant numbers what it declares, so it sits with the money decisions and is',
+        'audited separately as `FISCAL_SERIES_CHANGED`.',
+        '',
+        'A full replacement, not a patch: a series missing a field cannot number anything.',
+        '',
+        '**Four fields freeze once the series has numbered a document** — `controlPrefix`,',
+        '`documentPrefix`, `padTo` and `controlFirst`. Changing them would not change the series',
+        'going forward, it would contradict what is already issued: the libro de ventas would hold',
+        'two formats, and documents whose numbers no longer match the series that claims them. A',
+        'PUT that tries answers 409 `FISCAL_SERIES_LOCKED`, naming the fields in `details.fields`.',
+        '',
+        'What stays open is exactly what changes in practice: `controlLast` and',
+        '`authorisationRef`, for when a new authorisation widens the range. Lowering `controlLast`',
+        'below a number already issued is refused for the same reason.',
+        '',
+        'A prefix typo found after issuing is not fixed here. A wrong document is already printed,',
+        'and that is resolved with a credit note — not by rewriting the series so the error stops',
+        'showing.'
+      ].join('\n'),
+      security: staff,
+      requestBody: { required: true, content: { 'application/json': { schema: ref('FiscalSeriesRequest') } } },
+      responses: {
+        200: { description: 'The stored series.', content: { 'application/json': { schema: ref('FiscalSeriesResponse') } } },
+        ...commonErrors,
+        403: response('Forbidden'),
+        404: response('NotFound'),
+        409: response('Conflict')
       }
     }
   },

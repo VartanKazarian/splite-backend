@@ -1741,6 +1741,43 @@ transaction rolls back hands the same number to the next document. Removing the
 row lock fails the first; moving the counter outside the transaction — which is
 what a `SEQUENCE` would be — fails both.
 
+### Setting the series
+
+`GET`/`PUT /api/v1/account/fiscal-series`. Its own endpoint rather than a field
+on `PATCH /api/v1/account`, because it is not a fact about the restaurant — it
+is a SENIAT authorisation transcribed, with its own rule about when it may be
+touched. Folding it into the profile would have meant renaming the shopfront and
+rewriting the series share a permission and an audit entry, and they are not the
+same decision. Reading is open to any staff role; writing is **OWNER only** and
+audited as `FISCAL_SERIES_CHANGED`. A `PUT` replaces the whole series: one
+missing field and it cannot number anything.
+
+An unconfigured restaurant answers `{ "fiscalSeries": null }`, not 404 — "you
+have not set one yet" is an answer, and it is what tells a client to render the
+empty form rather than an error screen.
+
+**Four fields freeze the moment the series numbers its first document**:
+`controlPrefix`, `documentPrefix`, `padTo` and `controlFirst`. Changing them
+would not change the series going forward, it would *contradict what is already
+issued* — the libro de ventas would carry two formats, and documents whose
+numbers no longer match the series claiming them. That answers 409
+`FISCAL_SERIES_LOCKED`, with the offending names in `details.fields` so a form
+can point at them.
+
+What stays open is exactly what changes in practice: `controlLast` and
+`authorisationRef`, for when a new authorisation widens the range. Lowering
+`controlLast` below a number already issued is refused for the same reason as
+the rest.
+
+A prefix typo found after issuing is not fixed here. A wrong document is already
+printed, and that is a credit note, not a settings screen that makes the mistake
+stop showing.
+
+The response carries `nextControlNumber` **formatted**, not raw. It is what the
+next invoice will print, and seeing it that way is what lets somebody check the
+prefix and the padding against the paper authorisation before issuing with them
+instead of after.
+
 ### Asking twice, and what the diner is told
 
 Two taps, or a retry after a dropped connection, answer **409

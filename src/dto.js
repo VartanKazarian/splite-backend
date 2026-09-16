@@ -533,6 +533,35 @@ function paymentProviderConfig(row) {
   };
 }
 
+/**
+ * La serie autorizada, y por dónde va.
+ *
+ * `nextControlNumber` sale formateado y no en crudo a propósito: es el que se
+ * va a imprimir en la próxima factura, y enseñarlo así es lo que deja
+ * comprobar de un vistazo que el prefijo y el ancho son los de la
+ * autorización, antes de emitir con ellos y no después.
+ *
+ * `locked` publica la regla en vez de hacer que el panel la deduzca: en cuanto
+ * la serie ha numerado algo, cuatro de sus campos dejan de poder cambiar. Un
+ * formulario que lo sabe los pinta en gris; uno que no, ofrece un botón que
+ * contesta 409.
+ */
+function fiscalSeries(row) {
+  if (!row) return null;
+  const next = row.control_next ?? row.control_first;
+  return {
+    controlPrefix: row.control_prefix,
+    documentPrefix: row.document_prefix,
+    padTo: Number(row.pad_to),
+    controlFirst: String(row.control_first),
+    controlLast: row.control_last === null ? null : String(row.control_last),
+    authorisationRef: row.authorisation_ref ?? null,
+    nextControlNumber: `${row.control_prefix}${String(next).padStart(Number(row.pad_to), '0')}`,
+    locked: row.control_next != null,
+    updatedAt: isoTimestamp(row.updated_at)
+  };
+}
+
 function account(row) {
   const trialEndsAt = row.trial_ends_at ? new Date(row.trial_ends_at) : null;
   const msPerDay = 24 * 60 * 60 * 1000;
@@ -885,5 +914,5 @@ module.exports = {
   isoDate, isoTimestamp, staffMember, guestOrder, billAdjustment,
   bill, billItem, billWithItems, guestBill,
   fiscalInvoice, fiscalInvoiceLine, fiscalInvoiceTax, fiscalRequest,
-  table, floorTable, product, publicProduct, menuCategory, menuDocument, brandingImage, qrContext, menuSettings, menuCharges, account, payout, guestPayee, paymentProviderConfig, paymentClaim, staffPaymentClaim, c2pCharge, billSplit
+  table, floorTable, product, publicProduct, menuCategory, menuDocument, brandingImage, qrContext, menuSettings, menuCharges, account, fiscalSeries, payout, guestPayee, paymentProviderConfig, paymentClaim, staffPaymentClaim, c2pCharge, billSplit
 };

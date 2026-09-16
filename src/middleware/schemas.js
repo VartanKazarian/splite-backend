@@ -579,6 +579,36 @@ const restaurantProfileSchema = Joi.object({
   fiscalAddress: Joi.string().trim().max(200).allow('')
 }).min(1);
 
+/**
+ * La serie que el SENIAT le autorizó a este restaurante.
+ *
+ * Todo obligatorio salvo el tope y la referencia: una serie a medias no sirve
+ * para numerar, y dejar que se guarde incompleta sólo traslada el fallo al
+ * momento de emitir, delante de un comensal que espera.
+ *
+ * Los prefijos admiten la cadena vacía porque hay autorizaciones sin prefijo, y
+ * ahí la cadena vacía es el valor correcto y no un campo sin rellenar.
+ */
+const fiscalSeriesSchema = Joi.object({
+  controlPrefix: Joi.string().trim().max(20).allow('').required(),
+  documentPrefix: Joi.string().trim().max(20).allow('').required(),
+  // El ancho es parte de la identidad del documento: 00-000123 y 00-123 no son
+  // el mismo número escrito de dos formas, son dos documentos distintos para
+  // quien los busca.
+  padTo: Joi.number().integer().min(1).max(20).required(),
+  controlFirst: Joi.number().integer().min(1).required(),
+  // Nulo es «sin tope conocido», que es distinto de ausente por error: se
+  // escribe explícitamente para que nadie lo deje sin querer y descubra el
+  // final del rango emitiendo fuera de él.
+  controlLast: Joi.number().integer().min(1).allow(null).default(null),
+  authorisationRef: Joi.string().trim().max(120).allow('').default('')
+})
+  .custom((value, helpers) => (
+    value.controlLast !== null && value.controlLast < value.controlFirst
+      ? helpers.error('any.invalid', { message: 'controlLast must not be below controlFirst' })
+      : value
+  ));
+
 const payoutSchema = Joi.object({
   bankCode: Joi.string().trim().pattern(/^[0-9]{4}$/)
     .valid(...banks.CODES)
@@ -920,6 +950,7 @@ module.exports = {
   splitPaymentSchema,
   payoutSchema,
   restaurantProfileSchema,
+  fiscalSeriesSchema,
   requestInvoiceSchema,
   guestContactSchema,
   fiscalRequestQuerySchema,
