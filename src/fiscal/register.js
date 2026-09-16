@@ -25,6 +25,16 @@ function registerFiscalProviders() {
     }, 'Proveedor fiscal simulado activo: los documentos que emita NO son facturas fiscales');
   }
 
+  if (config.fiscal.provider === 'own') {
+    // Emisión por medios propios: no hay adaptador que registrar porque no hay
+    // a quién llamar. Los números los reparte `fiscalNumbering` contra la serie
+    // que cada restaurante tenga autorizada, y un restaurante sin serie no
+    // emite -- falla con FISCAL_SERIES_MISSING en vez de inventarse un rango.
+    logger.info({ event: 'FISCAL_OWN_ISSUANCE' },
+      'Emisión fiscal por medios propios: cada restaurante numera con su serie autorizada');
+    return;
+  }
+
   if (config.fiscal.provider && config.fiscal.provider !== 'mock') {
     // Aquí irá la imprenta digital autorizada cuando haya contrato con una. No
     // hay un adaptador genérico que valga: cada imprenta tiene su protocolo, y

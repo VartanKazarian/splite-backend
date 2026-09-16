@@ -167,7 +167,7 @@ these do not** — they mean stop offering the feature on this server.
 | **Second factor** | `MFA_SECRET_KEYS` | 503 `MFA_KEY_MISSING` on enrolment. Existing accounts keep signing in on passwords | `GET /api/v1/auth/mfa` |
 | **Self-service registration** | `ONBOARDING_ENABLED=true`, plus everything the boot guard above then demands | 503 `ONBOARDING_NOT_CONFIGURED`. The router is not mounted at all — a stub answers, so no lead is recorded and no mail is sent | The code itself. It answered a bare 404 until a frontend, unable to tell that from a mistyped path, rendered an invented support address to a restaurant mid-application |
 | **Store bank credentials** | `PAYMENT_CREDENTIALS_KEYS` | 503 `PAYMENT_CREDENTIALS_KEY_MISSING` | — |
-| **Issue fiscal invoices** | `FISCAL_PROVIDER`, naming an authorised imprenta digital with an adapter. `FISCAL_MOCK_ENABLED=true` registers the mock instead, and **the boot guard refuses it in production** — its documents carry invented `MOCK-` numbers. Setting `FISCAL_PROVIDER` in production also makes the `MAIL_*` settings mandatory, because an issued invoice is emailed to whoever asked for it | 503 `FISCAL_PROVIDER_NOT_CONFIGURED` | `plan.capabilities.fiscalInvoicing` on `GET /api/v1/account`, which answers the separate question of whether the plan includes it |
+| **Issue fiscal invoices** | `FISCAL_PROVIDER`. Either `own` — Splite issues and numbers them itself, against the series each restaurant has configured — or the name of an authorised imprenta digital with an adapter. `FISCAL_MOCK_ENABLED=true` registers the mock instead, and **the boot guard refuses it in production** — its documents carry invented `MOCK-` numbers. Setting `FISCAL_PROVIDER` in production also makes the `MAIL_*` settings mandatory, because an issued invoice is emailed to whoever asked for it | 503 `FISCAL_PROVIDER_NOT_CONFIGURED`, and under `own` a restaurant with no series gets 409 `FISCAL_SERIES_MISSING` | `plan.capabilities.fiscalInvoicing` on `GET /api/v1/account`, which answers the separate question of whether the plan includes it |
 | **Charge through Mercantil C2P** | `MERCANTIL_C2P_URL`, **and** credentials stored per restaurant, **and** those credentials proven by a real call | 503 `PAYMENT_PROVIDER_MISCONFIGURED` | `chargeable` on `GET /api/v1/account/banks` |
 | **Self-service signup** | `ONBOARDING_ENABLED=true` and a mail provider | The routes are **not mounted at all** — 404, not 503 | — |
 | **Foreign-currency menus** | `FX_ENABLED` (on by default) and a reachable BCV | 503 `FX_UNAVAILABLE`, but only after the stored-rate fallback is exhausted | `GET /api/v1/exchange-rate` |
@@ -1675,6 +1675,108 @@ so switching it on is a deliberate, legible act and not a typo in a real
 provider's name. `assertProductionConfig` refuses to boot with it set: one of
 those documents handed to a diner as an invoice is a tax problem with a penalty
 attached, caused by an environment variable.
+
+### Issuing it ourselves
+
+`FISCAL_PROVIDER=own` skips the imprenta entirely: Splite assembles the document
+*and* numbers it. The regime changed — SNAT/2026/00084 repealed the software
+homologation rules — and self-issuance became the path we take. **This is not a
+claim of conformance.** What the section above says still holds: the range and
+the format have to come from the taxpayer's own SENIAT authorisation, and
+nothing here validates that they do.
+
+What changes technically is that the two guarantees an imprenta used to provide
+now have to be provided here.
+
+**No duplicates** does not depend on this code being right. Two unique indexes
+on `fiscal_invoices` enforce it — `(restaurant_id, control_number)` and
+`(restaurant_id, document_type, document_number)`. A race that slipped through
+gets its insert rejected rather than producing two documents with one number.
+
+**No gaps** does depend on this code, and it is what rules out a `SEQUENCE`. A
+Postgres sequence is deliberately **not transactional**, so `nextval` followed by
+a `ROLLBACK` burns that number for good. For an internal id that is fine; for a
+fiscal correlative it is not, because the libro de ventas has to be continuous
+and a missing number is exactly what a fiscalización asks about. So the counter
+is a **row that gets locked** (`fiscal_counters`), and it is handed out **inside
+the transaction that writes the document**: if that transaction does not commit,
+the number was not spent either.
+
+The cost is that one restaurant does not number two invoices at once. That is
+affordable — a restaurant issues a few per minute, and the lock no longer spans
+a network call, because there is nobody to wait for. Different restaurants never
+block each other; each locks its own row.
+
+Two counters are taken, always **in the same order** — control first, then
+document type — so two simultaneous issues cannot form a deadlock cycle.
+
+`fiscal_series` holds what was authorised: prefixes, padding width, and the
+control-number range. Two refusals come out of it, and both are **409, not
+retryable**:
+
+| Code | What it means |
+| --- | --- |
+| `FISCAL_SERIES_MISSING` | This restaurant has no authorised series configured. The owner sets it; it is not a deployment setting, which is why the name is not `_NOT_CONFIGURED` |
+| `FISCAL_RANGE_EXHAUSTED` | The authorised range ran out. Issuing past it would produce a document no authorisation covers, so it stops instead of counting on in silence |
+
+A control number is unique **per taxpayer**, not across the platform. 039 had a
+unique index on `(provider, control_number)`, which described the imprenta case
+correctly — the numbers were its series, not ours. Under `own` every restaurant
+shares the same `provider` value, so that index started asserting that two
+taxpayers cannot hold the same control number, which is false: each keeps its own
+book and both may legitimately have a number 1. Measured before dropping it: two
+newly registered restaurants, each with a series starting at 1, and the second
+could not issue — a `23505` with nothing wrong in its authorisation. Migration
+045 drops it; `(restaurant_id, control_number)` is the real rule.
+
+And `UNCERTAIN` stops being reachable on this path. It exists because a third
+party can answer something that does not say whether it issued. When we write the
+document, the transaction either committed or it did not — there is no third
+state to queue for a person.
+
+`test/integration/fiscalNumbering` is where the two guarantees are held to
+account: eight bills on one restaurant invoiced simultaneously come out with
+eight consecutive control numbers, no repeats and no gaps; an allocation whose
+transaction rolls back hands the same number to the next document. Removing the
+row lock fails the first; moving the counter outside the transaction — which is
+what a `SEQUENCE` would be — fails both.
+
+### Setting the series
+
+`GET`/`PUT /api/v1/account/fiscal-series`. Its own endpoint rather than a field
+on `PATCH /api/v1/account`, because it is not a fact about the restaurant — it
+is a SENIAT authorisation transcribed, with its own rule about when it may be
+touched. Folding it into the profile would have meant renaming the shopfront and
+rewriting the series share a permission and an audit entry, and they are not the
+same decision. Reading is open to any staff role; writing is **OWNER only** and
+audited as `FISCAL_SERIES_CHANGED`. A `PUT` replaces the whole series: one
+missing field and it cannot number anything.
+
+An unconfigured restaurant answers `{ "fiscalSeries": null }`, not 404 — "you
+have not set one yet" is an answer, and it is what tells a client to render the
+empty form rather than an error screen.
+
+**Four fields freeze the moment the series numbers its first document**:
+`controlPrefix`, `documentPrefix`, `padTo` and `controlFirst`. Changing them
+would not change the series going forward, it would *contradict what is already
+issued* — the libro de ventas would carry two formats, and documents whose
+numbers no longer match the series claiming them. That answers 409
+`FISCAL_SERIES_LOCKED`, with the offending names in `details.fields` so a form
+can point at them.
+
+What stays open is exactly what changes in practice: `controlLast` and
+`authorisationRef`, for when a new authorisation widens the range. Lowering
+`controlLast` below a number already issued is refused for the same reason as
+the rest.
+
+A prefix typo found after issuing is not fixed here. A wrong document is already
+printed, and that is a credit note, not a settings screen that makes the mistake
+stop showing.
+
+The response carries `nextControlNumber` **formatted**, not raw. It is what the
+next invoice will print, and seeing it that way is what lets somebody check the
+prefix and the padding against the paper authorisation before issuing with them
+instead of after.
 
 ### Asking twice, and what the diner is told
 
