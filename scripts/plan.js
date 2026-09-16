@@ -9,9 +9,9 @@ const { normaliseRif, formatRif } = require('../src/utils/rif');
 /**
  * El plan de un restaurante.
  *
- *   npm run plan -- show <id|RIF>
+ *   npm run plan -- show <id|RIF|correo>
  *   npm run plan -- list [TRIAL|STARTER|PRO|ENTERPRISE]
- *   npm run plan -- set <id|RIF> <PLAN> [--trial-days N] [--force] [nota...]
+ *   npm run plan -- set <id|RIF|correo> <PLAN> [--trial-days N] [--force] [nota...]
  *
  * Una línea de comandos y no una pantalla, por lo mismo que `onboarding.js`:
  * todas las sesiones de esta app están atadas a un restaurante y no existe un
@@ -25,12 +25,20 @@ const { normaliseRif, formatRif } = require('../src/utils/rif');
  * que acababa de pagar -- y sin enterarse de lo que el cambio quitaba.
  */
 
-/** Un UUID se busca por id; cualquier otra cosa, por RIF. */
+/**
+ * Un UUID se busca por id, algo con arroba por correo, y el resto por RIF.
+ *
+ * Las tres formas no se piden con banderas porque no hacen falta: ninguna se
+ * puede confundir con otra, y quien está vendiendo un plan no debería tener que
+ * decirle al programa qué clase de cosa acaba de pegar.
+ */
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
-const locate = (key) => (UUID.test(key)
-  ? { restaurantId: key, rif: null }
-  : { restaurantId: null, rif: normaliseRif(key) });
+const locate = (key) => {
+  if (UUID.test(key)) return { restaurantId: key, rif: null, email: null };
+  if (key.includes('@')) return { restaurantId: null, rif: null, email: key };
+  return { restaurantId: null, rif: normaliseRif(key), email: null };
+};
 
 const when = (value) => (value ? new Date(value).toISOString().slice(0, 10) : '—');
 
@@ -105,9 +113,9 @@ async function set(key, tier, { trialDays, force, note }) {
 function usage() {
   console.log([
     'Uso:',
-    '  npm run plan -- show <id|RIF>',
+    '  npm run plan -- show <id|RIF|correo>',
     `  npm run plan -- list [${entitlements.TIERS.join('|')}]`,
-    `  npm run plan -- set <id|RIF> <${entitlements.TIERS.join('|')}> [opciones] [nota...]`,
+    `  npm run plan -- set <id|RIF|correo> <${entitlements.TIERS.join('|')}> [opciones] [nota...]`,
     '',
     'Opciones de `set`:',
     `  --trial-days N   Sólo yendo a TRIAL: cuántos días desde hoy (por defecto ${config.onboarding.trialDays}).`,

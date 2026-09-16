@@ -47,14 +47,29 @@ const USAGE = {
   }
 };
 
-/** El restaurante, buscado por id o por RIF -- que es lo que uno tiene a mano. */
-async function find({ restaurantId = null, rif = null }) {
+/**
+ * El restaurante, buscado por lo que uno tenga a mano.
+ *
+ * Tres formas, y la del correo es la que se usa de verdad: quien vende un plan
+ * sabe con quién habló, no el UUID de su restaurante ni siempre su RIF. Sin
+ * ella el primer paso era una consulta a mano contra la base -- justo lo que
+ * este servicio existe para quitar de en medio.
+ *
+ * El correo no es ambiguo: `users_email_unique_idx` (migración 002) lo hace
+ * único en toda la plataforma, no sólo dentro de un restaurante, porque si no
+ * el login no sabría a cuál entrar. Así que un correo apunta a un dueño y un
+ * dueño a un restaurante.
+ */
+async function find({ restaurantId = null, rif = null, email = null }) {
   const { rows } = await db.query(
-    `SELECT id, name, rif, plan_tier, trial_ends_at, created_at
-       FROM restaurants
-      WHERE ($1::UUID IS NOT NULL AND id = $1::UUID)
-         OR ($2::TEXT IS NOT NULL AND rif = $2::TEXT)`,
-    [restaurantId, rif]
+    `SELECT r.id, r.name, r.rif, r.plan_tier, r.trial_ends_at, r.created_at
+       FROM restaurants r
+      WHERE ($1::UUID IS NOT NULL AND r.id = $1::UUID)
+         OR ($2::TEXT IS NOT NULL AND r.rif = $2::TEXT)
+         OR ($3::TEXT IS NOT NULL AND r.id = (
+              SELECT u.restaurant_id FROM users u WHERE lower(u.email) = lower($3::TEXT)
+            ))`,
+    [restaurantId, rif, email]
   );
   if (!rows.length) throw new ApiError('RESTAURANT_NOT_FOUND', 'Restaurant not found');
   return rows[0];

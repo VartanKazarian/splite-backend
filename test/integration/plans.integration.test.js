@@ -263,4 +263,39 @@ describe('planes', { skip }, () => {
     const found = await plans.find({ restaurantId: null, rif: 'J123456784' });
     assert.equal(found.id, restaurant.id);
   });
+
+  it('y por el correo del dueño, que es lo que uno tiene de verdad', async () => {
+    /*
+     * Quien vende un plan sabe con quién habló, no el UUID de su restaurante.
+     * Sin esta forma, el primer paso volvía a ser una consulta a mano contra la
+     * base -- justo lo que el servicio existe para quitar de en medio.
+     *
+     * Sin ambigüedad posible: `users_email_unique_idx` hace el correo único en
+     * toda la plataforma y no sólo dentro de un restaurante, porque si no el
+     * login no sabría a cuál entrar.
+     */
+    await db.query(
+      `INSERT INTO users (restaurant_id, email, password_hash, role)
+       VALUES ($1, 'Duena.Plan@Example.com', 'x', 'OWNER')`,
+      [restaurant.id]
+    );
+    try {
+      const found = await plans.find({ email: 'duena.plan@example.com' });
+      assert.equal(found.id, restaurant.id, 'y sin distinguir mayúsculas');
+    } finally {
+      await db.query('DELETE FROM users WHERE restaurant_id = $1', [restaurant.id]);
+    }
+  });
+
+  it('un correo que no es de nadie no devuelve un restaurante cualquiera', async () => {
+    // El `OR` de tres ramas es justo la forma de consulta donde un parámetro
+    // nulo puede acabar casando con todo. Aquí se comprueba que no.
+    await assert.rejects(
+      plans.find({ email: 'nadie@example.com' }),
+      err => {
+        assert.equal(err.code, 'RESTAURANT_NOT_FOUND');
+        return true;
+      }
+    );
+  });
 });

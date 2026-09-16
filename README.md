@@ -844,10 +844,18 @@ database. That is what this replaces, and each of its four problems is a
 feature here:
 
 ```
-npm run plan -- show <id|RIF>
+npm run plan -- show <id|RIF|email>
 npm run plan -- list [TRIAL|STARTER|PRO|ENTERPRISE]
-npm run plan -- set  <id|RIF> <TIER> [--trial-days N] [--force] [note...]
+npm run plan -- set  <id|RIF|email> <TIER> [--trial-days N] [--force] [note...]
 ```
+
+A restaurant is found by id, by RIF, or by **the owner's email** — which is the
+one somebody selling a plan actually has. Without it the first step was a query
+by hand against the database, which is what this exists to remove. No flag says
+which is which: none of the three can be mistaken for another. The email is
+unambiguous because `users_email_unique_idx` (migration 002) makes it unique
+across the platform rather than within a restaurant — login would not know
+which tenant to enter otherwise.
 
 **It clears `trial_ends_at` on the way out of TRIAL.** The panel shows a trial
 banner while there is a date, so leaving it behind tells a restaurant that just
