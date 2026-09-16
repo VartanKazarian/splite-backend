@@ -835,6 +835,55 @@ new fiscal documents; the legal duty to keep the ones it already issued
 outlives the subscription. An invoice that becomes unreadable because an
 invoice went unpaid is a problem Splite would have created.
 
+### Changing an existing restaurant's plan
+
+`npm run plan`. Until it existed, `plan_tier` was written **once**, at signup,
+always as `TRIAL` (`src/services/onboarding.js`), and nothing ever wrote it
+again — so selling a plan meant an `UPDATE` by hand against the production
+database. That is what this replaces, and each of its four problems is a
+feature here:
+
+```
+npm run plan -- show <id|RIF>
+npm run plan -- list [TRIAL|STARTER|PRO|ENTERPRISE]
+npm run plan -- set  <id|RIF> <TIER> [--trial-days N] [--force] [note...]
+```
+
+**It clears `trial_ends_at` on the way out of TRIAL.** The panel shows a trial
+banner while there is a date, so leaving it behind tells a restaurant that just
+paid when its trial expires. Going back to TRIAL, `--trial-days` sets a new one.
+
+**It always leaves a record, or it does not change the plan.** The audit row is
+written in the same transaction as the `UPDATE`, and deliberately *not* through
+`logAudit`, which swallows its own failures — right for an audit hanging off a
+request, wrong here, where the row is the only record that a plan changed at
+all. Moving that write outside the transaction does not merely weaken the
+guarantee, it hangs: `audit_logs.restaurant_id` references `restaurants(id)`, so
+the insert wants a `FOR KEY SHARE` on the row the transaction already holds
+`FOR UPDATE`, and a second connection waits on it until `statement_timeout`.
+Measured, not assumed.
+
+**It refuses a downgrade that takes away something in use.** Only `ENFORCED`
+capabilities can do that, so today it means one thing: dropping below
+ENTERPRISE for a restaurant that has already issued fiscal invoices, which
+would stop it issuing the next one mid-service while its existing documents
+stay out there. That answers `PLAN_DOWNGRADE_BLOCKED` with the count, and
+`--force` is how you say you meant it — recorded as `forced` in the audit row.
+A capability the restaurant has never used is not blocked: asking for
+confirmation there only teaches people to pass `--force` every time.
+
+**It prints what the change actually did** — gained and lost capabilities by
+name, marking which ones the API enforces and which are only descriptive.
+"ENTERPRISE" on its own does not tell you what you just sold.
+
+A command line rather than a console, for the reason `scripts/onboarding.js`
+already gives: every authenticated surface here is scoped to a restaurant the
+caller belongs to, and there is no platform-operator role. Inventing one to
+serve a handful of plan changes would be a second authentication model to
+secure and keep correct forever. The logic lives in `src/services/plans.js`, so
+a console — if the volume ever justifies one — calls that rather than
+reimplementing the rules.
+
 Mail goes through `src/services/mailer.js`, a port with two adapters. `log`
 writes the message and its link to the logger and sends nothing; it is refused
 in production once onboarding is on. `resend` posts to api.resend.com over
