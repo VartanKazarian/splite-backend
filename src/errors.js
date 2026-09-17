@@ -154,6 +154,10 @@ const CODES = {
   // el panel, no quien despliega. Un guardarraíl obliga a documentar los
   // primeros en la tabla de configuración, y meter éste ahí mandaría a buscar
   // una variable que no existe.
+  // Sin el RIF del emisor no hay factura fiscal que valga: es contenido
+  // obligatorio del documento, no un adorno del encabezado. Del restaurante y
+  // no del despliegue, igual que la serie, y por eso `_MISSING`.
+  FISCAL_RIF_MISSING: 409,
   FISCAL_SERIES_MISSING: 409,
   FISCAL_RANGE_EXHAUSTED: 409,
   // Y la serie ya no se puede reescribir a voluntad en cuanto ha numerado algo:

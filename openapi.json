@@ -415,6 +415,7 @@
                   "PRODUCT_TAX_CONFLICT",
                   "FISCAL_NOTHING_TO_DECLARE",
                   "FISCAL_ALREADY_REQUESTED",
+                  "FISCAL_RIF_MISSING",
                   "FISCAL_SERIES_MISSING",
                   "FISCAL_RANGE_EXHAUSTED",
                   "FISCAL_SERIES_LOCKED",
@@ -9505,7 +9506,7 @@
                     },
                     "canRequestInvoice": {
                       "type": "boolean",
-                      "description": "Whether a fiscal invoice can be asked for at this restaurant at all. **Read it before\nshowing anything about invoicing**, including a \"you will be able to ask once your\npayment is confirmed\" message: false means every such offer is a promise nothing can\nkeep, and a diner who waits on it is a diner who did not ask a member of staff while\nthey still could.\n\nIt folds the three refusals already knowable before anybody taps — the plan does not\ninclude it (403 PLAN_UPGRADE_REQUIRED), the deployment has no issuer (503\nFISCAL_PROVIDER_NOT_CONFIGURED), or the restaurant has not configured its authorised\nseries (409 FISCAL_SERIES_MISSING) — into one answer, deliberately without saying\nwhich. Which one it is concerns the restaurant, not the diner, and what the diner\nshould do is the same in all three: ask a member of staff before leaving.\n\nIt rides here rather than on the bill because the bill closes exactly when the\ninvoice becomes askable, so a flag living there would vanish at the one moment it is\nneeded.\n\nTrue is not a guarantee: the payment still has to be settled and the bill must have\nsomething left to declare. It only means the offer is honest."
+                      "description": "Whether a fiscal invoice can be asked for at this restaurant at all. **Read it before\nshowing anything about invoicing**, including a \"you will be able to ask once your\npayment is confirmed\" message: false means every such offer is a promise nothing can\nkeep, and a diner who waits on it is a diner who did not ask a member of staff while\nthey still could.\n\nIt folds the refusals already knowable before anybody taps — the plan does not\ninclude it (403 PLAN_UPGRADE_REQUIRED), the deployment has no issuer (503\nFISCAL_PROVIDER_NOT_CONFIGURED), the restaurant has no RIF on file (409\nFISCAL_RIF_MISSING), or it has not configured its authorised series (409\nFISCAL_SERIES_MISSING) — into one answer, deliberately without saying which. Which\none it is concerns the restaurant, not the diner, and what the diner should do is\nthe same in every case: ask a member of staff before leaving.\n\nIt rides here rather than on the bill because the bill closes exactly when the\ninvoice becomes askable, so a flag living there would vanish at the one moment it is\nneeded.\n\nTrue is not a guarantee: the payment still has to be settled and the bill must have\nsomething left to declare. It only means the offer is honest."
                     }
                   }
                 }

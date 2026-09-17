@@ -9,10 +9,29 @@ const db = require('../../../src/connectors/base');
  * Postgres processes the cascade. Deleting children first is deterministic.
  */
 
+/**
+ * Un contador para los RIF del fixture.
+ *
+ * `restaurants_rif_unique_idx` es único donde el RIF no es nulo, así que dos
+ * restaurantes del mismo fichero no pueden compartirlo. El reloj no basta:
+ * varios se crean dentro del mismo milisegundo.
+ */
+let rifSeq = 0;
+
+/**
+ * Con RIF, como los que crea el alta de verdad.
+ *
+ * No es adorno: sin RIF del emisor no se puede emitir una factura fiscal --
+ * `fiscalInvoicing.canIssue` lo exige y `issueForPayment` lo rechaza --, así que
+ * un fixture sin él dejaría a media suite fiscal midiendo otra cosa. Una prueba
+ * que quiera el caso contrario lo pone a NULL ella misma, que es lo honesto:
+ * hace visible que está provocando ese estado.
+ */
 async function createRestaurant({ name = 'Integration Test Restaurant', currency = 'VES' } = {}) {
+  const rif = `J${String(Date.now()).slice(-6)}${String(++rifSeq).padStart(3, '0')}`;
   const { rows } = await db.query(
-    'INSERT INTO restaurants (name, currency) VALUES ($1, $2) RETURNING id, currency',
-    [name, currency]
+    'INSERT INTO restaurants (name, currency, rif) VALUES ($1, $2, $3) RETURNING id, currency, rif',
+    [name, currency, rif]
   );
   return rows[0];
 }

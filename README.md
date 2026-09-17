@@ -1850,11 +1850,27 @@ not merely false. Someone who needed a fiscal invoice did not ask a member of
 staff *because the app told them to wait*, and by the time it took the promise
 back they could be at the door.
 
-The three refusals were all knowable before anyone tapped: the plan does not
-include it, the deployment has no issuer, or the restaurant has not configured
-its series. `fiscalInvoicing.canIssue` folds them into one boolean —
-deliberately without saying which. Which one it is concerns the restaurant, and
-what the diner should do is the same in all three: ask staff before leaving.
+The refusals were all knowable before anyone tapped: the plan does not include
+it, the deployment has no issuer, the restaurant has no RIF on file, or it has
+not configured its series. `fiscalInvoicing.canIssue` folds them into one
+boolean — deliberately without saying which. Which one it is concerns the
+restaurant, and what the diner should do is the same in every case: ask staff
+before leaving.
+
+**The RIF is one of them, and it was not checked anywhere.** The issuer's RIF is
+mandatory content on a Venezuelan fiscal invoice, not decoration in a header —
+but the invoice email printed it under `if (restaurant.rif)` and the receipt
+passed it through as `?? null`, so a restaurant without one issued incomplete
+documents **silently**. That is the worst way to fail here: the paper comes out,
+it looks like an invoice, and it is not one. `issueForPayment` now refuses with
+409 `FISCAL_RIF_MISSING` before anything else, for every issuer — a printer does
+not supply the taxpayer's own RIF either. An empty string counts as missing;
+it prints just as blank as a null.
+
+Self-service signup always records a RIF, so only rows created some other way
+can be in that state. There is no screen to set one after the fact — `PATCH
+/api/v1/account` does not accept it — so fixing such a row today means going to
+the database.
 
 **It rides on the payment, not on the bill.** Confirming a payment is what
 closes the bill, so the instant the invoice becomes askable is the instant

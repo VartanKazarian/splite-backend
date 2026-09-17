@@ -50,9 +50,14 @@ describe('ofrecer factura al comensal', { skip }, () => {
   before(async () => {
     await clearIpRateLimits();
     restaurant = await fixtures.createRestaurant({ name: 'Offer Tenant' });
+    // Con RIF: es contenido obligatorio de la factura, así que sin él este
+    // restaurante no podría emitir y toda la suite mediría otra cosa. El valor
+    // es único por índice parcial, de ahí el sufijo del reloj.
     await db.query(
-      "UPDATE restaurants SET vat_bps = 1600, service_charge_bps = 0, plan_tier = 'ENTERPRISE' WHERE id = $1",
-      [restaurant.id]
+      `UPDATE restaurants
+          SET vat_bps = 1600, service_charge_bps = 0, plan_tier = 'ENTERPRISE', rif = $2
+        WHERE id = $1`,
+      [restaurant.id, `J${String(Date.now()).slice(-9)}`]
     );
     server = app.listen(0);
     server.unref();
@@ -213,5 +218,47 @@ describe('ofrecer factura al comensal', { skip }, () => {
     assert.equal(status.status, 200);
     assert.equal(status.body.billClosed, true);
     assert.equal(status.body.canRequestInvoice, true, 'y aun así se sabe que aquí sí se factura');
+  });
+it('sin el RIF del emisor no lo promete, y tampoco lo acepta', async () => {
+    /*
+     * El RIF del contribuyente es contenido obligatorio de una factura fiscal.
+     * Antes no lo comprobaba nadie: el correo lo imprimía con un
+     * `if (restaurant.rif)` y el recibo lo pasaba como `?? null`, así que un
+     * restaurante sin RIF emitía documentos incompletos **en silencio** -- la
+     * peor forma de fallar aquí, porque el papel sale y parece una factura.
+     */
+    await setPlan('ENTERPRISE');
+    const { rows: [saved] } = await db.query(
+      'SELECT rif FROM restaurants WHERE id = $1', [restaurant.id]
+    );
+    await db.query('UPDATE restaurants SET rif = NULL WHERE id = $1', [restaurant.id]);
+
+    try {
+      const { promised, attempt } = await offerAndAttempt();
+      assert.equal(promised, false, 'la cuenta lo dice de antemano');
+      assert.equal(attempt.status, 409, JSON.stringify(attempt.body));
+      assert.equal(attempt.body.error.code, 'FISCAL_RIF_MISSING',
+        'y el servidor rechaza por el mismo motivo');
+    } finally {
+      await db.query('UPDATE restaurants SET rif = $2 WHERE id = $1', [restaurant.id, saved.rif]);
+    }
+  });
+
+  it('un RIF en blanco cuenta como no tenerlo', async () => {
+    // Una cadena vacía sale igual de blanca en el documento que un nulo, así
+    // que tratarla como «sí tiene» sería dejar pasar exactamente lo mismo.
+    await setPlan('ENTERPRISE');
+    const { rows: [saved] } = await db.query(
+      'SELECT rif FROM restaurants WHERE id = $1', [restaurant.id]
+    );
+    await db.query("UPDATE restaurants SET rif = '   ' WHERE id = $1", [restaurant.id]);
+
+    try {
+      const { promised, attempt } = await offerAndAttempt();
+      assert.equal(promised, false);
+      assert.equal(attempt.body.error.code, 'FISCAL_RIF_MISSING');
+    } finally {
+      await db.query('UPDATE restaurants SET rif = $2 WHERE id = $1', [restaurant.id, saved.rif]);
+    }
   });
 });
