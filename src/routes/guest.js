@@ -293,9 +293,15 @@ async function billForGuestPayment(guest, paymentId) {
   const { rows } = await db.query(
     `SELECT p.id AS payment_id, p.status AS payment_status, p.amount_ves,
             b.id AS bill_id, b.status AS bill_status,
-            (SELECT i.id FROM fiscal_invoices i WHERE i.payment_id = p.id LIMIT 1) AS invoice_id
+            (SELECT i.id FROM fiscal_invoices i WHERE i.payment_id = p.id LIMIT 1) AS invoice_id,
+            -- Si aquí se factura o no. Va en esta consulta y no en otra porque
+            -- el teléfono la repite cada ocho segundos mientras el cobro está
+            -- por confirmar, y ya está filtrando por este restaurante.
+            r.plan_tier, (fs.restaurant_id IS NOT NULL) AS has_series
        FROM payments p
        JOIN bills b ON b.id = p.bill_id
+       JOIN restaurants r ON r.id = p.restaurant_id
+       LEFT JOIN fiscal_series fs ON fs.restaurant_id = r.id
       WHERE p.id = $1 AND p.restaurant_id = $2 AND b.table_id = $3`,
     [paymentId, guest.restaurantId, guest.tableId]
   );
@@ -330,7 +336,25 @@ router.get(
         // Que la cuenta esté cerrada no impide pedir la factura: es más, suele
         // ser la señal de que ya se puede.
         billClosed: row.bill_status !== 'OPEN',
-        invoiced: row.invoice_id !== null
+        invoiced: row.invoice_id !== null,
+        /*
+         * Si en este restaurante se puede pedir factura, **dicho antes de que
+         * el comensal lo intente**.
+         *
+         * Va aquí y no en la cuenta por la misma razón que el resto de este
+         * endpoint: la cuenta se cierra justo cuando la factura empieza a poder
+         * pedirse, así que una bandera que viviera allí desaparecería en el
+         * único momento en que hace falta.
+         *
+         * Sin ella, la pantalla prometía «podrás pedir la factura cuando el
+         * restaurante confirme tu pago» sin comprobar nada, y el comensal se
+         * enteraba de que aquí no se piden al pulsar -- ya confirmado el cobro,
+         * y habiendo dejado de pedírsela al personal porque la app le dijo que
+         * esperara.
+         */
+        canRequestInvoice: invoicing.canIssue({
+          planTier: row.plan_tier, hasSeries: row.has_series
+        })
       });
     } catch (err) { next(err); }
   }
@@ -382,6 +406,15 @@ router.get(
  * offer no way to pay it. Bank, phone and identity document, which is what
  * addressing a Pago Móvil takes; the account number stays behind the staff
  * surface.
+ */
+/**
+ * Quién recibe el dinero.
+ *
+ * Splite nunca lo retiene -- un Pago Móvil va de la cuenta del comensal a la
+ * del restaurante --, así que sin esto la pantalla puede decir lo que se debe y
+ * no ofrecer forma de pagarlo. Banco, teléfono y documento, que es lo que hace
+ * falta para dirigir un Pago Móvil; el número de cuenta se queda del lado del
+ * personal.
  */
 async function payeeForGuest(guest) {
   const { rows } = await db.query(
@@ -589,7 +622,9 @@ router.post(
     try {
       await assertPlanAllows(req.guest.restaurantId, 'fiscalInvoicing');
 
-      const provider = config.fiscal.provider || (config.fiscal.mockEnabled ? 'mock' : '');
+      // El mismo cálculo que `canIssue` publica en la cuenta. Uno solo, para
+      // que lo que se promete y lo que se acepta no puedan discrepar.
+      const provider = invoicing.activeProvider();
       if (!provider) {
         // Sin imprenta configurada no hay forma de emitir nada válido. Se dice,
         // en vez de fallar de una manera que parezca culpa del comensal.

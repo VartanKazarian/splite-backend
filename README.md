@@ -1835,6 +1835,42 @@ next invoice will print, and seeing it that way is what lets somebody check the
 prefix and the padding against the paper authorisation before issuing with them
 instead of after.
 
+### Not offering what cannot be given
+
+`GET /api/v1/guest/payments/{id}` carries `canRequestInvoice`. A client reads it
+**before showing anything about invoicing at all** — including the "you will be
+able to ask once your payment is confirmed" line.
+
+It exists because of a measured failure, not for symmetry. That line was
+unconditional: it rendered whenever the payment was not yet settled, checking
+nothing. The diner waited, the payment settled, they tapped, and only then did
+the API refuse — 403, because that restaurant's plan does not include invoicing
+— and the screen turned into "invoices are not requested here". The promise was
+not merely false. Someone who needed a fiscal invoice did not ask a member of
+staff *because the app told them to wait*, and by the time it took the promise
+back they could be at the door.
+
+The three refusals were all knowable before anyone tapped: the plan does not
+include it, the deployment has no issuer, or the restaurant has not configured
+its series. `fiscalInvoicing.canIssue` folds them into one boolean —
+deliberately without saying which. Which one it is concerns the restaurant, and
+what the diner should do is the same in all three: ask staff before leaving.
+
+**It rides on the payment, not on the bill.** Confirming a payment is what
+closes the bill, so the instant the invoice becomes askable is the instant
+`GET /guest/bill` stops answering. A flag living there would vanish at the one
+moment it is needed — which is exactly the screen the diner was seeing.
+
+True is not a guarantee. The payment still has to be settled and the bill must
+have something left to declare; `canRequestInvoice` says the offer is honest,
+not that a document will come out. The `unavailable` outcome stays on the client
+as a backstop for the race where a plan changes between the poll and the tap.
+
+The rule the tests hold is that the flag and the server cannot disagree: each
+case asserts both the flag and what `POST /guest/bill/invoice` answers, because
+a test watching only the boolean would still pass the day the server started
+refusing for a different reason.
+
 ### Asking twice, and what the diner is told
 
 Two taps, or a retry after a dropped connection, answer **409
