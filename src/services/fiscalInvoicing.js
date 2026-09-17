@@ -234,11 +234,22 @@ function activeProvider() {
  * del restaurante, y lo accionable para él es el mismo en los tres casos:
  * pedírsela al personal.
  */
-function canIssue({ planTier, hasSeries }) {
+function canIssue({ planTier, hasSeries, hasRif }) {
   if (!entitlements.isAllowed(planTier, 'fiscalInvoicing')) return false;
 
   const provider = activeProvider();
   if (!provider) return false;
+
+  /*
+   * Sin el RIF del emisor no se emite, lo imprima quien lo imprima.
+   *
+   * Es contenido obligatorio de una factura fiscal venezolana, no una línea
+   * decorativa del encabezado. El correo lo imprimía `if (restaurant.rif)` y el
+   * recibo lo pasaba como `?? null`, así que un restaurante sin RIF emitía
+   * documentos incompletos **en silencio** -- que es la peor forma de fallar
+   * aquí: el papel sale, parece una factura, y no sirve.
+   */
+  if (!hasRif) return false;
 
   // Emitiendo nosotros, un restaurante sin serie autorizada no puede numerar.
   // Con imprenta los números llegan de fuera y esto no aplica.
@@ -247,6 +258,25 @@ function canIssue({ planTier, hasSeries }) {
 
 async function issueForPayment({ restaurantId, billId, paymentId, customer = {}, provider }) {
   const prepared = await db.withTransaction(async (client) => {
+    /*
+     * El RIF del emisor, antes que nada.
+     *
+     * Se comprueba aquí y no sólo en `canIssue` porque las dos caras tienen que
+     * coincidir: si la cuenta del comensal dice que aquí no se factura y el
+     * POST lo aceptara igual, volveríamos a tener una promesa y su contraria.
+     * `NULLIF(TRIM(...), '')` y no `IS NOT NULL`: una cadena vacía es tan
+     * inservible como un nulo, y sale igual de blanca en el documento.
+     */
+    const issuer = await client.query(
+      "SELECT NULLIF(TRIM(rif), '') AS rif FROM restaurants WHERE id = $1",
+      [restaurantId]
+    );
+    if (!issuer.rows.length) throw new ApiError('RESTAURANT_NOT_FOUND', 'Restaurant not found');
+    if (!issuer.rows[0].rif) {
+      throw new ApiError('FISCAL_RIF_MISSING',
+        'This restaurant has no RIF on file, and a fiscal invoice cannot be issued without one');
+    }
+
     const { bill, lines, state } = await stateForBill(client, { restaurantId, billId });
 
     const payment = await client.query(

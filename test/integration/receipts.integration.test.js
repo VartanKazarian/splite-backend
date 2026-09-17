@@ -179,7 +179,13 @@ describe('Recibos', { skip }, () => {
 
     // Un restaurante sin dirección registrada no enseña un hueco: enseña null,
     // y la pantalla omite la línea. Inventarla sería peor.
+    //
+    // El RIF se vacía a mano: el fixture pone uno, porque sin él no se puede
+    // emitir una factura fiscal y media suite fiscal estaría midiendo otra
+    // cosa. Aquí hace falta el estado contrario, así que se provoca a la vista
+    // en vez de heredarlo de un fixture incompleto.
     const other = await fixtures.createRestaurant({ name: 'Sin Datos' });
+    await db.query('UPDATE restaurants SET rif = NULL WHERE id = $1', [other.id]);
     try {
       const table = await fixtures.createTable(other.id, { name: 'N1' });
       const plain = await fixtures.createBill({

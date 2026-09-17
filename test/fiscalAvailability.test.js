@@ -29,27 +29,27 @@ const nadie = () => Object.assign(config.fiscal, { provider: '', mockEnabled: fa
 test('el plan manda: sólo ENTERPRISE incluye facturación', () => {
   own();
   for (const tier of ['TRIAL', 'STARTER', 'PRO']) {
-    assert.equal(canIssue({ planTier: tier, hasSeries: true }), false, `${tier} no lo incluye`);
+    assert.equal(canIssue({ planTier: tier, hasSeries: true, hasRif: true }), false, `${tier} no lo incluye`);
   }
-  assert.equal(canIssue({ planTier: 'ENTERPRISE', hasSeries: true }), true);
+  assert.equal(canIssue({ planTier: 'ENTERPRISE', hasSeries: true, hasRif: true }), true);
 });
 
 test('sin emisor en el despliegue no se promete nada, ni al plan que lo incluye', () => {
   nadie();
-  assert.equal(canIssue({ planTier: 'ENTERPRISE', hasSeries: true }), false);
+  assert.equal(canIssue({ planTier: 'ENTERPRISE', hasSeries: true, hasRif: true }), false);
 });
 
 test('emitiendo nosotros, sin serie autorizada no se puede numerar', () => {
   // Es la condición que un restaurante recién subido a ENTERPRISE cumple mal:
   // tiene el plan y el despliegue, y todavía no ha transcrito su autorización.
   own();
-  assert.equal(canIssue({ planTier: 'ENTERPRISE', hasSeries: false }), false);
-  assert.equal(canIssue({ planTier: 'ENTERPRISE', hasSeries: true }), true);
+  assert.equal(canIssue({ planTier: 'ENTERPRISE', hasSeries: false, hasRif: true }), false);
+  assert.equal(canIssue({ planTier: 'ENTERPRISE', hasSeries: true, hasRif: true }), true);
 });
 
 test('con imprenta la serie no aplica: los números llegan de fuera', () => {
   imprenta();
-  assert.equal(canIssue({ planTier: 'ENTERPRISE', hasSeries: false }), true);
+  assert.equal(canIssue({ planTier: 'ENTERPRISE', hasSeries: false, hasRif: true }), true);
 });
 
 test('el simulado cuenta como emisor, y sólo existe fuera de producción', () => {
@@ -57,7 +57,7 @@ test('el simulado cuenta como emisor, y sólo existe fuera de producción', () =
   // puede prometerle nada a un comensal de verdad.
   Object.assign(config.fiscal, { provider: '', mockEnabled: true });
   assert.equal(activeProvider(), 'mock');
-  assert.equal(canIssue({ planTier: 'ENTERPRISE', hasSeries: false }), true);
+  assert.equal(canIssue({ planTier: 'ENTERPRISE', hasSeries: false, hasRif: true }), true);
 });
 
 test('un plan que no se reconoce cierra la puerta, no la abre', () => {
@@ -73,5 +73,24 @@ test('un plan que no se reconoce cierra la puerta, no la abre', () => {
    * como «sí puede» --, y eso es lo que fija esta prueba.
    */
   own();
-  assert.equal(canIssue({ planTier: 'PREMIUM', hasSeries: true }), false);
+  assert.equal(canIssue({ planTier: 'PREMIUM', hasSeries: true, hasRif: true }), false);
+});
+
+test('sin el RIF del emisor no se emite, lo imprima quien lo imprima', () => {
+  /*
+   * Es contenido obligatorio de una factura fiscal venezolana, no una línea
+   * decorativa del encabezado -- así que no depende de quién ponga los números.
+   *
+   * Antes no lo comprobaba nadie: el correo imprimía el RIF con un
+   * `if (restaurant.rif)` y el recibo lo pasaba como `?? null`, de modo que un
+   * restaurante sin RIF emitía documentos incompletos **en silencio**. Ésa es
+   * la peor forma de fallar aquí: el papel sale, parece una factura, y no
+   * sirve para desgravar.
+   */
+  own();
+  assert.equal(canIssue({ planTier: 'ENTERPRISE', hasSeries: true, hasRif: false }), false);
+
+  imprenta();
+  assert.equal(canIssue({ planTier: 'ENTERPRISE', hasSeries: true, hasRif: false }), false,
+    'tampoco con imprenta: el RIF es del emisor, no de quien imprime');
 });

@@ -297,7 +297,8 @@ async function billForGuestPayment(guest, paymentId) {
             -- Si aquí se factura o no. Va en esta consulta y no en otra porque
             -- el teléfono la repite cada ocho segundos mientras el cobro está
             -- por confirmar, y ya está filtrando por este restaurante.
-            r.plan_tier, (fs.restaurant_id IS NOT NULL) AS has_series
+            r.plan_tier, (fs.restaurant_id IS NOT NULL) AS has_series,
+            (NULLIF(TRIM(r.rif), '') IS NOT NULL) AS has_rif
        FROM payments p
        JOIN bills b ON b.id = p.bill_id
        JOIN restaurants r ON r.id = p.restaurant_id
@@ -353,7 +354,7 @@ router.get(
          * esperara.
          */
         canRequestInvoice: invoicing.canIssue({
-          planTier: row.plan_tier, hasSeries: row.has_series
+          planTier: row.plan_tier, hasSeries: row.has_series, hasRif: row.has_rif
         })
       });
     } catch (err) { next(err); }
