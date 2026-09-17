@@ -10,6 +10,8 @@ const { resolveLineBasis, buildDraft } = require('./fiscalInvoiceBuilder');
 const providers = require('../fiscal/providers');
 const fiscalMail = require('./fiscalMail');
 const numbering = require('./fiscalNumbering');
+const config = require('../config');
+const entitlements = require('./entitlements');
 
 /**
  * Emitir la factura de un pago, sin llegar nunca a emitirla dos veces.
@@ -200,6 +202,48 @@ async function claimedLines(client, { paymentId, lines }) {
 const OWN = 'own';
 
 const isOwnIssuer = (provider) => provider === OWN;
+
+/**
+ * Quién emite en este despliegue, si es que alguien.
+ *
+ * Vivía escrito a mano en la ruta del comensal. Sacarlo aquí no es ordenar por
+ * ordenar: ahora hay dos sitios que necesitan la misma respuesta -- el que
+ * emite y el que dice de antemano si se puede --, y si se calculan por separado
+ * acaban discrepando, que es exactamente el fallo que esto viene a arreglar.
+ */
+function activeProvider() {
+  return config.fiscal.provider || (config.fiscal.mockEnabled ? 'mock' : '');
+}
+
+/**
+ * ¿Puede este restaurante emitir una factura desde la app, ahora mismo?
+ *
+ * Existe porque al comensal se le prometía y luego se le desdecía. La pantalla
+ * previa decía «podrás pedir la factura cuando el restaurante confirme tu pago»
+ * sin comprobar nada, y sólo al pulsar -- ya confirmado el cobro, a veces con
+ * el comensal de pie en la puerta -- aparecía el «aquí no se piden las
+ * facturas». Peor que una promesa falsa: quien necesitaba la factura no se la
+ * pidió al personal **porque la app le dijo que esperara**.
+ *
+ * Las tres condiciones que rechazan ya se sabían antes de que nadie pulsara
+ * nada. Esto las junta para poder decirlo a tiempo. Pura a propósito: los datos
+ * los lee quien llama, que ya los tiene a mano.
+ *
+ * Deliberadamente un solo booleano y no el motivo. Al comensal no le sirve
+ * saber si es el plan, el despliegue o una serie sin configurar -- son cosas
+ * del restaurante, y lo accionable para él es el mismo en los tres casos:
+ * pedírsela al personal.
+ */
+function canIssue({ planTier, hasSeries }) {
+  if (!entitlements.isAllowed(planTier, 'fiscalInvoicing')) return false;
+
+  const provider = activeProvider();
+  if (!provider) return false;
+
+  // Emitiendo nosotros, un restaurante sin serie autorizada no puede numerar.
+  // Con imprenta los números llegan de fuera y esto no aplica.
+  return isOwnIssuer(provider) ? hasSeries : true;
+}
 
 async function issueForPayment({ restaurantId, billId, paymentId, customer = {}, provider }) {
   const prepared = await db.withTransaction(async (client) => {
@@ -554,6 +598,7 @@ function reviveDraft(stored) {
 }
 
 module.exports = {
+  canIssue, activeProvider,
   issueForPayment, resolveUncertain, stateForBill, claimedLines, toVes,
   serialiseDraft, reviveDraft
 };

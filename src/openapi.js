@@ -4346,7 +4346,31 @@ const paths = {
                   status: { type: 'string', enum: ['PENDING', 'IN_DOUBT', 'AMBIGUOUS', 'SUCCEEDED', 'FAILED', 'CANCELLED', 'REFUNDED', 'PARTIALLY_REFUNDED'] },
                   amountVes: minorUnits,
                   billClosed: { type: 'boolean' },
-                  invoiced: { type: 'boolean', description: 'True once a fiscal document exists for it, so the offer is not made twice.' }
+                  invoiced: { type: 'boolean', description: 'True once a fiscal document exists for it, so the offer is not made twice.' },
+                  canRequestInvoice: {
+                    type: 'boolean',
+                    description: [
+                      'Whether a fiscal invoice can be asked for at this restaurant at all. **Read it before',
+                      'showing anything about invoicing**, including a "you will be able to ask once your',
+                      'payment is confirmed" message: false means every such offer is a promise nothing can',
+                      'keep, and a diner who waits on it is a diner who did not ask a member of staff while',
+                      'they still could.',
+                      '',
+                      'It folds the three refusals already knowable before anybody taps — the plan does not',
+                      'include it (403 PLAN_UPGRADE_REQUIRED), the deployment has no issuer (503',
+                      'FISCAL_PROVIDER_NOT_CONFIGURED), or the restaurant has not configured its authorised',
+                      'series (409 FISCAL_SERIES_MISSING) — into one answer, deliberately without saying',
+                      'which. Which one it is concerns the restaurant, not the diner, and what the diner',
+                      'should do is the same in all three: ask a member of staff before leaving.',
+                      '',
+                      'It rides here rather than on the bill because the bill closes exactly when the',
+                      'invoice becomes askable, so a flag living there would vanish at the one moment it is',
+                      'needed.',
+                      '',
+                      'True is not a guarantee: the payment still has to be settled and the bill must have',
+                      'something left to declare. It only means the offer is honest.'
+                    ].join('\n')
+                  }
                 }
               }
             }
