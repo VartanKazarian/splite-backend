@@ -44,35 +44,11 @@ describe('numeración fiscal propia', { skip }, () => {
     await db.close();
   });
 
-  /**
-   * Borra el rastro fiscal de un restaurante.
-   *
-   * Los documentos son inmutables por trigger -- es lo que los hace servir de
-   * prueba --, así que la única forma de limpiarlos es desactivarlo. Hijos
-   * antes que padres: las entregas por correo son ON DELETE RESTRICT, porque el
-   * rastro de a quién se le mandó su factura no puede desaparecer porque se
-   * borre otra cosa.
-   */
+  /** Lo del helper compartido, más lo que sólo este fichero crea. */
   async function purgeFiscal(restaurantId) {
     if (!restaurantId) return;
-    for (const table of ['fiscal_invoices', 'fiscal_invoice_lines', 'fiscal_invoice_taxes']) {
-      await db.query(`ALTER TABLE ${table} DISABLE TRIGGER ${table}_immutable`);
-    }
-    for (const sql of [
-      'DELETE FROM fiscal_invoice_deliveries WHERE restaurant_id = $1',
-      'DELETE FROM fiscal_invoice_lines WHERE restaurant_id = $1',
-      'DELETE FROM fiscal_invoice_taxes WHERE restaurant_id = $1',
-      'DELETE FROM fiscal_invoices WHERE restaurant_id = $1',
-      'DELETE FROM fiscal_invoice_requests WHERE restaurant_id = $1',
-      'DELETE FROM fiscal_counters WHERE restaurant_id = $1',
-      'DELETE FROM fiscal_series WHERE restaurant_id = $1',
-      'DELETE FROM menu_products WHERE restaurant_id = $1'
-    ]) {
-      await db.query(sql, [restaurantId]);
-    }
-    for (const table of ['fiscal_invoices', 'fiscal_invoice_lines', 'fiscal_invoice_taxes']) {
-      await db.query(`ALTER TABLE ${table} ENABLE TRIGGER ${table}_immutable`);
-    }
+    await fixtures.purgeFiscal(restaurantId);
+    await db.query('DELETE FROM menu_products WHERE restaurant_id = $1', [restaurantId]);
   }
 
   /** La serie autorizada, tal y como la escribiría el dueño en ajustes. */

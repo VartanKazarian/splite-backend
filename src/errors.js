@@ -160,6 +160,11 @@ const CODES = {
   // cambiar el prefijo, el ancho o el primero dejaría el libro de ventas con
   // dos formatos y documentos emitidos que ya no cuadran con su propia serie.
   FISCAL_SERIES_LOCKED: 409,
+
+  // Bajar de plan le quitaría al restaurante algo que ya viene usando. 409 y no
+  // 403: no es que quien lo pide no pueda, es que el estado actual lo impide, y
+  // se deja pasar a propósito con `--force` cuando es lo que se quiere.
+  PLAN_DOWNGRADE_BLOCKED: 409,
   MENU_CURRENCY_MISMATCH: 409,
   CATEGORY_NAME_TAKEN: 409,
   WEBHOOK_ALREADY_PROCESSED: 409,

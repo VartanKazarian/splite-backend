@@ -75,22 +75,8 @@ describe('facturación sobre HTTP', { skip }, () => {
 
   after(async () => {
     if (server) await new Promise(resolve => server.close(resolve));
+    await fixtures.purgeFiscal(restaurant?.id);
     if (restaurant) {
-      for (const t of ['fiscal_invoice_lines', 'fiscal_invoice_taxes', 'fiscal_invoices']) {
-        await db.query(`ALTER TABLE ${t} DISABLE TRIGGER ${t}_immutable`);
-      }
-      // Las entregas por correo apuntan a la factura con ON DELETE RESTRICT --
-      // el rastro de a quién se le mandó su documento no puede desaparecer
-      // porque se borre otra cosa --, así que van antes. Hijos antes que
-      // padres, igual que en `fixtures.destroyRestaurant`.
-      await db.query('DELETE FROM fiscal_invoice_deliveries WHERE restaurant_id = $1', [restaurant.id]);
-      await db.query('DELETE FROM fiscal_invoice_lines WHERE restaurant_id = $1', [restaurant.id]);
-      await db.query('DELETE FROM fiscal_invoice_taxes WHERE restaurant_id = $1', [restaurant.id]);
-      await db.query('DELETE FROM fiscal_invoices WHERE restaurant_id = $1', [restaurant.id]);
-      for (const t of ['fiscal_invoice_lines', 'fiscal_invoice_taxes', 'fiscal_invoices']) {
-        await db.query(`ALTER TABLE ${t} ENABLE TRIGGER ${t}_immutable`);
-      }
-      await db.query('DELETE FROM fiscal_invoice_requests WHERE restaurant_id = $1', [restaurant.id]);
       await db.query('DELETE FROM users WHERE restaurant_id = $1', [restaurant.id]);
       await db.query('DELETE FROM menu_products WHERE restaurant_id = $1', [restaurant.id]);
     }
