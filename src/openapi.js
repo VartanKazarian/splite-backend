@@ -5068,6 +5068,58 @@ const paths = {
     }
   },
 
+  '/api/v1/guest/banks': {
+    get: {
+      tags: ['Guest'],
+      summary: 'Venezuelan banks, for the diner to pick their own',
+      operationId: 'listGuestBanks',
+      description: [
+        'The same public list `GET /api/v1/account/banks` serves staff, behind a guest session.',
+        'Nothing about the restaurant or the table is in it.',
+        '',
+        '**Render `bankOrigin` as a picker fed by this, never as a free-text field.** That field on',
+        '`POST /guest/bill/payment-claims` is optional corroboration, but when present the server',
+        'only accepts a four-digit code from this list — "Banesco", "banesco" and "BANESCO 0134" are',
+        'one bank that compares as three, and the person paying for the difference is the one',
+        'verifying against a bank app. A text box therefore turns an *optional* field into a 400',
+        'that stops the diner paying at all, which is what happened before this endpoint existed:',
+        'the error even read "pick it from the list" and there was no list a diner could reach.',
+        '',
+        'An empty selection sends no `bankOrigin`, which is always valid.',
+        '',
+        '**The list is not officially sourced.** It has been cross-checked against two independent',
+        'published lists, which agreed on every code, but the BCV register itself has not been read.'
+      ].join('\n'),
+      security: [{ guestAuth: [] }],
+      responses: {
+        200: {
+          description: 'Banks, ordered by name.',
+          content: {
+            'application/json': {
+              schema: {
+                type: 'object',
+                properties: {
+                  data: {
+                    type: 'array',
+                    items: {
+                      type: 'object',
+                      properties: {
+                        code: { type: 'string' },
+                        name: { type: 'string' },
+                        chargeable: { type: 'boolean' }
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          }
+        },
+        ...commonErrors
+      }
+    }
+  },
+
   '/api/v1/guest/c2p/banks': {
     get: {
       tags: ['Guest'],
