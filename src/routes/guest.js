@@ -15,6 +15,7 @@ const paymentClaims = require('../services/paymentClaims');
 const guestOrders = require('../services/guestOrders');
 const mercantilC2P = require('../services/mercantilC2P');
 const claveGuide = require('../payments/c2pClaveGuide');
+const banks = require('../payments/banks');
 const { requestHash, begin, complete, abort } = require('../services/idempotency');
 const { logger } = require('../connectors/logger');
 const splitEngine = require('../services/splitEngine');
@@ -663,6 +664,29 @@ router.post(
     } catch (err) { next(err); }
   }
 );
+
+/**
+ * Los bancos, para que el comensal elija el suyo en vez de escribirlo.
+ *
+ * `bankOrigin` es opcional y corrobora un Pago Móvil declarado, pero el
+ * servidor sólo acepta un código de cuatro dígitos de la lista conocida -- por
+ * la razón que dice `declareClaimSchema`: "Banesco", "banesco" y "BANESCO 0134"
+ * son un banco que se compara como tres, y quien paga la diferencia es quien
+ * verifica leyendo una pantalla.
+ *
+ * El campo del comensal era texto libre, así que escribir el nombre del banco
+ * -- lo natural -- devolvía 400 y **le impedía pagar**, por un campo opcional.
+ * El propio mensaje de error decía «elígelo de la lista» y esa lista no existía
+ * en ninguna parte a la que el comensal llegara: `banks.list()` ya estaba
+ * escrito "for a picker", y `/account/banks` lo sirve sólo al personal.
+ *
+ * Es la misma lista pública de siempre, sin nada del restaurante ni de la mesa.
+ * Va detrás de la sesión igual que el resto de esta superficie, por coherencia
+ * y porque quien la pide ya escaneó.
+ */
+router.get('/banks', authenticateGuest, perSession, (req, res) => {
+  res.json({ data: banks.list() });
+});
 
 router.get('/c2p/banks', authenticateGuest, perSession, validateQuery(c2pBankGuideQuerySchema), (req, res) => {
   const identity = { idType: req.query.idType, idNumber: req.query.idNumber };
