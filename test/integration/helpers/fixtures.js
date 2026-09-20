@@ -1,4 +1,5 @@
 const db = require('../../../src/connectors/base');
+const { newRif } = require('./rif');
 
 /**
  * Row fixtures for the integration suite.
@@ -10,15 +11,6 @@ const db = require('../../../src/connectors/base');
  */
 
 /**
- * Un contador para los RIF del fixture.
- *
- * `restaurants_rif_unique_idx` es único donde el RIF no es nulo, así que dos
- * restaurantes del mismo fichero no pueden compartirlo. El reloj no basta:
- * varios se crean dentro del mismo milisegundo.
- */
-let rifSeq = 0;
-
-/**
  * Con RIF, como los que crea el alta de verdad.
  *
  * No es adorno: sin RIF del emisor no se puede emitir una factura fiscal --
@@ -27,13 +19,31 @@ let rifSeq = 0;
  * que quiera el caso contrario lo pone a NULL ella misma, que es lo honesto:
  * hace visible que está provocando ese estado.
  */
-async function createRestaurant({ name = 'Integration Test Restaurant', currency = 'VES' } = {}) {
-  const rif = `J${String(Date.now()).slice(-6)}${String(++rifSeq).padStart(3, '0')}`;
-  const { rows } = await db.query(
-    'INSERT INTO restaurants (name, currency, rif) VALUES ($1, $2, $3) RETURNING id, currency, rif',
-    [name, currency, rif]
-  );
-  return rows[0];
+async function createRestaurant({
+  name = 'Integration Test Restaurant', currency = 'VES', rifSource = newRif
+} = {}) {
+  /*
+   * Y si el RIF sorteado ya estuviera cogido, se sortea otro.
+   *
+   * Nueve dígitos al azar hacen la colisión rarísima, pero «rarísima» es
+   * exactamente lo que acaba de costar una vuelta roja, y en una base de
+   * desarrollo que no se vacía puede quedar la fila de una corrida anterior.
+   * Reintentar convierte la garantía en incondicional: crear un restaurante no
+   * puede fallar por el RIF. Sólo se reintenta ESE índice; cualquier otro 23505
+   * es un fallo de verdad y sube tal cual.
+   */
+  for (let attempt = 0; ; attempt++) {
+    try {
+      const { rows } = await db.query(
+        'INSERT INTO restaurants (name, currency, rif) VALUES ($1, $2, $3) RETURNING id, currency, rif',
+        [name, currency, rifSource()]
+      );
+      return rows[0];
+    } catch (err) {
+      const taken = err.code === '23505' && err.constraint === 'restaurants_rif_unique_idx';
+      if (!taken || attempt >= 5) throw err;
+    }
+  }
 }
 
 async function createTable(restaurantId, { name = 'T1' } = {}) {
