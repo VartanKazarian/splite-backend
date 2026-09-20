@@ -2122,6 +2122,29 @@ Object.assign(schemas, {
     }
   },
 
+  FiscalRifRequest: {
+    type: 'object',
+    required: ['rif'],
+    properties: {
+      rif: {
+        type: 'string', maxLength: 20, example: 'J-12345678-4',
+        description: 'Written however the owner types it — punctuation and case are stripped before it is stored and compared. Nothing but the length ceiling is enforced here: whether it is a RIF is one verdict, given by the handler as 400 `FISCAL_RIF_MALFORMED`, so the error does not change with how short the mistake was.'
+      }
+    }
+  },
+
+  FiscalRifResponse: {
+    type: 'object',
+    required: ['rif', 'checksumOk'],
+    properties: {
+      rif: { type: 'string', example: 'J-12345678-4', description: 'Formatted for display; stored normalised.' },
+      checksumOk: {
+        type: 'boolean',
+        description: 'Whether the check digit agrees. False does NOT mean the RIF was rejected — it was stored anyway, and the client should say so out loud rather than block.'
+      }
+    }
+  },
+
   FiscalSeriesRequest: {
     type: 'object',
     required: ['controlPrefix', 'documentPrefix', 'padTo', 'controlFirst'],
@@ -5823,6 +5846,47 @@ const paths = {
         ...commonErrors,
         403: response('Forbidden'),
         404: response('NotFound')
+      }
+    }
+  },
+
+  '/api/v1/account/rif': {
+    put: {
+      tags: ['Account'],
+      summary: 'Set the RIF this restaurant declares under',
+      operationId: 'setFiscalRif',
+      'x-required-roles': ['OWNER'],
+      description: [
+        'Roles: OWNER. Separate from `PATCH /account` for the reason the series is separate: the',
+        "restaurant's name is profile data, the RIF is the identity it declares under. A manager",
+        'who may rename the place is not thereby allowed to change taxpayer. Audited as',
+        '`FISCAL_RIF_CHANGED`, carrying the previous value.',
+        '',
+        'There is no GET — the RIF already travels in `GET /account`.',
+        '',
+        '**Shape is enforced; the check digit is not.** A malformed value is refused with 400',
+        '`FISCAL_RIF_MALFORMED`. A well-shaped one whose check digit disagrees is *stored*, and the',
+        'response says so in `checksumOk`. The asymmetry is deliberate: the check-digit routine has',
+        'never been run against a corpus of real RIFs, and refusing on it risks leaving a genuine',
+        'restaurant unable to invoice because of a bug of ours — while a wrong RIF prints on every',
+        'invoice and is worth shouting about. So it warns rather than blocks.',
+        '',
+        '**It freezes once a fiscal document has been issued** (409 `FISCAL_RIF_LOCKED`). Changing',
+        'it then would not change the issuer going forward, it would contradict documents already',
+        'in customers\' hands: the libro de ventas would stop matching the paper. Same rule, and',
+        'same reason, as the frozen series fields — and the same remedy, a credit note.',
+        '',
+        'The RIF is unique across tenants. A collision answers 409 `FISCAL_RIF_TAKEN`, which',
+        'usually means that taxpayer already has an account.'
+      ].join('\n'),
+      security: staff,
+      requestBody: { required: true, content: { 'application/json': { schema: ref('FiscalRifRequest') } } },
+      responses: {
+        200: { description: 'The stored RIF.', content: { 'application/json': { schema: ref('FiscalRifResponse') } } },
+        ...commonErrors,
+        403: response('Forbidden'),
+        404: response('NotFound'),
+        409: response('Conflict')
       }
     }
   },

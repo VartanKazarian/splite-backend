@@ -3,7 +3,7 @@ const db = require('../connectors/base');
 const { authenticateToken, requireRole } = require('../middleware/auth');
 const {
   validateBody, validateParams, payoutSchema, paymentProviderParamSchema,
-  restaurantProfileSchema, fiscalSeriesSchema,
+  restaurantProfileSchema, fiscalSeriesSchema, fiscalRifSchema,
   createStaffSchema, updateStaffSchema, resetStaffPasswordSchema, userIdParamSchema
 } = require('../middleware/schemas');
 const staff = require('../services/staff');
@@ -14,6 +14,8 @@ const { ApiError } = require('../errors');
 const dto = require('../dto');
 const guestContacts = require('../services/guestContacts');
 const numbering = require('../services/fiscalNumbering');
+const issuer = require('../services/fiscalIssuer');
+const { formatRif } = require('../utils/rif');
 
 const router = express.Router();
 router.use(authenticateToken);
@@ -173,6 +175,49 @@ router.put(
       });
 
       res.json({ fiscalSeries: dto.fiscalSeries(row) });
+    } catch (err) { next(err); }
+  }
+);
+
+/**
+ * El RIF con el que este restaurante declara.
+ *
+ * Endpoint aparte y no un campo de `PATCH /`, por lo mismo que la serie: el
+ * nombre del local es un dato del perfil y el RIF es la identidad fiscal, con
+ * otro permiso, otra auditoría y una regla propia sobre cuándo deja de poder
+ * tocarse. Que un gerente pueda renombrar el sitio no significa que pueda
+ * cambiar de contribuyente.
+ *
+ * No hay GET: el RIF ya viaja en `GET /account`, y publicarlo dos veces sería
+ * dar dos respuestas a la misma pregunta.
+ */
+router.put(
+  '/rif',
+  requireRole('OWNER'),
+  validateBody(fiscalRifSchema),
+  async (req, res, next) => {
+    try {
+      // En transacción por la misma razón que la serie: `writeRif` decide si
+      // puede cambiar mirando si ya hay documentos emitidos, y entre esa
+      // lectura y la escritura no puede colarse una emisión.
+      const result = await db.withTransaction(client =>
+        issuer.writeRif(client, req.user.restaurantId, req.body.rif));
+
+      if (result.changed) {
+        await logAudit({
+          ...auditContext(req),
+          action: 'FISCAL_RIF_CHANGED',
+          resourceType: 'restaurant',
+          resourceId: req.user.restaurantId,
+          // El anterior también, que es lo que hay que poder responder luego:
+          // con qué identidad se estuvo operando y desde cuándo.
+          details: { rif: result.rif, previous: result.previous ?? null }
+        });
+      }
+
+      // `checksumOk` en falso no impidió guardar, así que la pantalla es quien
+      // tiene que decirlo. Ver `fiscalIssuer` para por qué no se rechaza.
+      res.json({ rif: formatRif(result.rif), checksumOk: result.checksumOk });
     } catch (err) { next(err); }
   }
 );

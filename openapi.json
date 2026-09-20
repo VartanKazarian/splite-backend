@@ -336,6 +336,7 @@
                   "BILL_ID_MISMATCH",
                   "INVALID_AMOUNT",
                   "INVALID_MONETARY_VALUE",
+                  "FISCAL_RIF_MALFORMED",
                   "WEBHOOK_BODY_UNVERIFIABLE",
                   "MENU_OCR_UNSUPPORTED_MEDIA",
                   "MENU_OCR_FILE_REQUIRED",
@@ -419,6 +420,8 @@
                   "FISCAL_SERIES_MISSING",
                   "FISCAL_RANGE_EXHAUSTED",
                   "FISCAL_SERIES_LOCKED",
+                  "FISCAL_RIF_LOCKED",
+                  "FISCAL_RIF_TAKEN",
                   "PLAN_DOWNGRADE_BLOCKED",
                   "MENU_CURRENCY_MISMATCH",
                   "CATEGORY_NAME_TAKEN",
@@ -5139,6 +5142,38 @@
               "Av. Francisco de Miranda, Chacao, Caracas"
             ],
             "description": "The address printed in the receipt header. Three states, not two: omitting the field leaves whatever is stored, a non-empty string replaces it, and an empty string clears it — without that last one a mistyped address could never be removed."
+          }
+        }
+      },
+      "FiscalRifRequest": {
+        "type": "object",
+        "required": [
+          "rif"
+        ],
+        "properties": {
+          "rif": {
+            "type": "string",
+            "maxLength": 20,
+            "example": "J-12345678-4",
+            "description": "Written however the owner types it — punctuation and case are stripped before it is stored and compared. Nothing but the length ceiling is enforced here: whether it is a RIF is one verdict, given by the handler as 400 `FISCAL_RIF_MALFORMED`, so the error does not change with how short the mistake was."
+          }
+        }
+      },
+      "FiscalRifResponse": {
+        "type": "object",
+        "required": [
+          "rif",
+          "checksumOk"
+        ],
+        "properties": {
+          "rif": {
+            "type": "string",
+            "example": "J-12345678-4",
+            "description": "Formatted for display; stored normalised."
+          },
+          "checksumOk": {
+            "type": "boolean",
+            "description": "Whether the check digit agrees. False does NOT mean the RIF was rejected — it was stored anyway, and the client should say so out loud rather than block."
           }
         }
       },
@@ -11964,6 +11999,67 @@
           },
           "404": {
             "$ref": "#/components/responses/NotFound"
+          },
+          "429": {
+            "$ref": "#/components/responses/TooManyRequests"
+          },
+          "500": {
+            "$ref": "#/components/responses/ServerError"
+          }
+        }
+      }
+    },
+    "/api/v1/account/rif": {
+      "put": {
+        "tags": [
+          "Account"
+        ],
+        "summary": "Set the RIF this restaurant declares under",
+        "operationId": "setFiscalRif",
+        "x-required-roles": [
+          "OWNER"
+        ],
+        "description": "Roles: OWNER. Separate from `PATCH /account` for the reason the series is separate: the\nrestaurant's name is profile data, the RIF is the identity it declares under. A manager\nwho may rename the place is not thereby allowed to change taxpayer. Audited as\n`FISCAL_RIF_CHANGED`, carrying the previous value.\n\nThere is no GET — the RIF already travels in `GET /account`.\n\n**Shape is enforced; the check digit is not.** A malformed value is refused with 400\n`FISCAL_RIF_MALFORMED`. A well-shaped one whose check digit disagrees is *stored*, and the\nresponse says so in `checksumOk`. The asymmetry is deliberate: the check-digit routine has\nnever been run against a corpus of real RIFs, and refusing on it risks leaving a genuine\nrestaurant unable to invoice because of a bug of ours — while a wrong RIF prints on every\ninvoice and is worth shouting about. So it warns rather than blocks.\n\n**It freezes once a fiscal document has been issued** (409 `FISCAL_RIF_LOCKED`). Changing\nit then would not change the issuer going forward, it would contradict documents already\nin customers' hands: the libro de ventas would stop matching the paper. Same rule, and\nsame reason, as the frozen series fields — and the same remedy, a credit note.\n\nThe RIF is unique across tenants. A collision answers 409 `FISCAL_RIF_TAKEN`, which\nusually means that taxpayer already has an account.",
+        "security": [
+          {
+            "staffAuth": []
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/FiscalRifRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "The stored RIF.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/FiscalRifResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "403": {
+            "$ref": "#/components/responses/Forbidden"
+          },
+          "404": {
+            "$ref": "#/components/responses/NotFound"
+          },
+          "409": {
+            "$ref": "#/components/responses/Conflict"
           },
           "429": {
             "$ref": "#/components/responses/TooManyRequests"

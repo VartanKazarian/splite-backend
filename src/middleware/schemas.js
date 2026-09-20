@@ -566,6 +566,24 @@ const fiscalIdParamSchema = Joi.object({ id: uuid.required() });
 /** Un pago que el comensal declaró y del que conoce el identificador. */
 const guestPaymentParamSchema = Joi.object({ id: uuid.required() });
 
+/**
+ * El RIF del emisor.
+ *
+ * Sólo la forma, en bruto y con la puntuación que quiera escribir quien lo
+ * teclee: normalizar y juzgar el dígito verificador es de `utils/rif`, y el
+ * esquema no debe tener una segunda opinión sobre eso. 20 caracteres porque
+ * `J-12345678-4` son 12 y cabe holgado cualquier separador razonable.
+ */
+const fiscalRifSchema = Joi.object({
+  // Deliberadamente sin mínimo ni patrón: quien juzga si esto es un RIF es
+  // `utils/rif`, y una sola vez. Con un mínimo aquí, el código de error pasaba
+  // a depender de cuán corto fuera el disparate -- «12345678» daba
+  // VALIDATION_FAILED y «X123456784» daba FISCAL_RIF_MALFORMED, dos respuestas
+  // distintas a la misma equivocación. El máximo sí se queda, que no es una
+  // opinión sobre el formato sino un tope barato contra un cuerpo absurdo.
+  rif: Joi.string().trim().max(20).allow('').required()
+});
+
 const restaurantProfileSchema = Joi.object({
   // `name` deja de ser obligatorio porque el cuerpo ya no es sólo el nombre.
   // Pedirlo siempre obligaría a reenviarlo para cambiar otra cosa, que es cómo
@@ -950,6 +968,7 @@ module.exports = {
   splitPaymentSchema,
   payoutSchema,
   restaurantProfileSchema,
+  fiscalRifSchema,
   fiscalSeriesSchema,
   requestInvoiceSchema,
   guestContactSchema,
