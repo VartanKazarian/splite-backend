@@ -440,7 +440,24 @@ module.exports = {
      * techo en el sitio donde importaría, que es justo lo que hace que sea
      * seguro dejarlo abierto en los demás.
      */
-    apiMax: isProduction ? 120 : integer('RATE_LIMIT_API_MAX', 120)
+    apiMax: isProduction ? 120 : integer('RATE_LIMIT_API_MAX', 120),
+    /**
+     * El techo de `/api/v1/auth`, que es el que de verdad protege algo: es lo
+     * que impide probar contraseñas a mansalva.
+     *
+     * Configurable con la misma reserva y por el mismo motivo que el de
+     * arriba, y con el mismo candado: **en producción vale diez y no hay
+     * variable que lo cambie**, así que el ataque que este límite detiene lo
+     * sigue deteniendo igual.
+     *
+     * Lo que lo hace necesario es que el panel pregunta quién eres y si tienes
+     * segundo factor en cada carga de pantalla. Cinco pantallas gastan nueve
+     * de las diez, de modo que una suite de extremo a extremo se corta el
+     * acceso a sí misma antes de terminar -- medido en CI, con el error
+     * llegando en `/auth/me` de la última prueba. Bajar eso adelgazando la
+     * suite sería dejar de probar cosas para complacer a un contador.
+     */
+    authMax: isProduction ? 10 : integer('RATE_LIMIT_AUTH_MAX', 10)
   },
   payments: {
     /**

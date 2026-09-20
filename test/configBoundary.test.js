@@ -242,22 +242,30 @@ test('a mailbox address is refused as the sender for an API transport', () => {
  * mientras no se pueda poner donde importa, y eso hay que sostenerlo con algo
  * que falle si alguien lo cambia, no con un comentario.
  */
-test('RATE_LIMIT_API_MAX sube el techo fuera de producción y se ignora dentro', () => {
-  const read = `console.log(require(${JSON.stringify(CONFIG)}).rateLimit.apiMax);`;
+for (const { name, key, fallback, raised } of [
+  { name: 'RATE_LIMIT_API_MAX', key: 'apiMax', fallback: '120', raised: '600' },
+  { name: 'RATE_LIMIT_AUTH_MAX', key: 'authMax', fallback: '10', raised: '60' }
+]) {
+  test(`${name} sube el techo fuera de producción y se ignora dentro`, () => {
+    const read = `console.log(require(${JSON.stringify(CONFIG)}).rateLimit.${key});`;
 
-  const dev = runNode(read, { NODE_ENV: 'development', RATE_LIMIT_API_MAX: '600' });
-  assert.ok(dev.ok, dev.out);
-  assert.equal(dev.out.trim(), '600');
+    const dev = runNode(read, { NODE_ENV: 'development', [name]: raised });
+    assert.ok(dev.ok, dev.out);
+    assert.equal(dev.out.trim(), raised);
 
-  const prod = runNode(read, {
-    NODE_ENV: 'production',
-    DATABASE_URL: 'postgres://x/y',
-    RATE_LIMIT_API_MAX: '600'
+    const prod = runNode(read, {
+      NODE_ENV: 'production',
+      DATABASE_URL: 'postgres://x/y',
+      [name]: raised
+    });
+    assert.ok(prod.ok, prod.out);
+    assert.equal(
+      prod.out.trim(), fallback,
+      `producción aceptó un techo aflojado desde el entorno con ${name}`
+    );
+
+    const byDefault = runNode(read, { NODE_ENV: 'development' });
+    assert.ok(byDefault.ok, byDefault.out);
+    assert.equal(byDefault.out.trim(), fallback);
   });
-  assert.ok(prod.ok, prod.out);
-  assert.equal(prod.out.trim(), '120', 'producción aceptó un techo aflojado desde el entorno');
-
-  const byDefault = runNode(read, { NODE_ENV: 'development' });
-  assert.ok(byDefault.ok, byDefault.out);
-  assert.equal(byDefault.out.trim(), '120');
-});
+}

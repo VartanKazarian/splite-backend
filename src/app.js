@@ -162,7 +162,7 @@ app.use(rateLimit({ windowSeconds: 60, max: config.rateLimit.apiMax, keyPrefix: 
 
 app.use('/api/v1/auth', rateLimit({
   windowSeconds: 60,
-  max: 10,
+  max: config.rateLimit.authMax,
   keyPrefix: 'auth',
   failClosed: config.rateLimit.failClosedOnAuth
 }), authRoutes);
