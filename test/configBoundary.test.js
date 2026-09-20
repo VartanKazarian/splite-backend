@@ -229,3 +229,35 @@ test('a mailbox address is refused as the sender for an API transport', () => {
   });
   assert.ok(owned.ok, `a domain sender must still boot:\n${owned.out}`);
 });
+
+/**
+ * El techo grueso del limitador se puede subir fuera de producción, y no dentro.
+ *
+ * Existe porque una suite de extremo a extremo comparte cubo con la aplicación
+ * que conduce: el panel refresca solo y un recorrido de dieciocho segundos
+ * gasta 126 de las 120 llamadas del minuto sin que nadie abuse de nada.
+ *
+ * Lo que esta prueba defiende no es que la variable funcione: es que **no
+ * funcione en producción**. Una variable que afloje un límite es segura
+ * mientras no se pueda poner donde importa, y eso hay que sostenerlo con algo
+ * que falle si alguien lo cambia, no con un comentario.
+ */
+test('RATE_LIMIT_API_MAX sube el techo fuera de producción y se ignora dentro', () => {
+  const read = `console.log(require(${JSON.stringify(CONFIG)}).rateLimit.apiMax);`;
+
+  const dev = runNode(read, { NODE_ENV: 'development', RATE_LIMIT_API_MAX: '600' });
+  assert.ok(dev.ok, dev.out);
+  assert.equal(dev.out.trim(), '600');
+
+  const prod = runNode(read, {
+    NODE_ENV: 'production',
+    DATABASE_URL: 'postgres://x/y',
+    RATE_LIMIT_API_MAX: '600'
+  });
+  assert.ok(prod.ok, prod.out);
+  assert.equal(prod.out.trim(), '120', 'producción aceptó un techo aflojado desde el entorno');
+
+  const byDefault = runNode(read, { NODE_ENV: 'development' });
+  assert.ok(byDefault.ok, byDefault.out);
+  assert.equal(byDefault.out.trim(), '120');
+});

@@ -420,7 +420,27 @@ module.exports = {
   rateLimit: {
     // Fail closed on authentication endpoints: a Redis outage must not
     // silently disable brute-force protection on the login surface.
-    failClosedOnAuth: boolean('RATE_LIMIT_FAIL_CLOSED_ON_AUTH', isProduction)
+    failClosedOnAuth: boolean('RATE_LIMIT_FAIL_CLOSED_ON_AUTH', isProduction),
+    /**
+     * El techo del limitador general por dirección y minuto.
+     *
+     * Es el backstop grueso de `app.js`, el que corre antes de cualquier
+     * autenticación y no puede mirar más que la dirección: los límites que de
+     * verdad protegen algo son los específicos -- diez intentos de acceso, los
+     * de la sesión de invitado -- y ésos no se tocan desde aquí.
+     *
+     * Configurable porque una suite de extremo a extremo comparte cubo con la
+     * aplicación que está conduciendo, y el panel refresca solo: medido, un
+     * recorrido de dieciocho segundos gasta 126 de las 120 llamadas del minuto
+     * sin que nadie esté abusando de nada. Con el techo fijo, la suite no
+     * podía pasar dos veces seguidas.
+     *
+     * **En producción no se puede cambiar.** El valor se ignora allí, así que
+     * poner la variable en Railway no afloja nada: no hay forma de subir este
+     * techo en el sitio donde importaría, que es justo lo que hace que sea
+     * seguro dejarlo abierto en los demás.
+     */
+    apiMax: isProduction ? 120 : integer('RATE_LIMIT_API_MAX', 120)
   },
   payments: {
     /**
