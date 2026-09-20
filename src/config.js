@@ -457,7 +457,24 @@ module.exports = {
      * llegando en `/auth/me` de la última prueba. Bajar eso adelgazando la
      * suite sería dejar de probar cosas para complacer a un contador.
      */
-    authMax: isProduction ? 10 : integer('RATE_LIMIT_AUTH_MAX', 10)
+    authMax: isProduction ? 10 : integer('RATE_LIMIT_AUTH_MAX', 10),
+    /**
+     * El techo de `/api/v1/bills`, por miembro del personal y minuto.
+     *
+     * El tercero y por la misma razón que los otros dos, con el mismo candado:
+     * **en producción vale sesenta y no hay variable que lo cambie.**
+     *
+     * Éste no lo gasta un abuso, lo gasta el propio panel: la lista de mesas y
+     * el panel refrescan las cuentas abiertas solos, y una suite de extremo a
+     * extremo que además crea cinco mesas con sus líneas se planta en sesenta
+     * sin que nadie haya hecho nada raro. Medido en CI: la quinta prueba
+     * recibía 429 leyendo una cuenta que acababa de crear.
+     *
+     * Vale la pena anotar lo que esto deja ver del producto, que no se arregla
+     * aquí: si tres visitas a pantallas del panel gastan sesenta llamadas en un
+     * minuto, el panel refresca más de lo que hace falta.
+     */
+    billsMax: isProduction ? 60 : integer('RATE_LIMIT_BILLS_MAX', 60)
   },
   payments: {
     /**

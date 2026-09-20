@@ -244,7 +244,8 @@ test('a mailbox address is refused as the sender for an API transport', () => {
  */
 for (const { name, key, fallback, raised } of [
   { name: 'RATE_LIMIT_API_MAX', key: 'apiMax', fallback: '120', raised: '600' },
-  { name: 'RATE_LIMIT_AUTH_MAX', key: 'authMax', fallback: '10', raised: '60' }
+  { name: 'RATE_LIMIT_AUTH_MAX', key: 'authMax', fallback: '10', raised: '60' },
+  { name: 'RATE_LIMIT_BILLS_MAX', key: 'billsMax', fallback: '60', raised: '600' }
 ]) {
   test(`${name} sube el techo fuera de producción y se ignora dentro`, () => {
     const read = `console.log(require(${JSON.stringify(CONFIG)}).rateLimit.${key});`;
