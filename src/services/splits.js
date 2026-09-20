@@ -416,6 +416,68 @@ async function advanceShare(client, { splitParticipantId, restaurantId, amountVe
   }
 }
 
+/**
+ * Le pone nombre a una parte del reparto.
+ *
+ * El nombre existía, pero sólo lo podía dar quien CREABA el reparto: a quien
+ * llegaba después y tocaba una parte no se le preguntaba nunca. Resultado, la
+ * lista decía «Comensal 2, Comensal 3, Comensal 4» casi siempre, y lo que
+ * debía servir para que la mesa vea quién ha pagado no servía para nada.
+ *
+ * Quién puede: cualquiera con sesión de invitado en esa mesa, que es el mismo
+ * nivel de confianza con el que ya se crea y se reemplaza un reparto. No hay
+ * identidad de comensal que comprobar -- la sesión es de la mesa, no de la
+ * persona -- y fingir que la hay sería inventarse una garantía.
+ *
+ * Hasta cuándo: mientras esa parte no haya recibido dinero. Es la misma regla
+ * que gobierna el reparto entero y por el mismo motivo -- sin pagos es una
+ * propuesta y se corrige; con un pago detrás es el registro de quién pagó, y
+ * dejar que otro lo reescriba después cambia a quién se le atribuye un dinero
+ * que ya entró.
+ *
+ * La cadena vacía borra el nombre, para poder deshacer una errata sin tener
+ * que rehacer el reparto.
+ */
+async function nameShare({ restaurantId, billId, ref, name }) {
+  // La transacción devuelve el id y la lectura va después de confirmar, como en
+  // `createSplit`: `getSplit` usa el pool, así que llamarlo desde dentro lee por
+  // otra conexión y devuelve el nombre de antes. Lo destapó la prueba.
+  const splitId = await db.withTransaction(async client => {
+    const split = (await client.query(
+      `SELECT id FROM bill_splits
+        WHERE restaurant_id = $1 AND bill_id = $2 AND status = 'ACTIVE'
+        FOR UPDATE`,
+      [restaurantId, billId]
+    )).rows[0];
+    if (!split) throw new ApiError('SPLIT_NOT_FOUND', 'This bill has no active split');
+
+    const share = (await client.query(
+      `SELECT id, amount_paid_ves FROM bill_split_participants
+        WHERE split_id = $1 AND restaurant_id = $2 AND ext_ref = $3
+        FOR UPDATE`,
+      [split.id, restaurantId, ref]
+    )).rows[0];
+    // «No está» y no «no es tuya»: una referencia que no existe en este reparto
+    // no tiene dirección, igual que una de otra cuenta.
+    if (!share) throw new ApiError('SPLIT_SHARE_NOT_FOUND', 'That share is not part of this split');
+
+    if (BigInt(share.amount_paid_ves) > 0n) {
+      throw new ApiError('SPLIT_HAS_PAYMENTS',
+        'That share has already been paid into; its name cannot change');
+    }
+
+    const trimmed = String(name ?? '').trim();
+    await client.query(
+      'UPDATE bill_split_participants SET name = $3 WHERE id = $1 AND restaurant_id = $2',
+      [share.id, restaurantId, trimmed === '' ? null : trimmed]
+    );
+
+    return split.id;
+  }, { statementTimeoutMs: config.db.paymentStatementTimeoutMs });
+
+  return getSplit({ restaurantId, splitId });
+}
+
 module.exports = {
-  createSplit, getSplit, getActiveSplit, voidSplit, advanceShare
+  createSplit, getSplit, getActiveSplit, voidSplit, advanceShare, nameShare
 };

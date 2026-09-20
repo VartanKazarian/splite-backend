@@ -5,6 +5,7 @@ const { signQrPayload, verifyQrToken } = require('../utils/tokens');
 const { authenticateToken, requireRole } = require('../middleware/auth');
 const {
   validateBody, validateParams, validateQuery, guestSessionSchema, tableIdParamSchema, splitPreviewSchema,
+  splitShareNameSchema, splitShareRefParamSchema,
   declareClaimSchema, c2pChargeSchema, c2pBankGuideQuerySchema, guestOrderSchema,
   requestInvoiceSchema, guestContactSchema, guestPaymentParamSchema
 } = require('../middleware/schemas');
@@ -815,6 +816,39 @@ router.get('/bill/splits/active', authenticateGuest, perSession, async (req, res
     res.json(dto.billSplit(split));
   } catch (err) { next(err); }
 });
+
+/**
+ * Quién es cada parte del reparto.
+ *
+ * El nombre se recogía sólo al crear el reparto, así que quien llegaba después
+ * y tocaba una parte no daba el suyo nunca y la lista decía «Comensal 2». Esto
+ * lo arregla donde está el problema: en la parte que el comensal acaba de
+ * elegir.
+ *
+ * Lo escribe cualquiera con sesión en esa mesa -- el mismo permiso con el que
+ * ya se crea y se reemplaza un reparto, porque la sesión es de la mesa y no de
+ * la persona --, y deja de poder escribirse en cuanto esa parte ha recibido
+ * dinero. Ver `splits.nameShare` para por qué.
+ */
+router.patch(
+  '/bill/splits/active/participants/:ref',
+  authenticateGuest,
+  perSession,
+  validateParams(splitShareRefParamSchema),
+  validateBody(splitShareNameSchema),
+  async (req, res, next) => {
+    try {
+      const bill = await openBillForGuest(req.guest);
+      const split = await splits.nameShare({
+        restaurantId: req.guest.restaurantId,
+        billId: bill.id,
+        ref: req.params.ref,
+        name: req.body.name
+      });
+      res.json(dto.billSplit(split));
+    } catch (err) { next(err); }
+  }
+);
 
 /**
  * A split of the guest's own bill.
