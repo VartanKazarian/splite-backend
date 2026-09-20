@@ -31,6 +31,7 @@ const CODES = {
   BILL_ID_MISMATCH: 400,
   INVALID_AMOUNT: 400,
   INVALID_MONETARY_VALUE: 400,
+  FISCAL_RIF_MALFORMED: 400,
   WEBHOOK_BODY_UNVERIFIABLE: 400,
   // The upload is not something the menu reader can open.
   MENU_OCR_UNSUPPORTED_MEDIA: 400,
@@ -164,6 +165,10 @@ const CODES = {
   // cambiar el prefijo, el ancho o el primero dejaría el libro de ventas con
   // dos formatos y documentos emitidos que ya no cuadran con su propia serie.
   FISCAL_SERIES_LOCKED: 409,
+  // El RIF se congela al emitir: cambiarlo contradiría los documentos que ya
+  // llevan impreso el anterior.
+  FISCAL_RIF_LOCKED: 409,
+  FISCAL_RIF_TAKEN: 409,
 
   // Bajar de plan le quitaría al restaurante algo que ya viene usando. 409 y no
   // 403: no es que quien lo pide no pueda, es que el estado actual lo impide, y
