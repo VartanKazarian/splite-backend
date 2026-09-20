@@ -62,8 +62,43 @@ async function createSplit({ restaurantId, bill, items, request, createdBy }) {
   // ITEMS claim can be recorded against the persisted participant id.
   const byExtRef = new Map();
 
+  let superseded = null;
+
   try {
     const created = await db.withTransaction(async client => {
+      /*
+       * Un reparto que nadie ha pagado no ata a nadie.
+       *
+       * Antes, el primero que dividía dejaba la cuenta cerrada para los demás:
+       * el índice parcial devolvía SPLIT_ALREADY_EXISTS y anularlo sólo estaba
+       * en las rutas del personal, así que si esa persona se iba sin pagar, el
+       * resto de la mesa necesitaba un mesero para poder repartir de otra
+       * forma. La propuesta de uno se comportaba como un acuerdo de todos.
+       *
+       * Así que se reemplaza. El servidor ya creía esta regla -- `voidSplit`
+       * lleva desde siempre negándose cuando hay dinero detrás --; lo que
+       * faltaba era que el comensal pudiera alcanzarla.
+       *
+       * Dentro de la misma transacción y con el viejo bloqueado: si se anulara
+       * aparte y la escritura del nuevo fallara, la mesa se quedaría sin
+       * ninguno. Y si hay dinero contra el viejo, `discardUnpaidSplit` lo
+       * impide y no se crea nada -- que es lo correcto: ahí ya no es una
+       * propuesta.
+       */
+      const live = (await client.query(
+        `SELECT id FROM bill_splits
+          WHERE restaurant_id = $1 AND bill_id = $2 AND status = 'ACTIVE'
+          FOR UPDATE`,
+        [restaurantId, bill.id]
+      )).rows[0];
+
+      if (live) {
+        await discardUnpaidSplit(client, {
+          restaurantId, billId: bill.id, splitId: live.id
+        });
+        superseded = live.id;
+      }
+
       const splitRow = (await client.query(
         `INSERT INTO bill_splits (restaurant_id, bill_id, mode, basis_ves, created_by_type, created_by_id)
          VALUES ($1, $2, $3, $4, $5, $6)
@@ -114,8 +149,24 @@ async function createSplit({ restaurantId, bill, items, request, createdBy }) {
       action: 'BILL_SPLIT_CREATED',
       resourceType: 'bill',
       resourceId: bill.id,
-      details: { splitId: created, mode: request.mode, basisVes: allocation.outstandingVes }
+      details: {
+        splitId: created, mode: request.mode, basisVes: allocation.outstandingVes,
+        // Cuál reemplazó, si reemplazó alguno: sin esto, en el registro parece
+        // que un reparto se desvaneció y otro apareció sin relación.
+        ...(superseded ? { supersededSplitId: superseded } : {})
+      }
     });
+
+    if (superseded) {
+      await logAudit({
+        restaurantId,
+        actorId: createdBy.id,
+        action: 'BILL_SPLIT_VOIDED',
+        resourceType: 'bill_split',
+        resourceId: superseded,
+        details: { supersededBySplitId: created }
+      });
+    }
 
     return getSplit({ restaurantId, splitId: created, bill });
   } catch (err) {
@@ -191,12 +242,69 @@ async function getActiveSplit({ restaurantId, billId, bill = null }) {
 }
 
 /**
- * Voids a split.
+ * Descarta un reparto que todavía no ha recibido dinero.
  *
- * Refused once any share has been paid into: a plan people have started
- * settling against is a record, not a draft, and unmaking it would orphan the
- * payments that cite its shares. Change then is void-what-is-unpaid only by
- * agreeing a fresh split on the remaining balance.
+ * **Corre dentro de la transacción del llamante**, y recibe su cliente por eso:
+ * anular el viejo y escribir el nuevo tienen que confirmarse juntos, o queda
+ * una cuenta sin ningún reparto y un comensal mirando una lista vacía.
+ *
+ * La regla que impone es la que separa un borrador de un registro: mientras
+ * nadie haya pagado, un reparto es una propuesta y se reemplaza; en cuanto hay
+ * dinero contra una parte, es un registro y deshacerlo dejaría huérfanos los
+ * pagos que la citan.
+ *
+ * Y «dinero» no es sólo lo cobrado. Un pago móvil declarado o un cargo C2P en
+ * duda nombran una parte y aún no la han acreditado: anular por debajo de uno
+ * deja ese dinero sin sitio donde caer cuando por fin se confirme.
+ */
+async function discardUnpaidSplit(client, { restaurantId, billId, splitId }) {
+  // Bloqueado, no sólo sumado. `advanceShare` bloquea la fila de la parte y lee
+  // el estado del reparto por un join sin bloquearlo, así que un SUM sin
+  // bloqueo podría leer cero mientras un pago se confirma al lado -- y saldrían
+  // los dos, dejando un reparto VOID con dinero acreditado en una de sus partes.
+  const shares = (await client.query(
+    `SELECT id, amount_paid_ves FROM bill_split_participants
+      WHERE split_id = $1 AND restaurant_id = $2
+      FOR UPDATE`,
+    [splitId, restaurantId]
+  )).rows;
+
+  const paid = shares.reduce((total, share) => total + BigInt(share.amount_paid_ves), 0n);
+  if (paid > 0n) {
+    throw new ApiError('SPLIT_HAS_PAYMENTS', 'A split with payments against it cannot be voided');
+  }
+
+  if (shares.length) {
+    const inFlight = (await client.query(
+      `SELECT count(*)::int AS count FROM payments
+        WHERE restaurant_id = $1
+          AND split_participant_id = ANY($2::uuid[])
+          AND status IN ('PENDING', 'IN_DOUBT', 'AMBIGUOUS')`,
+      [restaurantId, shares.map(share => share.id)]
+    )).rows[0];
+
+    if (inFlight.count > 0) {
+      throw new ApiError(
+        'SPLIT_HAS_PAYMENTS',
+        'A payment against one of these shares is still being resolved; settle or reject it before voiding',
+        { inFlightPayments: inFlight.count }
+      );
+    }
+  }
+
+  await client.query(
+    `UPDATE bill_splits SET status = 'VOID'
+      WHERE id = $1 AND restaurant_id = $2 AND bill_id = $3`,
+    [splitId, restaurantId, billId]
+  );
+}
+
+/**
+ * Anula un reparto, a petición del personal.
+ *
+ * La regla de cuándo se puede -- mientras nadie haya pagado -- la impone
+ * `discardUnpaidSplit`. Lo propio de aquí es el resto: comprobar que el reparto
+ * existe, que está en esta cuenta y que sigue activo, y dejar el rastro.
  */
 async function voidSplit({ restaurantId, billId, splitId, actor }) {
   const result = await db.withTransaction(async client => {
@@ -223,53 +331,9 @@ async function voidSplit({ restaurantId, billId, splitId, actor }) {
       throw new ApiError('SPLIT_NOT_ACTIVE', 'That split has already been voided', { status: split.status });
     }
 
-    // Locked, not just summed. `advanceShare` locks the participant row and
-    // reads the split's status through a join without locking the split, so an
-    // unlocked SUM here could read zero while a share payment was committing
-    // beside it -- and both would succeed, leaving a VOID split with money
-    // credited to one of its shares. Taking the participant locks is what makes
-    // the two serialise, whichever arrives first.
-    const shares = (await client.query(
-      `SELECT id, amount_paid_ves FROM bill_split_participants
-        WHERE split_id = $1 AND restaurant_id = $2
-        FOR UPDATE`,
-      [splitId, restaurantId]
-    )).rows;
-
-    const paid = shares.reduce((total, share) => total + BigInt(share.amount_paid_ves), 0n);
-    if (paid > 0n) {
-      throw new ApiError('SPLIT_HAS_PAYMENTS', 'A split with payments against it cannot be voided');
-    }
-
-    // Settled money is not the only money. A declared Pago Movil or an
-    // in-doubt C2P charge names a share and has not credited it yet, and
-    // voiding out from under one strands it: the share it was going to pay no
-    // longer accepts anything, so confirming it later has nowhere to put money
-    // that has genuinely arrived. Rejecting or resolving those first is a real
-    // step for staff, so the error says which.
-    if (shares.length) {
-      const inFlight = (await client.query(
-        `SELECT count(*)::int AS count FROM payments
-          WHERE restaurant_id = $1
-            AND split_participant_id = ANY($2::uuid[])
-            AND status IN ('PENDING', 'IN_DOUBT', 'AMBIGUOUS')`,
-        [restaurantId, shares.map(share => share.id)]
-      )).rows[0];
-
-      if (inFlight.count > 0) {
-        throw new ApiError(
-          'SPLIT_HAS_PAYMENTS',
-          'A payment against one of these shares is still being resolved; settle or reject it before voiding',
-          { inFlightPayments: inFlight.count }
-        );
-      }
-    }
-
-    await client.query(
-      `UPDATE bill_splits SET status = 'VOID'
-        WHERE id = $1 AND restaurant_id = $2 AND bill_id = $3`,
-      [splitId, restaurantId, billId]
-    );
+    // El porqué de los bloqueos y de qué cuenta como «pagado» está en
+    // `discardUnpaidSplit`, que es ahora el único sitio donde vive esa regla.
+    await discardUnpaidSplit(client, { restaurantId, billId, splitId });
     return split.id;
   });
 

@@ -250,19 +250,59 @@ describe('persistent bill splits against a real Postgres', { skip }, () => {
     );
   });
 
-  it('a bill has at most one active split', async () => {
+  it('a bill still has at most one active split -- the newer one replaces it', async () => {
+    // La invariante no cambia: sigue habiendo como mucho uno vivo. Lo que
+    // cambia es quién gana. Un reparto que nadie ha pagado es una propuesta, y
+    // la propuesta del primero no puede dejar encerrada a la mesa.
     const bill = await freshBill(10000);
-    await splits.createSplit({
+    const first = await splits.createSplit({
       restaurantId: restaurant.id, bill,
       request: { mode: 'FULL', participants: [{ id: 'a' }] }, createdBy: staff
     });
+
+    const second = await splits.createSplit({
+      restaurantId: restaurant.id, bill,
+      request: { mode: 'EQUAL', participants: [{ id: 'b' }, { id: 'c' }] }, createdBy: staff
+    });
+
+    assert.notEqual(second.split.id, first.split.id);
+    assert.equal(second.participants.length, 2);
+
+    const { rows } = await db.query(
+      `SELECT id, status FROM bill_splits WHERE bill_id = $1 ORDER BY created_at`, [bill.id]
+    );
+    assert.deepEqual(rows.map(r => r.status), ['VOID', 'ACTIVE']);
+    assert.equal(rows.find(r => r.status === 'ACTIVE').id, second.split.id);
+
+    // Y el que vale es el que lee la mesa, no sólo el que devolvió la llamada.
+    const active = await splits.getActiveSplit({ restaurantId: restaurant.id, billId: bill.id, bill });
+    assert.equal(active.split.id, second.split.id);
+  });
+
+  it('a split that has been paid into is not replaced by a new one', async () => {
+    // Aquí deja de ser una propuesta. Reemplazarlo dejaría huérfano el pago que
+    // cita una de sus partes, así que se rechaza y el viejo sobrevive entero.
+    const bill = await freshBill(10000);
+    const split = await splits.createSplit({
+      restaurantId: restaurant.id, bill,
+      request: { mode: 'EQUAL', participants: [{ id: 'a' }, { id: 'b' }] }, createdBy: staff
+    });
+    await processSplitPayment({
+      restaurantId: restaurant.id, billId: bill.id,
+      amountPaidMinorUnits: 5000, splitParticipantId: split.participants[0].id
+    });
+
     await assert.rejects(
       () => splits.createSplit({
         restaurantId: restaurant.id, bill,
-        request: { mode: 'FULL', participants: [{ id: 'b' }] }, createdBy: staff
+        request: { mode: 'FULL', participants: [{ id: 'c' }] }, createdBy: staff
       }),
-      err => err.code === 'SPLIT_ALREADY_EXISTS' && err.statusCode === 409
+      err => err.code === 'SPLIT_HAS_PAYMENTS' && err.statusCode === 409
     );
+
+    const active = await splits.getActiveSplit({ restaurantId: restaurant.id, billId: bill.id, bill });
+    assert.equal(active.split.id, split.split.id);
+    assert.equal(active.participants.length, 2);
   });
 
   it('paying a share advances the share and the bill together', async () => {
@@ -365,13 +405,12 @@ describe('persistent bill splits against a real Postgres', { skip }, () => {
       restaurantId: restaurant.id, billId: decoy.id, splitId: split.split.id, actor: staff
     }));
 
-    await assert.rejects(
-      () => splits.createSplit({
-        restaurantId: restaurant.id, bill: live,
-        request: { mode: 'FULL', participants: [{ id: 'c' }] }, createdBy: staff
-      }),
-      err => err.code === 'SPLIT_ALREADY_EXISTS' && err.statusCode === 409
-    );
+    // Lo que esta prueba fija es que el reparto de `live` SIGUE VIVO pese al
+    // intento de anularlo desde otra cuenta. Antes se comprobaba viendo que un
+    // segundo create era rechazado; ahora un create lo reemplazaría, así que se
+    // comprueba mirándolo directamente, que además es más directo.
+    const stillThere = await splits.getActiveSplit({ restaurantId: restaurant.id, billId: live.id, bill: live });
+    assert.equal(stillThere.split.id, split.split.id);
   });
 
   it('a split with payments against it cannot be voided; an untouched one can', async () => {
