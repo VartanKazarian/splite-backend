@@ -279,6 +279,76 @@ describe('persistent bill splits against a real Postgres', { skip }, () => {
     assert.equal(active.split.id, second.split.id);
   });
 
+  it('a share can be named by whoever takes it, until money lands on it', async () => {
+    // El hueco que esto cierra: el nombre sólo lo daba quien CREABA el reparto,
+    // así que la lista decía «Comensal 2» para todos los demás.
+    const bill = await freshBill(20000);
+    const split = await splits.createSplit({
+      restaurantId: restaurant.id, bill,
+      request: { mode: 'EQUAL', participants: [{ id: 'a' }, { id: 'b' }] }, createdBy: staff
+    });
+    assert.equal(split.participants[1].name, null);
+
+    const named = await splits.nameShare({
+      restaurantId: restaurant.id, billId: bill.id, ref: 'b', name: '  Ana  '
+    });
+    assert.equal(named.participants.find(p => p.ext_ref === 'b').name, 'Ana');
+
+    // Se corrige mientras no haya pagos: una errata no obliga a rehacer nada.
+    const fixed = await splits.nameShare({
+      restaurantId: restaurant.id, billId: bill.id, ref: 'b', name: 'Ana María'
+    });
+    assert.equal(fixed.participants.find(p => p.ext_ref === 'b').name, 'Ana María');
+
+    // Y la cadena vacía lo borra.
+    const cleared = await splits.nameShare({
+      restaurantId: restaurant.id, billId: bill.id, ref: 'b', name: '   '
+    });
+    assert.equal(cleared.participants.find(p => p.ext_ref === 'b').name, null);
+  });
+
+  it('a share that has been paid into keeps the name it was paid under', async () => {
+    // Aquí deja de ser una propuesta: el nombre pasa a ser el registro de quién
+    // pagó, y dejar que otro lo reescriba cambia a quién se le atribuye dinero
+    // que ya entró.
+    const bill = await freshBill(20000);
+    const split = await splits.createSplit({
+      restaurantId: restaurant.id, bill,
+      request: { mode: 'EQUAL', participants: [{ id: 'a' }, { id: 'b' }] }, createdBy: staff
+    });
+    await splits.nameShare({ restaurantId: restaurant.id, billId: bill.id, ref: 'a', name: 'Luis' });
+    await processSplitPayment({
+      restaurantId: restaurant.id, billId: bill.id,
+      amountPaidMinorUnits: 10000, splitParticipantId: split.participants[0].id
+    });
+
+    await assert.rejects(
+      () => splits.nameShare({
+        restaurantId: restaurant.id, billId: bill.id, ref: 'a', name: 'Otro'
+      }),
+      err => err.code === 'SPLIT_HAS_PAYMENTS' && err.statusCode === 409
+    );
+
+    const still = await splits.getActiveSplit({ restaurantId: restaurant.id, billId: bill.id, bill });
+    assert.equal(still.participants.find(p => p.ext_ref === 'a').name, 'Luis');
+    // La parte de al lado sigue abierta: el cerrojo es por parte, no por reparto.
+    await splits.nameShare({ restaurantId: restaurant.id, billId: bill.id, ref: 'b', name: 'Sofía' });
+  });
+
+  it('naming a share that is not in the split is a 404, not a wrong write', async () => {
+    const bill = await freshBill(10000);
+    await splits.createSplit({
+      restaurantId: restaurant.id, bill,
+      request: { mode: 'FULL', participants: [{ id: 'a' }] }, createdBy: staff
+    });
+    await assert.rejects(
+      () => splits.nameShare({
+        restaurantId: restaurant.id, billId: bill.id, ref: 'zzz', name: 'Nadie'
+      }),
+      err => err.code === 'SPLIT_SHARE_NOT_FOUND' && err.statusCode === 404
+    );
+  });
+
   it('a split that has been paid into is not replaced by a new one', async () => {
     // Aquí deja de ser una propuesta. Reemplazarlo dejaría huérfano el pago que
     // cita una de sus partes, así que se rechaza y el viejo sobrevive entero.

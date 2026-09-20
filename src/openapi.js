@@ -2915,6 +2915,61 @@ const paths = {
     }
   },
 
+  '/api/v1/guest/bill/splits/active/participants/{ref}': {
+    patch: {
+      tags: ['Guest'],
+      summary: "Name a share of the guest's bill split",
+      operationId: 'nameGuestSplitShare',
+      description: [
+        'Authenticated with a guest session.',
+        '',
+        'The name is how the rest of the table sees who took which share. It used to be collected',
+        'only from whoever CREATED the split, so a diner who arrived later and tapped a share was',
+        'never asked, and the list read "Comensal 2" for almost everyone.',
+        '',
+        'Writable by anyone holding a guest session on that table — the same trust level that',
+        'already creates and replaces a split, because the session belongs to the table, not to a',
+        'person. Claiming otherwise would be inventing a guarantee that does not exist.',
+        '',
+        '**Stops being writable once that share has been paid into** (409 `SPLIT_HAS_PAYMENTS`).',
+        'Same rule that governs the split itself, for the same reason: with no payments it is a',
+        'proposal and gets corrected; with money behind it, it is the record of who paid, and',
+        'letting somebody else rewrite it changes who a received payment is credited to.',
+        '',
+        'The empty string clears the name, so a typo can be undone without redoing the split.'
+      ].join('\n'),
+      security: [{ guestAuth: [] }],
+      parameters: [
+        {
+          name: 'ref', in: 'path', required: true, schema: { type: 'string', maxLength: 64 },
+          description: "The share's `ref`, as `GET /guest/bill/splits/active` returns it."
+        }
+      ],
+      requestBody: {
+        required: true,
+        content: {
+          'application/json': {
+            schema: {
+              type: 'object', required: ['name'],
+              properties: {
+                name: { type: 'string', maxLength: 80, description: 'Empty string clears it.' }
+              }
+            }
+          }
+        }
+      },
+      responses: {
+        200: { description: 'The split, with the share renamed.', content: { 'application/json': { schema: ref('BillSplit') } } },
+        400: response('BadRequest'),
+        401: response('Unauthorized'),
+        404: response('NotFound'),
+        409: response('Conflict'),
+        429: response('TooManyRequests'),
+        500: response('ServerError')
+      }
+    }
+  },
+
   '/api/v1/guest/bill/split/preview': {
     post: {
       tags: ['Guest'],

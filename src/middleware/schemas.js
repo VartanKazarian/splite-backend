@@ -574,6 +574,21 @@ const guestPaymentParamSchema = Joi.object({ id: uuid.required() });
  * esquema no debe tener una segunda opinión sobre eso. 20 caracteres porque
  * `J-12345678-4` son 12 y cabe holgado cualquier separador razonable.
  */
+/**
+ * El nombre de una parte del reparto.
+ *
+ * La cadena vacía se admite y significa «bórralo»: sin ella, una errata
+ * quedaría puesta para siempre porque no habría forma de quitarla. Mismo largo
+ * que el nombre que se da al crear el reparto, que es el mismo dato.
+ */
+const splitShareNameSchema = Joi.object({
+  name: Joi.string().trim().max(80).allow('').required()
+});
+
+const splitShareRefParamSchema = Joi.object({
+  ref: Joi.string().trim().min(1).max(64).required()
+});
+
 const fiscalRifSchema = Joi.object({
   // Deliberadamente sin mínimo ni patrón: quien juzga si esto es un RIF es
   // `utils/rif`, y una sola vez. Con un mínimo aquí, el código de error pasaba
@@ -969,6 +984,8 @@ module.exports = {
   payoutSchema,
   restaurantProfileSchema,
   fiscalRifSchema,
+  splitShareNameSchema,
+  splitShareRefParamSchema,
   fiscalSeriesSchema,
   requestInvoiceSchema,
   guestContactSchema,
