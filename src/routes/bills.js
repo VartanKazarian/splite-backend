@@ -49,7 +49,7 @@ router.use(authenticateToken);
 // Mounted *after* authentication so the bucket keys on req.user.sub. The
 // app-level limiter runs before any auth middleware, which leaves it keyed on
 // IP alone — behind carrier NAT that is one shared bucket for many staff.
-router.use(rateLimit({ windowSeconds: 60, max: 60, keyPrefix: 'bills' }));
+router.use(rateLimit({ windowSeconds: 60, max: config.rateLimit.billsMax, keyPrefix: 'bills' }));
 
 router.get('/', validateQuery(listBillsQuerySchema), async (req, res, next) => {
   try {

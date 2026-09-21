@@ -158,11 +158,11 @@ app.use(pinoHttp({
   }
 }));
 
-app.use(rateLimit({ windowSeconds: 60, max: 120, keyPrefix: 'api' }));
+app.use(rateLimit({ windowSeconds: 60, max: config.rateLimit.apiMax, keyPrefix: 'api' }));
 
 app.use('/api/v1/auth', rateLimit({
   windowSeconds: 60,
-  max: 10,
+  max: config.rateLimit.authMax,
   keyPrefix: 'auth',
   failClosed: config.rateLimit.failClosedOnAuth
 }), authRoutes);

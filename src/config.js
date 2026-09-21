@@ -420,7 +420,61 @@ module.exports = {
   rateLimit: {
     // Fail closed on authentication endpoints: a Redis outage must not
     // silently disable brute-force protection on the login surface.
-    failClosedOnAuth: boolean('RATE_LIMIT_FAIL_CLOSED_ON_AUTH', isProduction)
+    failClosedOnAuth: boolean('RATE_LIMIT_FAIL_CLOSED_ON_AUTH', isProduction),
+    /**
+     * El techo del limitador general por dirección y minuto.
+     *
+     * Es el backstop grueso de `app.js`, el que corre antes de cualquier
+     * autenticación y no puede mirar más que la dirección: los límites que de
+     * verdad protegen algo son los específicos -- diez intentos de acceso, los
+     * de la sesión de invitado -- y ésos no se tocan desde aquí.
+     *
+     * Configurable porque una suite de extremo a extremo comparte cubo con la
+     * aplicación que está conduciendo, y el panel refresca solo: medido, un
+     * recorrido de dieciocho segundos gasta 126 de las 120 llamadas del minuto
+     * sin que nadie esté abusando de nada. Con el techo fijo, la suite no
+     * podía pasar dos veces seguidas.
+     *
+     * **En producción no se puede cambiar.** El valor se ignora allí, así que
+     * poner la variable en Railway no afloja nada: no hay forma de subir este
+     * techo en el sitio donde importaría, que es justo lo que hace que sea
+     * seguro dejarlo abierto en los demás.
+     */
+    apiMax: isProduction ? 120 : integer('RATE_LIMIT_API_MAX', 120),
+    /**
+     * El techo de `/api/v1/auth`, que es el que de verdad protege algo: es lo
+     * que impide probar contraseñas a mansalva.
+     *
+     * Configurable con la misma reserva y por el mismo motivo que el de
+     * arriba, y con el mismo candado: **en producción vale diez y no hay
+     * variable que lo cambie**, así que el ataque que este límite detiene lo
+     * sigue deteniendo igual.
+     *
+     * Lo que lo hace necesario es que el panel pregunta quién eres y si tienes
+     * segundo factor en cada carga de pantalla. Cinco pantallas gastan nueve
+     * de las diez, de modo que una suite de extremo a extremo se corta el
+     * acceso a sí misma antes de terminar -- medido en CI, con el error
+     * llegando en `/auth/me` de la última prueba. Bajar eso adelgazando la
+     * suite sería dejar de probar cosas para complacer a un contador.
+     */
+    authMax: isProduction ? 10 : integer('RATE_LIMIT_AUTH_MAX', 10),
+    /**
+     * El techo de `/api/v1/bills`, por miembro del personal y minuto.
+     *
+     * El tercero y por la misma razón que los otros dos, con el mismo candado:
+     * **en producción vale sesenta y no hay variable que lo cambie.**
+     *
+     * Éste no lo gasta un abuso, lo gasta el propio panel: la lista de mesas y
+     * el panel refrescan las cuentas abiertas solos, y una suite de extremo a
+     * extremo que además crea cinco mesas con sus líneas se planta en sesenta
+     * sin que nadie haya hecho nada raro. Medido en CI: la quinta prueba
+     * recibía 429 leyendo una cuenta que acababa de crear.
+     *
+     * Vale la pena anotar lo que esto deja ver del producto, que no se arregla
+     * aquí: si tres visitas a pantallas del panel gastan sesenta llamadas en un
+     * minuto, el panel refresca más de lo que hace falta.
+     */
+    billsMax: isProduction ? 60 : integer('RATE_LIMIT_BILLS_MAX', 60)
   },
   payments: {
     /**
