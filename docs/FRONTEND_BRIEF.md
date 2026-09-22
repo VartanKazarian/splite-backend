@@ -286,18 +286,21 @@ scan → https://your-app/t?qr=<token>
    and the bill changes as staff add items.
    `404 OPEN_BILL_NOT_FOUND` is normal between sittings — show "no open bill",
    not an error.
-3. **Split** — `POST /guest/bill/split/preview`. Let the diner pick a mode,
-   render `allocations` exactly as returned, and never compute a share locally.
+3. **Split** — `POST /guest/bill/split/preview` to show a diner what their share
+   would be, and `POST /guest/bill/splits` to agree one the whole table sees.
+   Render `allocations` exactly as returned and never compute a share locally.
+   A split with no money against it is a proposal, not a contract: creating a new
+   one supersedes it. Once a share has been paid, `409 SPLIT_HAS_PAYMENTS`.
+4. **Pay** — `POST /guest/bill/payment-claims`. The diner transfers from their own
+   bank app and then declares it here with the reference their bank gave them;
+   `POST /payments/claims/{id}/confirm` is a member of staff saying the money
+   arrived, and that is what closes the bill. Where a restaurant has Mercantil
+   C2P configured, `POST /guest/bill/c2p` charges directly instead.
 
-**Paying is not yet possible.** There is no guest payment endpoint: a diner can
-see their share and cannot settle it, and a member of staff takes the money.
-Build the guest flow to end at "this is what you owe" and leave room for a pay
-step rather than stubbing one — the shape of that screen depends on the rail,
-which is still being chosen.
-
-> **A guest cannot pay yet.** There is no guest payment endpoint. The diner sees
-> their share and a member of staff settles the bill. Design the guest flow to
-> end at "here is what you owe" for now.
+**Splite never holds or moves the money.** Both rails end at the restaurant's own
+bank account, and the confirmation step is a human comparing a reference against
+their banking app. Build for that: a diner who has declared a payment is waiting
+for a person, not for a gateway, and the screen should say so.
 
 ---
 

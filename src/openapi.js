@@ -2853,7 +2853,10 @@ const paths = {
         '',
         'Returns 404 when the table has no open bill, which is the normal state between sittings.',
         '',
-        'Rate limited to 30 requests a minute per IP.'
+        'Rate limited to 60 a minute **per guest session**, with a coarser per-address backstop',
+        'in front of it. The per-address number is deliberately generous: a whole restaurant of',
+        'diners arrives from one carrier NAT address, so a tight limit there throttles a busy',
+        'Friday rather than an abuser.'
       ].join('\n'),
       security: [{ guestAuth: [] }],
       responses: {

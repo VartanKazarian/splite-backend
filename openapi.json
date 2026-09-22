@@ -6241,7 +6241,7 @@
         ],
         "summary": "The open bill for the guest's own table",
         "operationId": "getGuestBill",
-        "description": "Authenticated with a guest session: `X-Guest-Session` plus the guest token as a bearer.\n\n**Takes no bill id.** The table comes from the session, which came from a signed QR, so\na guest cannot request a bill that is not theirs -- there is no identifier to tamper with.\n\nReturns 404 when the table has no open bill, which is the normal state between sittings.\n\nRate limited to 30 requests a minute per IP.",
+        "description": "Authenticated with a guest session: `X-Guest-Session` plus the guest token as a bearer.\n\n**Takes no bill id.** The table comes from the session, which came from a signed QR, so\na guest cannot request a bill that is not theirs -- there is no identifier to tamper with.\n\nReturns 404 when the table has no open bill, which is the normal state between sittings.\n\nRate limited to 60 a minute **per guest session**, with a coarser per-address backstop\nin front of it. The per-address number is deliberately generous: a whole restaurant of\ndiners arrives from one carrier NAT address, so a tight limit there throttles a busy\nFriday rather than an abuser.",
         "security": [
           {
             "guestAuth": []
