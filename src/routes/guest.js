@@ -431,11 +431,16 @@ async function payeeForGuest(guest) {
 router.get('/bill', authenticateGuest, perSession, async (req, res, next) => {
   try {
     const bill = await openBillForGuest(req.guest);
-    const [items, payee] = await Promise.all([
+    // `c2pAvailable` viaja con la cuenta porque decide qué formas de pago se
+    // dibujan, y hasta ahora no viajaba nada: la pantalla ofrecía C2P siempre,
+    // incluso donde el raíl no está configurado, y el comensal lo descubría
+    // después de ir a su banco a por una clave de un solo uso.
+    const [items, payee, c2pAvailable] = await Promise.all([
       billItems.listForBill({ restaurantId: req.guest.restaurantId, billId: bill.id }),
-      payeeForGuest(req.guest)
+      payeeForGuest(req.guest),
+      mercantilC2P.c2pAvailable(req.guest.restaurantId)
     ]);
-    res.json({ ...dto.guestBill(bill, items), payee });
+    res.json({ ...dto.guestBill(bill, items), payee, c2pAvailable });
   } catch (err) { next(err); }
 });
 

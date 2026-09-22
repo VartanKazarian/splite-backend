@@ -707,7 +707,34 @@ async function listUnresolved({ restaurantId, limit = 50 }) {
   return rows;
 }
 
+/**
+ * Si este restaurante puede cobrar por C2P ahora mismo.
+ *
+ * Existe porque el comensal no tenía forma de saberlo y la pantalla le ofrecía
+ * el raíl igual: rellenaba el formulario, iba a su banco a por una clave de un
+ * solo uso y el cargo se rechazaba al final con PAYMENT_PROVIDER_MISCONFIGURED.
+ * Es el peor sitio posible donde enterarse.
+ *
+ * Se responde construyendo el cliente y tirándolo, que es literalmente la
+ * primera cosa que hace `createC2PPayment`. No duplica la condición: **es** la
+ * condición. Cualquier requisito que se añada allí -- otra credencial, otra
+ * comprobación de plan -- aparece aquí solo, que es justo lo que no pasa cuando
+ * una bandera se calcula aparte.
+ *
+ * Nunca lanza: esto decide si se dibuja una pestaña, y una pestaña de menos es
+ * un inconveniente mientras que una cuenta que no carga es una mesa parada.
+ */
+async function c2pAvailable(restaurantId) {
+  try {
+    await MercantilC2PClient.forRestaurant(restaurantId);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 module.exports = {
+  c2pAvailable,
   createC2PPayment,
   resolveC2PPayment,
   listUnresolved,
