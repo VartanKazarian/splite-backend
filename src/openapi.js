@@ -709,6 +709,21 @@ const schemas = {
         oneOf: [ref('GuestPayee'), { type: 'null' }],
         description: 'Who to pay. Null when the restaurant has not configured a payee, in which case the diner cannot pay from their phone at all — the bill can be read and not settled.'
       },
+      c2pAvailable: {
+        type: 'boolean',
+        description: [
+          'Whether this restaurant can take a C2P charge right now: the rail is configured and its',
+          'credentials are stored and enabled. **Offer C2P only when this is true.**',
+          '',
+          'It exists because the alternative is a dead end the diner pays for. The C2P form asks for',
+          'a single-use clave they must fetch from their own bank, and without the rail the charge is',
+          'refused with 503 `PAYMENT_PROVIDER_MISCONFIGURED` once they have done all of the work.',
+          '',
+          'Do not infer this from `chargeable` on the bank list. That flag answers a different',
+          'question — which integration module is mapped to a bank code — and is false for every bank',
+          'today, including the one whose restaurants can charge perfectly well.'
+        ].join('\n')
+      },
       updatedAt: { type: 'string', format: 'date-time' }
     }
   },
