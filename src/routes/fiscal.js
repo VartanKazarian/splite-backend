@@ -8,6 +8,8 @@ const { requirePlan } = require('../middleware/plan');
 const { validateQuery, validateParams } = require('../middleware/schemas');
 const { fiscalRequestQuerySchema, fiscalIdParamSchema } = require('../middleware/schemas');
 const invoicing = require('../services/fiscalInvoicing');
+const fiscalMail = require('../services/fiscalMail');
+const fiscalPdf = require('../services/fiscalPdf');
 
 /**
  * Las facturas fiscales, para el restaurante.
@@ -86,6 +88,37 @@ router.get('/invoices/:id', validateParams(fiscalIdParamSchema), async (req, res
     res.json(dto.fiscalInvoice({
       ...rows[0], lines: lines.rows, taxes: taxes.rows, delivery: delivery.rows[0] ?? null
     }));
+  } catch (err) { next(err); }
+});
+
+/**
+ * La misma factura, en PDF, para guardarla o imprimirla.
+ *
+ * Sin puerta de plan, como el resto de lecturas: conservar las facturas es un
+ * deber del restaurante que sobrevive a la suscripción.
+ *
+ * El restaurante se comprueba aquí, antes de cargar nada: `fiscalMail.load`
+ * busca por id sin mirar de quién es, y sin esta consulta un UUID ajeno
+ * devolvería la factura de otro local.
+ */
+router.get('/invoices/:id/pdf', validateParams(fiscalIdParamSchema), async (req, res, next) => {
+  try {
+    const { rows } = await db.query(
+      'SELECT id FROM fiscal_invoices WHERE id = $1 AND restaurant_id = $2',
+      [req.params.id, req.user.restaurantId]
+    );
+    if (!rows.length) throw new ApiError('NOT_FOUND', 'Invoice not found');
+
+    const data = await fiscalMail.load(req.params.id);
+    const pdf = await fiscalPdf.render(data);
+    res.set({
+      'Content-Type': 'application/pdf',
+      'Content-Disposition': `attachment; filename="${fiscalPdf.filenameFor(data.invoice)}"`,
+      // Un documento fiscal no debe quedarse en la caché de un proxy ni de un
+      // navegador compartido.
+      'Cache-Control': 'private, no-store'
+    });
+    res.send(pdf);
   } catch (err) { next(err); }
 });
 

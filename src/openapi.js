@@ -4727,6 +4727,34 @@ const paths = {
     }
   },
 
+  '/api/v1/fiscal/invoices/{id}/pdf': {
+    get: {
+      tags: ['Fiscal'],
+      summary: 'Download one invoice as a PDF',
+      operationId: 'downloadFiscalInvoicePdf',
+      description: [
+        'The same document the customer receives by email, rendered from the same query and the',
+        'same formatting, so the two can never disagree. It changes nothing — a fiscal document is',
+        'immutable — so it can be asked for as many times as needed. Never gated by plan, for the',
+        'reason on the list endpoint: keeping invoices is the restaurant\'s duty and outlives the',
+        'subscription.',
+        '',
+        'A document from the simulated provider carries a red "DOCUMENTO DE PRUEBA — NO ES UNA',
+        'FACTURA FISCAL" banner, exactly as its email does.',
+        '',
+        'Sent as an attachment (`Content-Disposition`) named after the document number, with',
+        '`Cache-Control: private, no-store`.'
+      ].join('\n'),
+      security: staff,
+      parameters: [{ name: 'id', in: 'path', required: true, schema: { type: 'string', format: 'uuid' } }],
+      responses: {
+        200: { description: 'The PDF.', content: { 'application/pdf': { schema: { type: 'string', format: 'binary' } } } },
+        ...commonErrors,
+        404: response('NotFound')
+      }
+    }
+  },
+
   '/api/v1/fiscal/requests': {
     get: {
       tags: ['Fiscal'],
