@@ -204,10 +204,10 @@ describe('factura pedida con el aviso de pago', { skip }, () => {
     });
     assert.equal(confirmed.status, 'CLOSED', 'la cuenta quedó saldada');
 
-    const after = await status(guest, paymentId);
-    assert.equal(after.body.status, 'SUCCEEDED');
-    assert.equal(after.body.invoiced, false);
-    assert.equal(after.body.invoiceRequest.status, 'FAILED');
+    const later = await status(guest, paymentId);
+    assert.equal(later.body.status, 'SUCCEEDED');
+    assert.equal(later.body.invoiced, false);
+    assert.equal(later.body.invoiceRequest.status, 'FAILED');
     const { rows: [intent] } = await db.query(
       'SELECT last_error_code FROM fiscal_invoice_intents WHERE payment_id = $1', [paymentId]
     );
@@ -221,9 +221,9 @@ describe('factura pedida con el aviso de pago', { skip }, () => {
     const paymentId = await declare(guest, { email: 'ana@example.com' });
     await claims.rejectClaim({ restaurantId: restaurant.id, claimId: paymentId, actor: { id: null } });
 
-    const after = await status(guest, paymentId);
-    assert.equal(after.body.invoiced, false);
-    assert.equal(after.body.invoiceRequest.status, 'WAITING');
+    const later = await status(guest, paymentId);
+    assert.equal(later.body.invoiced, false);
+    assert.equal(later.body.invoiceRequest.status, 'WAITING');
   });
 
   it('si la factura ya existía, no se hace otra', async () => {
