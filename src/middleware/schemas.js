@@ -345,7 +345,16 @@ const declareClaimSchema = Joi.object({
   splitParticipantId: uuid,
   // Part of the same transfer the diner says they sent: staff verify
   // amountVes + tipVes against the bank app as one figure.
-  tipVes: minorUnits.default('0')
+  tipVes: minorUnits.default('0'),
+  // «Envíame la factura». Se cumple cuando el personal confirme el cobro, que
+  // es cuando se puede emitir, y no antes. Los mismos campos que pedirla a mano
+  // (`requestInvoiceSchema`), salvo que aquí el correo es obligatorio: es por
+  // donde tiene que llegar, porque el comensal ya no va a estar mirando.
+  invoice: Joi.object({
+    email: Joi.string().trim().email().max(255).required(),
+    name: Joi.string().trim().min(1).max(160),
+    taxId: venezuelanId
+  })
 });
 
 /**

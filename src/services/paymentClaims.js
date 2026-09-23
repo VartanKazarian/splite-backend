@@ -5,6 +5,7 @@ const { applyToBill, settlementView, toPaymentAmount } = require('./locks');
 const { recordPayment, transitionPayment, PAYMENT_COLUMNS } = require('./payments');
 const { logAudit } = require('./audit');
 const { logger } = require('../connectors/logger');
+const invoiceIntents = require('./invoiceIntents');
 
 /**
  * Declared payments: "I paid by Pago Móvil, here is my reference."
@@ -42,7 +43,8 @@ const normaliseReference = value => String(value ?? '').replace(/\D/g, '');
  */
 async function declareClaim({
   restaurantId, billId, amountVes, reference, phoneOrigin, bankOrigin, idOrigin,
-  payer = { type: 'GUEST', id: null }, splitParticipantId = null, tipVes = 0, meta = {}
+  payer = { type: 'GUEST', id: null }, splitParticipantId = null, tipVes = 0, invoice = null,
+  meta = {}
 }) {
   const amount = toPaymentAmount(amountVes);
   if (amount === null) throw new ApiError('INVALID_AMOUNT', 'Invalid payment amount');
@@ -75,7 +77,7 @@ async function declareClaim({
         });
       }
 
-      return recordPayment(client, {
+      const payment = await recordPayment(client, {
         restaurantId,
         billId,
         amountVes: amount,
@@ -100,6 +102,19 @@ async function declareClaim({
         },
         reason: 'Declared by payer, awaiting verification'
       });
+
+      // En la misma transacción: un aviso que no llegó a guardarse no puede
+      // dejar detrás una petición de factura huérfana, ni al revés.
+      if (invoice) {
+        await client.query(
+          `INSERT INTO fiscal_invoice_intents
+             (payment_id, restaurant_id, email, customer_name, customer_tax_id)
+           VALUES ($1, $2, $3, $4, $5)`,
+          [payment.id, restaurantId, invoice.email, invoice.name ?? null, invoice.taxId ?? null]
+        );
+      }
+
+      return payment;
     });
 
     await logAudit({
@@ -257,6 +272,18 @@ async function confirmClaim({ restaurantId, claimId, actor, meta = {} }) {
   });
 
   logger.info({ event: 'PAYMENT_CLAIM_CONFIRMED', claimId, restaurantId }, 'Claim confirmed');
+
+  // La factura que el comensal pidió al avisar, si la pidió. Después del
+  // commit y no dentro: una factura sobre una confirmación que todavía podía
+  // deshacerse sería un documento que quizá hubiera que anular. Y fuera de
+  // cualquier camino de error: `fulfil` no lanza, así que una factura que no
+  // sale no puede dejar un cobro verificado sin confirmar.
+  //
+  // Se espera en vez de soltarla: emitiendo por medios propios es una
+  // transacción local, y así quien confirma y quien mira el estado del pago
+  // ven la factura ya hecha. Con una imprenta externa esto sería una llamada
+  // de red en la respuesta del personal, y habría que mandarla aparte.
+  await invoiceIntents.fulfil({ restaurantId, paymentId: claimId });
 
   return result;
 }

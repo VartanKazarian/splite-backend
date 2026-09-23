@@ -291,11 +291,30 @@ async function openBillForGuest(guest) {
  * **la mesa de esta sesión** y del restaurante de esta sesión. El comensal
  * además tiene que conocer el UUID, que sólo recibe quien declaró ese pago.
  */
+async function invoiceOfferedAt(restaurantId) {
+  const { rows } = await db.query(
+    `SELECT r.plan_tier,
+            EXISTS (SELECT 1 FROM fiscal_series fs WHERE fs.restaurant_id = r.id) AS has_series,
+            (NULLIF(TRIM(r.rif), '') IS NOT NULL) AS has_rif
+       FROM restaurants r WHERE r.id = $1`,
+    [restaurantId]
+  );
+  if (!rows.length) return false;
+  return invoicing.canIssue({
+    planTier: rows[0].plan_tier, hasSeries: rows[0].has_series, hasRif: rows[0].has_rif
+  });
+}
+
 async function billForGuestPayment(guest, paymentId) {
   const { rows } = await db.query(
     `SELECT p.id AS payment_id, p.status AS payment_status, p.amount_ves,
             b.id AS bill_id, b.status AS bill_status,
             (SELECT i.id FROM fiscal_invoices i WHERE i.payment_id = p.id LIMIT 1) AS invoice_id,
+            (SELECT i.control_number FROM fiscal_invoices i WHERE i.payment_id = p.id LIMIT 1)
+              AS invoice_control_number,
+            (SELECT i.customer_email FROM fiscal_invoices i WHERE i.payment_id = p.id LIMIT 1)
+              AS invoice_email,
+            fii.email AS intent_email, fii.status AS intent_status,
             -- Si aquí se factura o no. Va en esta consulta y no en otra porque
             -- el teléfono la repite cada ocho segundos mientras el cobro está
             -- por confirmar, y ya está filtrando por este restaurante.
@@ -305,6 +324,7 @@ async function billForGuestPayment(guest, paymentId) {
        JOIN bills b ON b.id = p.bill_id
        JOIN restaurants r ON r.id = p.restaurant_id
        LEFT JOIN fiscal_series fs ON fs.restaurant_id = r.id
+       LEFT JOIN fiscal_invoice_intents fii ON fii.payment_id = p.id
       WHERE p.id = $1 AND p.restaurant_id = $2 AND b.table_id = $3`,
     [paymentId, guest.restaurantId, guest.tableId]
   );
@@ -340,6 +360,19 @@ router.get(
         // ser la señal de que ya se puede.
         billClosed: row.bill_status !== 'OPEN',
         invoiced: row.invoice_id !== null,
+        // La factura de este cobro, cuando existe: su número y adónde se
+        // manda. Sin esto, una factura emitida sola al confirmar el cobro era
+        // invisible para quien la pidió -- `invoiced` escondía la oferta y
+        // nada decía que ya estaba hecha.
+        invoice: row.invoice_id !== null
+          ? { controlNumber: row.invoice_control_number, email: row.invoice_email ?? null }
+          : null,
+        // La factura pedida al avisar del pago. WAITING mientras el cobro está
+        // por confirmar; FAILED si al confirmarlo no se pudo emitir, que es
+        // cuando la pantalla vuelve a ofrecer pedirla a mano.
+        invoiceRequest: row.intent_status
+          ? { email: row.intent_email, status: row.intent_status }
+          : null,
         /*
          * Si en este restaurante se puede pedir factura, **dicho antes de que
          * el comensal lo intente**.
@@ -435,12 +468,18 @@ router.get('/bill', authenticateGuest, perSession, async (req, res, next) => {
     // dibujan, y hasta ahora no viajaba nada: la pantalla ofrecía C2P siempre,
     // incluso donde el raíl no está configurado, y el comensal lo descubría
     // después de ir a su banco a por una clave de un solo uso.
-    const [items, payee, c2pAvailable] = await Promise.all([
+    //
+    // `canRequestInvoice`, por lo mismo y un paso antes: el aviso de pago
+    // ofrece «envíame la factura» y sólo debe ofrecerlo donde se puede cumplir.
+    // Es el mismo cálculo que el estado del pago, que sigue haciendo falta
+    // allí porque la cuenta deja de leerse en cuanto se cierra.
+    const [items, payee, c2pAvailable, canRequestInvoice] = await Promise.all([
       billItems.listForBill({ restaurantId: req.guest.restaurantId, billId: bill.id }),
       payeeForGuest(req.guest),
-      mercantilC2P.c2pAvailable(req.guest.restaurantId)
+      mercantilC2P.c2pAvailable(req.guest.restaurantId),
+      invoiceOfferedAt(req.guest.restaurantId)
     ]);
-    res.json({ ...dto.guestBill(bill, items), payee, c2pAvailable });
+    res.json({ ...dto.guestBill(bill, items), payee, c2pAvailable, canRequestInvoice });
   } catch (err) { next(err); }
 });
 
@@ -529,6 +568,11 @@ router.post('/bill/payment-claims', authenticateGuest, perSession, validateBody(
       payer: { type: 'GUEST', id: null },
       splitParticipantId: req.body.splitParticipantId ?? null,
       tipVes: req.body.tipVes ?? '0',
+      // Se guarda aunque aquí no se pueda facturar: rechazar el aviso de un
+      // pago ya enviado por un campo opcional sería impedirle avisar. Si al
+      // confirmar no se puede emitir, la petición queda como FAILED con su
+      // motivo, y la pantalla ni siquiera ofrece la casilla en ese caso.
+      invoice: req.body.invoice ?? null,
       meta: { ip: req.ip, userAgent: req.get('user-agent'), requestId: req.id }
     });
 
