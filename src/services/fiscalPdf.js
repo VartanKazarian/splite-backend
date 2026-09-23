@@ -85,17 +85,20 @@ function render({ invoice, restaurant, lines, taxes, tableName }) {
     // Emisor, a la izquierda; qué documento es, a la derecha.
     const headTop = y;
     doc.fillColor(INK).font('Helvetica-Bold').fontSize(16)
-      .text(restaurant.name, left, y, { width: width * 0.58 });
+      .text(restaurant.name, left, y, { width: width * 0.48 });
     y = doc.y + 2;
     doc.font('Helvetica').fontSize(9.5).fillColor(MUTED);
-    if (restaurant.rif) { doc.text(`RIF ${formatRif(restaurant.rif)}`, left, y, { width: width * 0.58 }); y = doc.y; }
+    if (restaurant.rif) { doc.text(`RIF ${formatRif(restaurant.rif)}`, left, y, { width: width * 0.48 }); y = doc.y; }
     if (restaurant.fiscal_address) {
-      doc.text(restaurant.fiscal_address, left, y, { width: width * 0.58 }); y = doc.y;
+      doc.text(restaurant.fiscal_address, left, y, { width: width * 0.48 }); y = doc.y;
     }
     const leftEnd = y;
 
-    const rx = left + width * 0.6;
-    const rw = width * 0.4;
+    // Un número de control no se parte en dos líneas: es lo que se copia a mano
+    // en una declaración. La etiqueta va a ancho fijo y el valor se queda el resto.
+    const rw = width * 0.5;
+    const rx = left + width - rw;
+    const labelW = 72;
     doc.fillColor(INK).font('Helvetica-Bold').fontSize(13).text(title, rx, headTop, { width: rw, align: 'right' });
     let ry = doc.y + 4;
     const meta = [
@@ -106,8 +109,8 @@ function render({ invoice, restaurant, lines, taxes, tableName }) {
     ];
     doc.fontSize(9.5);
     for (const [label, value] of meta) {
-      doc.font('Helvetica').fillColor(MUTED).text(label, rx, ry, { width: rw * 0.45 });
-      doc.font('Helvetica-Bold').fillColor(INK).text(String(value ?? '—'), rx + rw * 0.45, ry, { width: rw * 0.55, align: 'right' });
+      doc.font('Helvetica').fillColor(MUTED).text(label, rx, ry, { width: labelW });
+      doc.font('Helvetica-Bold').fillColor(INK).text(String(value ?? '—'), rx + labelW, ry, { width: rw - labelW, align: 'right' });
       ry = doc.y + 2;
     }
     y = Math.max(leftEnd, ry) + 14;
