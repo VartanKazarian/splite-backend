@@ -724,6 +724,17 @@ const schemas = {
           'today, including the one whose restaurants can charge perfectly well.'
         ].join('\n')
       },
+      canRequestInvoice: {
+        type: 'boolean',
+        description: [
+          'Whether this restaurant can issue a fiscal invoice from the app — the same answer as',
+          '`canRequestInvoice` on `GET /guest/payments/{id}`, available here before anything is paid.',
+          '**Offer "send me the invoice" on the payment claim only when this is true.**',
+          '',
+          'The payment status keeps its own copy because the bill stops being readable the moment',
+          'it closes, which is exactly when a manually requested invoice becomes possible.'
+        ].join('\n')
+      },
       updatedAt: { type: 'string', format: 'date-time' }
     }
   },
@@ -1685,7 +1696,27 @@ Object.assign(schemas, {
       bankOrigin: { type: 'string', pattern: '^[0-9]{4}$', description: "Optional. The payer's bank, as a four-digit code rather than a name, so that two spellings of one bank do not compare as two banks." },
       idOrigin: { type: 'string', description: "Optional, and the strongest of the three: a phone can be borrowed and a bank is shared by millions, but the receiving app prints the payer's document beside the movement. Cédula or RIF, e.g. V12345678." },
       splitParticipantId: { type: 'string', format: 'uuid', description: 'Optional. Attribute this declared payment to a split share, credited when staff confirm it.' },
-      tipVes: { ...minorUnits, description: 'Optional voluntary tip, default 0. Part of the same transfer: staff verify `amountVes + tipVes` as one figure against the bank app.' }
+      tipVes: { ...minorUnits, description: 'Optional voluntary tip, default 0. Part of the same transfer: staff verify `amountVes + tipVes` as one figure against the bank app.' },
+      invoice: {
+        type: 'object',
+        required: ['email'],
+        description: [
+          'Optional. "Send me the invoice": stored with the claim and fulfilled when a member of staff',
+          'confirms it — the first moment a fiscal invoice can exist for this payment. The diner does',
+          'not have to wait on the screen; the invoice is issued through the same path as',
+          '`POST /guest/bill/invoice` and delivered to `email`.',
+          '',
+          'It never makes the claim fail. It is stored even where invoicing is unavailable, and if',
+          'the invoice cannot be issued at confirmation the request is marked FAILED with its reason',
+          '(see `invoiceRequest` on `GET /guest/payments/{id}`); the payment is confirmed regardless.',
+          'Offer it only when `canRequestInvoice` on the bill is true.'
+        ].join('\n'),
+        properties: {
+          email: { type: 'string', format: 'email', maxLength: 255, description: 'Where to deliver it. Required: the diner will not be looking at the screen when it is issued.' },
+          name: { type: 'string', minLength: 1, maxLength: 160, description: 'Optional. With `taxId`, invoices in the diner\'s name instead of as a final consumer.' },
+          taxId: { type: 'string', pattern: '^[VEJGPC][0-9]{6,9}$', description: 'Optional cédula or RIF, e.g. V12345678.' }
+        }
+      }
     }
   },
 
@@ -4443,6 +4474,31 @@ const paths = {
                   amountVes: minorUnits,
                   billClosed: { type: 'boolean' },
                   invoiced: { type: 'boolean', description: 'True once a fiscal document exists for it, so the offer is not made twice.' },
+                  invoice: {
+                    oneOf: [{
+                      type: 'object',
+                      properties: {
+                        controlNumber: { type: 'string' },
+                        email: { type: ['string', 'null'], description: 'Where it is being delivered, if anywhere.' }
+                      }
+                    }, { type: 'null' }],
+                    description: 'The fiscal invoice for this payment once it exists — including one issued on its own when the payment was confirmed, which the diner would otherwise have no way to see.'
+                  },
+                  invoiceRequest: {
+                    oneOf: [{
+                      type: 'object',
+                      properties: {
+                        email: { type: 'string' },
+                        status: { type: 'string', enum: ['WAITING', 'ISSUED', 'FAILED', 'SKIPPED'] }
+                      }
+                    }, { type: 'null' }],
+                    description: [
+                      'The invoice asked for with the payment claim, if any. WAITING until the payment is',
+                      'confirmed; ISSUED when it went out; SKIPPED when an invoice for this payment already',
+                      'existed; FAILED when it could not be issued at confirmation — the moment to offer',
+                      'asking for it by hand again.'
+                    ].join('\n')
+                  },
                   canRequestInvoice: {
                     type: 'boolean',
                     description: [

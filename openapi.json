@@ -1919,6 +1919,10 @@
             "type": "boolean",
             "description": "Whether this restaurant can take a C2P charge right now: the rail is configured and its\ncredentials are stored and enabled. **Offer C2P only when this is true.**\n\nIt exists because the alternative is a dead end the diner pays for. The C2P form asks for\na single-use clave they must fetch from their own bank, and without the rail the charge is\nrefused with 503 `PAYMENT_PROVIDER_MISCONFIGURED` once they have done all of the work.\n\nDo not infer this from `chargeable` on the bank list. That flag answers a different\nquestion — which integration module is mapped to a bank code — and is false for every bank\ntoday, including the one whose restaurants can charge perfectly well."
           },
+          "canRequestInvoice": {
+            "type": "boolean",
+            "description": "Whether this restaurant can issue a fiscal invoice from the app — the same answer as\n`canRequestInvoice` on `GET /guest/payments/{id}`, available here before anything is paid.\n**Offer \"send me the invoice\" on the payment claim only when this is true.**\n\nThe payment status keeps its own copy because the bill stops being readable the moment\nit closes, which is exactly when a manually requested invoice becomes possible."
+          },
           "updatedAt": {
             "type": "string",
             "format": "date-time"
@@ -4028,6 +4032,32 @@
             "examples": [
               "756710"
             ]
+          },
+          "invoice": {
+            "type": "object",
+            "required": [
+              "email"
+            ],
+            "description": "Optional. \"Send me the invoice\": stored with the claim and fulfilled when a member of staff\nconfirms it — the first moment a fiscal invoice can exist for this payment. The diner does\nnot have to wait on the screen; the invoice is issued through the same path as\n`POST /guest/bill/invoice` and delivered to `email`.\n\nIt never makes the claim fail. It is stored even where invoicing is unavailable, and if\nthe invoice cannot be issued at confirmation the request is marked FAILED with its reason\n(see `invoiceRequest` on `GET /guest/payments/{id}`); the payment is confirmed regardless.\nOffer it only when `canRequestInvoice` on the bill is true.",
+            "properties": {
+              "email": {
+                "type": "string",
+                "format": "email",
+                "maxLength": 255,
+                "description": "Where to deliver it. Required: the diner will not be looking at the screen when it is issued."
+              },
+              "name": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 160,
+                "description": "Optional. With `taxId`, invoices in the diner's name instead of as a final consumer."
+              },
+              "taxId": {
+                "type": "string",
+                "pattern": "^[VEJGPC][0-9]{6,9}$",
+                "description": "Optional cédula or RIF, e.g. V12345678."
+              }
+            }
           }
         }
       },
@@ -9619,6 +9649,54 @@
                     "invoiced": {
                       "type": "boolean",
                       "description": "True once a fiscal document exists for it, so the offer is not made twice."
+                    },
+                    "invoice": {
+                      "oneOf": [
+                        {
+                          "type": "object",
+                          "properties": {
+                            "controlNumber": {
+                              "type": "string"
+                            },
+                            "email": {
+                              "type": [
+                                "string",
+                                "null"
+                              ],
+                              "description": "Where it is being delivered, if anywhere."
+                            }
+                          }
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ],
+                      "description": "The fiscal invoice for this payment once it exists — including one issued on its own when the payment was confirmed, which the diner would otherwise have no way to see."
+                    },
+                    "invoiceRequest": {
+                      "oneOf": [
+                        {
+                          "type": "object",
+                          "properties": {
+                            "email": {
+                              "type": "string"
+                            },
+                            "status": {
+                              "type": "string",
+                              "enum": [
+                                "WAITING",
+                                "ISSUED",
+                                "FAILED",
+                                "SKIPPED"
+                              ]
+                            }
+                          }
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ],
+                      "description": "The invoice asked for with the payment claim, if any. WAITING until the payment is\nconfirmed; ISSUED when it went out; SKIPPED when an invoice for this payment already\nexisted; FAILED when it could not be issued at confirmation — the moment to offer\nasking for it by hand again."
                     },
                     "canRequestInvoice": {
                       "type": "boolean",
