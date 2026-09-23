@@ -344,6 +344,9 @@ function deliverInBackground(deliveryId) {
 module.exports = {
   compose, scheduleDelivery, attemptDelivery, sweepPending, deliverInBackground,
   MAX_ATTEMPTS,
+  // Lo mismo que lee el correo, para el PDF: dos formas del mismo documento
+  // no pueden salir de dos consultas que algún día difieran.
+  load, BASIS_NOTE,
   // Exportados para las pruebas del formato, que es donde se ve un céntimo mal.
   _internals: { money, rate, quantity }
 };

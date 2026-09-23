@@ -3,7 +3,7 @@ const crypto = require('crypto');
 const db = require('../connectors/base');
 const { logger } = require('../connectors/logger');
 const { ApiError } = require('../errors');
-const { applyBps } = require('./money');
+const { applyBps, parseRate, applyRate } = require('./money');
 const { allocate } = require('./split');
 const { stateFromLines, outstandingOf } = require('./fiscalAllocation');
 const { resolveLineBasis, buildDraft } = require('./fiscalInvoiceBuilder');
@@ -303,9 +303,35 @@ async function issueForPayment({ restaurantId, billId, paymentId, customer = {},
       splitMode, participantShareMinor: share, paidMinor, claimedItems: claimed
     });
 
-    const sourceLines = lineBasis === 'ITEMISED'
+    const menuLines = lineBasis === 'ITEMISED'
       ? claimed
       : lines.map(l => ({ ...l, shareMinor: l.subtotalMinor, fullMinor: l.subtotalMinor }));
+
+    /*
+     * Las líneas, en bolívares como el resto del documento.
+     *
+     * El estado se pasa a bolívares más arriba, pero las líneas llegaban en la
+     * moneda de la carta. La cantidad prorrateada sale de dividir la base
+     * declarada (bolívares) entre el valor de la línea (dólares), así que en
+     * una carta en dólares cada cantidad salía multiplicada por la tasa: un
+     * tequeño se declaraba como «852,417» tequeños. Y el precio unitario se
+     * guardaba en céntimos de dólar en un documento que dice «Bs».
+     *
+     * Con la tasa congelada en la cuenta, la misma con la que se cobró. Los
+     * importes declarados no cambian -- salen del estado, que ya estaba bien --;
+     * cambian la cantidad y el precio unitario, que ahora cuadran con ellos.
+     */
+    const scaledRate = parseRate(bill.fx_rate_ves_per_unit ?? '1');
+    const inVes = value => applyRate(BigInt(value ?? 0), scaledRate, 'Invoice line in VES');
+    const sourceLines = bill.currency === 'VES'
+      ? menuLines
+      : menuLines.map(l => ({
+        ...l,
+        unitPriceMinor: inVes(l.unitPriceMinor),
+        subtotalMinor: inVes(l.subtotalMinor),
+        shareMinor: inVes(l.shareMinor ?? l.subtotalMinor),
+        fullMinor: inVes(l.fullMinor ?? l.subtotalMinor)
+      }));
 
     const tableName = await client.query('SELECT name FROM tables WHERE id = $1', [bill.table_id]);
     const draft = buildDraft({

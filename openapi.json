@@ -10041,6 +10041,60 @@
         }
       }
     },
+    "/api/v1/fiscal/invoices/{id}/pdf": {
+      "get": {
+        "tags": [
+          "Fiscal"
+        ],
+        "summary": "Download one invoice as a PDF",
+        "operationId": "downloadFiscalInvoicePdf",
+        "description": "The same document the customer receives by email, rendered from the same query and the\nsame formatting, so the two can never disagree. It changes nothing — a fiscal document is\nimmutable — so it can be asked for as many times as needed. Never gated by plan, for the\nreason on the list endpoint: keeping invoices is the restaurant's duty and outlives the\nsubscription.\n\nA document from the simulated provider carries a red \"DOCUMENTO DE PRUEBA — NO ES UNA\nFACTURA FISCAL\" banner, exactly as its email does.\n\nSent as an attachment (`Content-Disposition`) named after the document number, with\n`Cache-Control: private, no-store`.",
+        "security": [
+          {
+            "staffAuth": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The PDF.",
+            "content": {
+              "application/pdf": {
+                "schema": {
+                  "type": "string",
+                  "format": "binary"
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "404": {
+            "$ref": "#/components/responses/NotFound"
+          },
+          "429": {
+            "$ref": "#/components/responses/TooManyRequests"
+          },
+          "500": {
+            "$ref": "#/components/responses/ServerError"
+          }
+        }
+      }
+    },
     "/api/v1/fiscal/requests": {
       "get": {
         "tags": [
