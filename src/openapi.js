@@ -1428,6 +1428,10 @@ const onboardingSchemas = {
         type: ['string', 'null'],
         description: "The premises' address as printed in the receipt header. Null when none has been registered — the receipt omits the line rather than showing a gap, and never invents one."
       },
+      contactEmail: {
+        type: ['string', 'null'], format: 'email',
+        description: 'Where a customer\'s reply to their invoice goes: it is the Reply-To of every invoice email, which is otherwise sent from a no-reply address. Null means no Reply-To, and the email says to ask the restaurant instead. Deliberately not the owner\'s login email, which would otherwise be handed to every customer.'
+      },
       menuCurrency: { type: 'string', enum: ['VES', 'USD', 'EUR'] },
       vatBps: { type: 'integer' },
       serviceChargeBps: { type: 'integer' },
@@ -2164,6 +2168,10 @@ Object.assign(schemas, {
       fiscalAddress: {
         type: 'string', maxLength: 200, examples: ['Av. Francisco de Miranda, Chacao, Caracas'],
         description: 'The address printed in the receipt header. Three states, not two: omitting the field leaves whatever is stored, a non-empty string replaces it, and an empty string clears it — without that last one a mistyped address could never be removed.'
+      },
+      contactEmail: {
+        type: 'string', maxLength: 255, examples: ['facturas@casa72.com'],
+        description: 'Where customers reply to their invoice (Reply-To). Must be an email address; lowercased before it is stored. The same three states as `fiscalAddress`: omit to keep, a value to replace, an empty string to clear.'
       }
     }
   },

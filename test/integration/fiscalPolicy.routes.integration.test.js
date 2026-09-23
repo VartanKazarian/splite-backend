@@ -158,6 +158,31 @@ describe('política de facturación sobre HTTP', { skip }, () => {
     assert.equal(read.body.fiscalAddress, null);
   });
 
+  /**
+   * El correo al que responden los clientes a su factura (Reply-To).
+   *
+   * Los mismos tres estados que el domicilio, y una cosa más: tiene que ser un
+   * correo. Uno mal escrito haría que cada respuesta rebotara.
+   */
+  it('el correo de contacto se pone, se conserva, se borra y tiene que ser un correo', async () => {
+    const set = await request('PATCH', '/api/v1/account',
+      { contactEmail: 'Facturas@Casa72.com' }, ownerToken);
+    assert.equal(set.status, 200, JSON.stringify(set.body));
+    assert.equal(set.body.contactEmail, 'facturas@casa72.com', 'en minúsculas');
+
+    const rename = await request('PATCH', '/api/v1/account', { name: 'Policy Tenant' }, ownerToken);
+    assert.equal(rename.body.contactEmail, 'facturas@casa72.com');
+
+    const bad = await request('PATCH', '/api/v1/account', { contactEmail: 'no es un correo' }, ownerToken);
+    assert.equal(bad.status, 400);
+    assert.ok(bad.body.error.details.fieldPaths.includes('contactEmail'));
+
+    const cleared = await request('PATCH', '/api/v1/account', { contactEmail: '' }, ownerToken);
+    assert.equal(cleared.body.contactEmail, null);
+    const read = await request('GET', '/api/v1/account', null, ownerToken);
+    assert.equal(read.body.contactEmail, null);
+  });
+
   it('el domicilio no es una decisión de dueño: un encargado puede corregirlo', async () => {
     // A diferencia de la política de facturación. Una dirección mal escrita la
     // ve cada comensal en su recibo, y esperar al dueño para arreglarla no
