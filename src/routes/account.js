@@ -38,7 +38,7 @@ router.get('/', async (req, res, next) => {
     const { rows } = await db.query(
       `SELECT id, name, rif, menu_currency, vat_bps, service_charge_bps,
               payout_bank_code, payout_account_number, payout_phone, payout_holder_id,
-              plan_tier, trial_ends_at, fiscal_invoice_policy, fiscal_address, created_at
+              plan_tier, trial_ends_at, fiscal_invoice_policy, fiscal_address, contact_email, created_at
          FROM restaurants
         WHERE id = $1`,
       [req.user.restaurantId]
@@ -91,13 +91,19 @@ router.patch(
                   WHEN $4 = '' THEN NULL
                   ELSE $4
                 END,
+                -- Los mismos tres estados, para el correo de respuesta.
+                contact_email = CASE
+                  WHEN $5::TEXT IS NULL THEN contact_email
+                  WHEN $5 = '' THEN NULL
+                  ELSE $5
+                END,
                 updated_at = NOW()
           WHERE id = $1
         RETURNING id, name, rif, menu_currency, vat_bps, service_charge_bps,
                   payout_bank_code, payout_account_number, payout_phone, payout_holder_id,
-                  plan_tier, trial_ends_at, fiscal_invoice_policy, fiscal_address, created_at`,
+                  plan_tier, trial_ends_at, fiscal_invoice_policy, fiscal_address, contact_email, created_at`,
         [req.user.restaurantId, req.body.name ?? null, req.body.fiscalInvoicePolicy ?? null,
-          req.body.fiscalAddress ?? null]
+          req.body.fiscalAddress ?? null, req.body.contactEmail ?? null]
       );
       if (!rows.length) throw new ApiError('RESTAURANT_NOT_FOUND', 'Restaurant not found');
 
@@ -293,7 +299,7 @@ router.put(
           WHERE id = $1
         RETURNING id, name, rif, menu_currency, vat_bps, service_charge_bps,
                   payout_bank_code, payout_account_number, payout_phone, payout_holder_id,
-                  plan_tier, trial_ends_at, fiscal_invoice_policy, fiscal_address, created_at`,
+                  plan_tier, trial_ends_at, fiscal_invoice_policy, fiscal_address, contact_email, created_at`,
         [req.user.restaurantId, bankCode ?? null, accountNumber ?? null,
          normalisedPhone, holderId ?? null]
       );

@@ -618,7 +618,10 @@ const restaurantProfileSchema = Joi.object({
   // El domicilio que se imprime en el encabezado del recibo. La cadena vacía
   // se admite y significa «bórralo»: sin ella, un dato mal escrito quedaría
   // para siempre porque no habría forma de quitarlo.
-  fiscalAddress: Joi.string().trim().max(200).allow('')
+  fiscalAddress: Joi.string().trim().max(200).allow(''),
+  // Adónde responden los clientes a su factura (Reply-To). Vacío lo borra, por
+  // lo mismo que la dirección fiscal.
+  contactEmail: Joi.string().trim().lowercase().email().max(255).allow('')
 }).min(1);
 
 /**

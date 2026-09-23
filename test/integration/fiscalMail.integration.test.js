@@ -203,4 +203,36 @@ describe('entrega de la factura por correo', { skip }, () => {
     assert.match(message.text, /NO ES UNA FACTURA FISCAL/);
     assert.match(message.subject, /^\[PRUEBA\]/);
   });
+
+  it('sale con el nombre del restaurante, y sin correo de contacto dice a quién pedir la corrección', async () => {
+    await db.query('UPDATE restaurants SET contact_email = NULL WHERE id = $1', [restaurant.id]);
+    await issue(await billWithPayment(), { email: 'ana@example.com' });
+    await settle();
+
+    const [message] = sent;
+    assert.equal(message.fromName, 'Mail Tenant vía Splite');
+    assert.equal(message.replyTo, undefined, 'sin correo de contacto no hay a quién responder');
+    assert.match(message.text, /no recibe respuestas/);
+    assert.match(message.text, /pídele la corrección a Mail Tenant/);
+  });
+
+  it('con correo de contacto, las respuestas le llegan al restaurante', async () => {
+    await db.query(
+      "UPDATE restaurants SET contact_email = 'facturas@mailtenant.example' WHERE id = $1",
+      [restaurant.id]
+    );
+    try {
+      await issue(await billWithPayment(), { email: 'ana@example.com' });
+      await settle();
+
+      const [message] = sent;
+      assert.equal(message.replyTo, 'facturas@mailtenant.example');
+      assert.match(message.text, /responde a este correo/);
+      assert.match(message.text, /facturas@mailtenant\.example/);
+      assert.doesNotMatch(message.text, /no recibe respuestas/,
+        'con Reply-To sí se puede responder: decir lo contrario sería falso');
+    } finally {
+      await db.query('UPDATE restaurants SET contact_email = NULL WHERE id = $1', [restaurant.id]);
+    }
+  });
 });

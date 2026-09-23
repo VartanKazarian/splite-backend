@@ -152,11 +152,25 @@ function compose({ invoice, restaurant, lines, taxes, tableName }) {
     ...wrap(BASIS_NOTE[invoice.line_basis] ?? ''),
     '',
     ...wrap('Recibes este correo porque pediste tu factura al pagar. No es '
-      + 'publicidad y no te hemos apuntado a ninguna lista.')
+      + 'publicidad y no te hemos apuntado a ninguna lista.'),
+    '',
+    // Sale de una dirección que no recibe respuestas, y lo primero que hace
+    // quien ve un error en su factura es contestar. Se dice adónde escribir en
+    // vez de dejar que la respuesta se pierda -- y, si el restaurante no dejó
+    // correo, que la corrección se pide allí.
+    ...wrap(restaurant.contact_email
+      ? `Si algo de tu factura no está bien, responde a este correo: la respuesta `
+        + `le llega a ${restaurant.name} (${restaurant.contact_email}).`
+      : `Este correo sale de una dirección que no recibe respuestas. Si algo de tu `
+        + `factura no está bien, pídele la corrección a ${restaurant.name}.`)
   );
 
   return {
     to: invoice.customer_email,
+    // El restaurante en el remitente, para que se reconozca en la bandeja: la
+    // factura es suya, no nuestra. La dirección sigue siendo la verificada.
+    fromName: `${restaurant.name} vía Splite`,
+    ...(restaurant.contact_email ? { replyTo: restaurant.contact_email } : {}),
     subject: simulated
       ? `[PRUEBA] Documento ${invoice.document_number} — ${restaurant.name}`
       : `Tu factura ${invoice.document_number} — ${restaurant.name}`,
@@ -168,7 +182,7 @@ function compose({ invoice, restaurant, lines, taxes, tableName }) {
 async function load(invoiceId) {
   const { rows } = await db.query(
     `SELECT i.*, r.name AS restaurant_name, r.rif AS restaurant_rif,
-            r.fiscal_address AS restaurant_address,
+            r.fiscal_address AS restaurant_address, r.contact_email AS restaurant_contact_email,
             t.name AS table_name
        FROM fiscal_invoices i
        JOIN restaurants r ON r.id = i.restaurant_id
@@ -195,7 +209,8 @@ async function load(invoiceId) {
     restaurant: {
       name: rows[0].restaurant_name,
       rif: rows[0].restaurant_rif,
-      fiscal_address: rows[0].restaurant_address
+      fiscal_address: rows[0].restaurant_address,
+      contact_email: rows[0].restaurant_contact_email ?? null
     },
     tableName: rows[0].table_name ?? null,
     lines: lines.rows,

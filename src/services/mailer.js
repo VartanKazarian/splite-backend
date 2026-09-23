@@ -24,6 +24,31 @@ const { logger } = require('../connectors/logger');
  * would be trading a well-worn library for a subtly broken transport.
  */
 
+/**
+ * El remitente de un mensaje: la dirección de MAIL_FROM, con otro nombre si el
+ * mensaje lo pide.
+ *
+ * Sólo cambia el **nombre** visible, nunca la dirección. La dirección es la que
+ * está verificada por DNS; cambiarla por mensaje sería enviar desde un dominio
+ * sin firmar, que es lo primero que un proveedor rechaza o manda a spam. Así una
+ * factura llega como «Casa 72 vía Splite <no-reply@…>» y se reconoce en la
+ * bandeja sin tocar nada de lo que hace que llegue.
+ *
+ * El nombre viene de un dato que escribe el restaurante, así que se limpia de
+ * todo lo que pueda cerrar la cabecera o abrir otra: saltos de línea, comillas,
+ * ángulos y barras.
+ */
+function senderFor(message) {
+  if (!message.fromName) return config.mail.from;
+  const name = String(message.fromName)
+    .replace(/[\r\n"<>\\]/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim()
+    .slice(0, 80);
+  if (!name || !config.mail.fromAddress) return config.mail.from;
+  return `"${name}" <${config.mail.fromAddress}>`;
+}
+
 const TRANSPORTS = {
   /**
    * Development only. Writes the message -- including the verification link --
@@ -34,7 +59,10 @@ const TRANSPORTS = {
    * the token in full: in production this code path cannot be reached.
    */
   async log(message) {
-    logger.info({ event: 'MAIL_LOGGED', to: message.to, subject: message.subject, body: message.text },
+    logger.info({
+      event: 'MAIL_LOGGED', to: message.to, from: senderFor(message),
+      replyTo: message.replyTo ?? null, subject: message.subject, body: message.text
+    },
       'Mail not sent: MAIL_TRANSPORT=log');
     return { id: null, transport: 'log' };
   },
@@ -50,8 +78,9 @@ const TRANSPORTS = {
           'content-type': 'application/json'
         },
         body: JSON.stringify({
-          from: config.mail.from,
+          from: senderFor(message),
           to: [message.to],
+          ...(message.replyTo ? { reply_to: [message.replyTo] } : {}),
           subject: message.subject,
           text: message.text
         }),
@@ -85,8 +114,9 @@ const TRANSPORTS = {
   async smtp(message) {
     const transporter = smtpTransporter();
     const info = await transporter.sendMail({
-      from: config.mail.from,
+      from: senderFor(message),
       to: message.to,
+      ...(message.replyTo ? { replyTo: message.replyTo } : {}),
       subject: message.subject,
       text: message.text
     });
@@ -174,4 +204,4 @@ async function send(message) {
   }
 }
 
-module.exports = { send, closeTransport, TRANSPORTS };
+module.exports = { senderFor, send, closeTransport, TRANSPORTS };

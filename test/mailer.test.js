@@ -242,3 +242,61 @@ test('the failure reason never reaches the caller of a submission', async () => 
   assert.deepEqual(assigned, [], `onboarding must not read the send result: ${assigned.join(', ')}`);
   assert.match(source, /await mailer\.send\(/, 'the notification must still be sent');
 });
+
+/*
+ * El remitente de una factura: el nombre del restaurante, la dirección de
+ * siempre.
+ *
+ * Sólo cambia el nombre. La dirección es la verificada por DNS, y cambiarla
+ * por mensaje sería enviar desde un dominio sin firmar.
+ */
+test('el nombre del remitente cambia y la dirección verificada no', async () => {
+  await withMailConfig({ from: 'Splite <no-reply@send.splite.example>', fromAddress: 'no-reply@send.splite.example' }, () => {
+    assert.equal(mailer.senderFor({}), 'Splite <no-reply@send.splite.example>');
+    assert.equal(
+      mailer.senderFor({ fromName: 'Casa 72 vía Splite' }),
+      '"Casa 72 vía Splite" <no-reply@send.splite.example>'
+    );
+  });
+});
+
+test('un nombre de restaurante no puede abrir otra cabecera', async () => {
+  // El nombre lo escribe el restaurante. Un salto de línea en una cabecera es
+  // una cabecera nueva -- un Bcc: a quien sea --, y unas comillas o un ángulo
+  // cambian a quién va el correo.
+  await withMailConfig({ from: 'Splite <no-reply@send.splite.example>', fromAddress: 'no-reply@send.splite.example' }, () => {
+    const sender = mailer.senderFor({ fromName: 'Casa\r\nBcc: robo@example.com "x" <y>' });
+    assert.doesNotMatch(sender, /[\r\n]/);
+    assert.equal(sender, '"Casa Bcc: robo@example.com x y" <no-reply@send.splite.example>');
+  });
+});
+
+test('resend recibe el remitente con nombre y el Reply-To del restaurante', async () => {
+  const calls = [];
+  const originalFetch = global.fetch;
+  global.fetch = async (url, options) => {
+    calls.push({ url, options });
+    return { ok: true, json: async () => ({ id: 'resend-2' }) };
+  };
+  try {
+    await withMailConfig({
+      transport: 'resend', apiKey: 're_test', timeoutMs: 5000,
+      from: 'Splite <no-reply@send.splite.example>', fromAddress: 'no-reply@send.splite.example'
+    }, () => mailer.send({
+      to: 'ana@example.com', subject: 'Tu factura', text: '…',
+      fromName: 'Casa 72 vía Splite', replyTo: 'facturas@casa72.example'
+    }));
+    const body = JSON.parse(calls[0].options.body);
+    assert.equal(body.from, '"Casa 72 vía Splite" <no-reply@send.splite.example>');
+    assert.deepEqual(body.reply_to, ['facturas@casa72.example']);
+
+    // Y sin correo de contacto, ni rastro del campo.
+    await withMailConfig({
+      transport: 'resend', apiKey: 're_test', timeoutMs: 5000,
+      from: 'Splite <no-reply@send.splite.example>', fromAddress: 'no-reply@send.splite.example'
+    }, () => mailer.send({ to: 'ana@example.com', subject: 'Tu factura', text: '…' }));
+    assert.equal('reply_to' in JSON.parse(calls[1].options.body), false);
+  } finally {
+    global.fetch = originalFetch;
+  }
+});
