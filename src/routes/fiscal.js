@@ -38,9 +38,15 @@ const INVOICE_COLUMNS = `id, bill_id, payment_id, document_type, compensates_id,
 router.get('/invoices', validateQuery(fiscalRequestQuerySchema), async (req, res, next) => {
   try {
     const { rows } = await db.query(
-      `SELECT ${INVOICE_COLUMNS} FROM fiscal_invoices
-        WHERE restaurant_id = $1
-        ORDER BY issued_at DESC
+      // Con la mesa: en la lista, un número de factura solo no dice a qué
+      // cobro corresponde, y es lo que el restaurante busca («la de la 12»).
+      `SELECT ${INVOICE_COLUMNS.split(',').map(c => `fi.${c.trim()}`).join(', ')},
+              t.name AS table_name
+         FROM fiscal_invoices fi
+         LEFT JOIN bills b ON b.id = fi.bill_id AND b.restaurant_id = fi.restaurant_id
+         LEFT JOIN tables t ON t.id = b.table_id AND t.restaurant_id = fi.restaurant_id
+        WHERE fi.restaurant_id = $1
+        ORDER BY fi.issued_at DESC
         LIMIT $2 OFFSET $3`,
       [req.user.restaurantId, req.query.limit, req.query.offset]
     );

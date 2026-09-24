@@ -319,6 +319,9 @@ describe('facturación sobre HTTP', { skip }, () => {
     const list = await request('GET', '/api/v1/fiscal/invoices', { token: staffToken });
     assert.equal(list.status, 200, JSON.stringify(list.body));
     assert.ok(list.body.data.length >= 1);
+    // En la lista, de qué mesa es: el número solo no dice a qué cobro corresponde.
+    const listed = list.body.data.find(i => i.id === issued.body.invoice.id);
+    assert.equal(listed.tableName, 'FR1');
 
     const one = await request('GET', `/api/v1/fiscal/invoices/${issued.body.invoice.id}`, { token: staffToken });
     assert.equal(one.status, 200, JSON.stringify(one.body));

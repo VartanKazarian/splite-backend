@@ -647,6 +647,8 @@ function fiscalInvoice(row) {
       }
       : null,
     issuedAt: isoTimestamp(row.issued_at),
+    // Sólo en la lista, que la une con la mesa; el documento suelto no la trae.
+    ...(row.table_name !== undefined ? { tableName: row.table_name } : {}),
     ...(row.lines ? { lines: row.lines.map(fiscalInvoiceLine) } : {}),
     ...(row.taxes ? { taxes: row.taxes.map(fiscalInvoiceTax) } : {}),
     // El envío, cuando se ha pedido el documento completo. Aparte del documento
