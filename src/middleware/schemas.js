@@ -24,6 +24,28 @@ const createStaffSchema = Joi.object({
   role: Joi.string().valid(...ROLES).required()
 });
 
+/** Invitar: la dirección y el rol. La contraseña la pone quien acepta. */
+const createInvitationSchema = Joi.object({
+  email: Joi.string().email({ minDomainSegments: 2 }).max(254).lowercase().required(),
+  role: Joi.string().valid(...ROLES).required()
+});
+
+const invitationIdParamSchema = Joi.object({ invitationId: uuid.required() });
+
+/**
+ * El token viaja en el cuerpo y no en la ruta: una ruta acaba en los registros
+ * de acceso, y este token es una llave. 32 bytes en base64url son 43 caracteres.
+ */
+const invitationTokenSchema = Joi.object({
+  token: Joi.string().pattern(/^[A-Za-z0-9_-]{43}$/).required()
+});
+
+const acceptInvitationSchema = Joi.object({
+  token: Joi.string().pattern(/^[A-Za-z0-9_-]{43}$/).required(),
+  password: Joi.string().min(12).max(128).required(),
+  displayName: Joi.string().trim().max(80).allow('', null)
+});
+
 // At least one of the two, because a PATCH that changes nothing is a request
 // somebody meant to be a change.
 const updateStaffSchema = Joi.object({
@@ -572,6 +594,11 @@ const fiscalRequestQuerySchema = Joi.object({
 
 const fiscalIdParamSchema = Joi.object({ id: uuid.required() });
 
+/** El mes de la exportación, «2026-09». El año se acota para que no se pida el año 3000. */
+const fiscalExportQuerySchema = Joi.object({
+  month: Joi.string().pattern(/^20\d{2}-(0[1-9]|1[0-2])$/).required()
+});
+
 /** Un pago que el comensal declaró y del que conoce el identificador. */
 const guestPaymentParamSchema = Joi.object({ id: uuid.required() });
 
@@ -1002,6 +1029,11 @@ module.exports = {
   requestInvoiceSchema,
   guestContactSchema,
   fiscalRequestQuerySchema,
+  fiscalExportQuerySchema,
+  createInvitationSchema,
+  invitationIdParamSchema,
+  invitationTokenSchema,
+  acceptInvitationSchema,
   fiscalIdParamSchema,
   guestPaymentParamSchema,
   paymentProviderParamSchema,

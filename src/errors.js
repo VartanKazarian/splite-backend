@@ -93,6 +93,10 @@ const CODES = {
   // another tenant's row is reported absent rather than forbidden.
   NOT_FOUND: 404,
   STAFF_NOT_FOUND: 404,
+  STAFF_INVITATION_NOT_FOUND: 404,
+  // Caducada, usada, anulada o inventada: las cuatro responden igual, para no
+  // decirle a quien prueba tokens cuál es.
+  INVITATION_INVALID: 404,
   BILL_NOT_FOUND: 404,
   BILL_ITEM_NOT_FOUND: 404,
   PAYMENT_NOT_FOUND: 404,
@@ -116,6 +120,9 @@ const CODES = {
   // 409 -- valid request, incompatible with current state.
   OPEN_BILL_EXISTS: 409,
   STAFF_EMAIL_TAKEN: 409,
+  // La dirección ya tiene cuenta en Splite: el correo identifica a una sola
+  // persona en todo el sistema, no una por restaurante.
+  INVITATION_EMAIL_IN_USE: 409,
   PASSWORD_UNCHANGED: 409,
   STAFF_LAST_OWNER: 409,
   // Enrolment state, all of them "the account is not in the state this asks

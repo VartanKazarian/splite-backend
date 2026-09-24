@@ -375,6 +375,8 @@
                   "STAFF_SELF_FORBIDDEN",
                   "NOT_FOUND",
                   "STAFF_NOT_FOUND",
+                  "STAFF_INVITATION_NOT_FOUND",
+                  "INVITATION_INVALID",
                   "BILL_NOT_FOUND",
                   "BILL_ITEM_NOT_FOUND",
                   "PAYMENT_NOT_FOUND",
@@ -394,6 +396,7 @@
                   "WEBHOOK_PROVIDER_UNKNOWN",
                   "OPEN_BILL_EXISTS",
                   "STAFF_EMAIL_TAKEN",
+                  "INVITATION_EMAIL_IN_USE",
                   "PASSWORD_UNCHANGED",
                   "STAFF_LAST_OWNER",
                   "MFA_ALREADY_ENABLED",
@@ -3900,6 +3903,44 @@
           }
         }
       },
+      "StaffInvitation": {
+        "type": "object",
+        "description": "An open invitation to join the team. Never carries the token or its hash: the link is returned once, when the invitation is created, and cannot be read again.",
+        "properties": {
+          "id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "email": {
+            "type": "string",
+            "format": "email"
+          },
+          "role": {
+            "type": "string",
+            "enum": [
+              "OWNER",
+              "MANAGER",
+              "CASHIER",
+              "WAITER"
+            ]
+          },
+          "invitedBy": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "uuid"
+          },
+          "createdAt": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "expiresAt": {
+            "type": "string",
+            "format": "date-time"
+          }
+        }
+      },
       "StaffMember": {
         "type": "object",
         "description": "Somebody who works at the signed-in restaurant. The same field names as `user` in a login response, so a client keeps one type. There is no field that could carry a password hash, and the service never selects the column.",
@@ -5934,6 +5975,154 @@
           },
           "503": {
             "$ref": "#/components/responses/ServiceUnavailable"
+          }
+        }
+      }
+    },
+    "/api/v1/auth/invitations/preview": {
+      "post": {
+        "tags": [
+          "Auth"
+        ],
+        "summary": "What an invitation link is for, before accepting it",
+        "operationId": "previewStaffInvitation",
+        "description": "Unauthenticated — whoever opens the link has no account yet — and rate limited with the rest\nof /auth by address. The token travels in the body, never in the path: a path ends up in access\nlogs, and this token is a key.\n\nExpired, used, revoked and invented tokens all answer `INVITATION_INVALID`, so a caller trying\ntokens learns nothing about which it hit.",
+        "security": [],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "required": [
+                  "token"
+                ],
+                "properties": {
+                  "token": {
+                    "type": "string",
+                    "pattern": "^[A-Za-z0-9_-]{43}$",
+                    "description": "From the fragment of the invitation link."
+                  }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "The restaurant, the address and the role.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "email": {
+                      "type": "string",
+                      "format": "email"
+                    },
+                    "role": {
+                      "type": "string",
+                      "enum": [
+                        "OWNER",
+                        "MANAGER",
+                        "CASHIER",
+                        "WAITER"
+                      ]
+                    },
+                    "restaurantName": {
+                      "type": "string"
+                    },
+                    "expiresAt": {
+                      "type": "string",
+                      "format": "date-time"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          },
+          "404": {
+            "$ref": "#/components/responses/NotFound"
+          },
+          "429": {
+            "$ref": "#/components/responses/TooManyRequests"
+          },
+          "500": {
+            "$ref": "#/components/responses/ServerError"
+          }
+        }
+      }
+    },
+    "/api/v1/auth/invitations/accept": {
+      "post": {
+        "tags": [
+          "Auth"
+        ],
+        "summary": "Accept an invitation: set your own password and sign in",
+        "operationId": "acceptStaffInvitation",
+        "description": "Creates the account with the password the invited person chooses — nobody else ever knows it —\nand returns a session exactly like `POST /api/v1/auth/login`. Single use: the invitation is\nlocked while it is accepted, so two clicks on the same link cannot create two accounts.\n\nAn address that already has a Splite account answers `INVITATION_EMAIL_IN_USE` and creates\nnothing: an email identifies one person across the whole system, not one per restaurant.",
+        "security": [],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "required": [
+                  "token",
+                  "password"
+                ],
+                "properties": {
+                  "token": {
+                    "type": "string",
+                    "pattern": "^[A-Za-z0-9_-]{43}$",
+                    "description": "From the fragment of the invitation link."
+                  },
+                  "password": {
+                    "type": "string",
+                    "minLength": 12,
+                    "maxLength": 128
+                  },
+                  "displayName": {
+                    "type": [
+                      "string",
+                      "null"
+                    ],
+                    "maxLength": 80
+                  }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "The new session.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Session"
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          },
+          "404": {
+            "$ref": "#/components/responses/NotFound"
+          },
+          "409": {
+            "$ref": "#/components/responses/Conflict"
+          },
+          "429": {
+            "$ref": "#/components/responses/TooManyRequests"
+          },
+          "500": {
+            "$ref": "#/components/responses/ServerError"
           }
         }
       }
@@ -10062,6 +10251,57 @@
         }
       }
     },
+    "/api/v1/fiscal/invoices/export": {
+      "get": {
+        "tags": [
+          "Fiscal"
+        ],
+        "summary": "A month's fiscal documents as CSV, for the accountant",
+        "operationId": "exportFiscalInvoices",
+        "description": "One row per document issued in that month **in Caracas time**, with the base and VAT split\nby rate (one pair of columns per taxable rate that appears), exempt base, service and total.\nCredit notes carry negative amounts so a column sums to the month's net sales.\n\nSemicolon-separated, comma decimals, UTF-8 with BOM — what a Spanish-locale spreadsheet opens\ncorrectly. Text cells that a spreadsheet would read as a formula are neutralised with a\nleading apostrophe (customer names are typed by diners).\n\nA summary for the accountant, **not** the official libro de ventas. OWNER and MANAGER only:\nit lists every customer's tax id at once. Never gated by plan (it is a read).",
+        "security": [
+          {
+            "staffAuth": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "month",
+            "in": "query",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "pattern": "^20\\d{2}-(0[1-9]|1[0-2])$",
+              "example": "2026-09"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The CSV.",
+            "content": {
+              "text/csv": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "429": {
+            "$ref": "#/components/responses/TooManyRequests"
+          },
+          "500": {
+            "$ref": "#/components/responses/ServerError"
+          }
+        }
+      }
+    },
     "/api/v1/fiscal/invoices/{id}/pdf": {
       "get": {
         "tags": [
@@ -11586,6 +11826,190 @@
           },
           "409": {
             "$ref": "#/components/responses/Conflict"
+          },
+          "429": {
+            "$ref": "#/components/responses/TooManyRequests"
+          },
+          "500": {
+            "$ref": "#/components/responses/ServerError"
+          }
+        }
+      }
+    },
+    "/api/v1/account/invitations": {
+      "get": {
+        "tags": [
+          "Account"
+        ],
+        "summary": "Open invitations to the team",
+        "operationId": "listStaffInvitations",
+        "description": "OWNER and MANAGER only. Open means not accepted, not revoked and not expired.",
+        "security": [
+          {
+            "staffAuth": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Open invitations, newest first.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "data": {
+                      "type": "array",
+                      "items": {
+                        "$ref": "#/components/schemas/StaffInvitation"
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "403": {
+            "$ref": "#/components/responses/Forbidden"
+          },
+          "429": {
+            "$ref": "#/components/responses/TooManyRequests"
+          },
+          "500": {
+            "$ref": "#/components/responses/ServerError"
+          }
+        }
+      },
+      "post": {
+        "tags": [
+          "Account"
+        ],
+        "summary": "Invite somebody to the team",
+        "operationId": "createStaffInvitation",
+        "description": "OWNER and MANAGER only, with the same rank rule as creating staff: a manager may only invite\nto a role below their own.\n\nReturns the link **once**. Only its SHA-256 is stored, so it cannot be shown again; to send it\nagain, create a new invitation for the same address, which revokes the previous one. The token\nrides in the link's fragment (`#...`), which browsers never send to a server.\n\n`emailed` says whether it also went out by email. It is false when mail is not configured\n(the development `log` transport would write the link into production logs), and the link is\nthen shared by the person inviting — typically over WhatsApp. Valid for 7 days.",
+        "security": [
+          {
+            "staffAuth": []
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "required": [
+                  "email",
+                  "role"
+                ],
+                "properties": {
+                  "email": {
+                    "type": "string",
+                    "format": "email",
+                    "maxLength": 254
+                  },
+                  "role": {
+                    "type": "string",
+                    "enum": [
+                      "OWNER",
+                      "MANAGER",
+                      "CASHIER",
+                      "WAITER"
+                    ]
+                  }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "Created.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "invitation": {
+                      "$ref": "#/components/schemas/StaffInvitation"
+                    },
+                    "link": {
+                      "type": "string",
+                      "format": "uri"
+                    },
+                    "emailed": {
+                      "type": "boolean"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "403": {
+            "$ref": "#/components/responses/Forbidden"
+          },
+          "409": {
+            "$ref": "#/components/responses/Conflict"
+          },
+          "429": {
+            "$ref": "#/components/responses/TooManyRequests"
+          },
+          "500": {
+            "$ref": "#/components/responses/ServerError"
+          }
+        }
+      }
+    },
+    "/api/v1/account/invitations/{invitationId}": {
+      "delete": {
+        "tags": [
+          "Account"
+        ],
+        "summary": "Revoke an open invitation",
+        "operationId": "revokeStaffInvitation",
+        "description": "OWNER and MANAGER only, and only for an invitation to a role they could have granted.",
+        "security": [
+          {
+            "staffAuth": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "invitationId",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "Revoked."
+          },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "403": {
+            "$ref": "#/components/responses/Forbidden"
+          },
+          "404": {
+            "$ref": "#/components/responses/NotFound"
           },
           "429": {
             "$ref": "#/components/responses/TooManyRequests"
