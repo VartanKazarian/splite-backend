@@ -246,7 +246,11 @@ function staffPaymentClaim(row) {
     bankOrigin,
     bankOriginName: banks.lookup(bankOrigin)?.name ?? null,
     idOrigin: metadata.idOrigin ?? null,
-    declaredAt: metadata.declaredAt ?? null
+    declaredAt: metadata.declaredAt ?? null,
+    // Sólo los trae la cola (`listClaims`); confirmar o rechazar devuelve la
+    // fila sin ellos, y entonces son null en vez de faltar.
+    tableName: row.table_name ?? null,
+    payerName: row.payer_name ?? null
   };
 }
 
