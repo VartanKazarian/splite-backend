@@ -3989,6 +3989,20 @@
                   "null"
                 ],
                 "format": "date-time"
+              },
+              "tableName": {
+                "type": [
+                  "string",
+                  "null"
+                ],
+                "description": "The table the bill is on. Filled in the queue (`GET /payments/claims`); null elsewhere."
+              },
+              "payerName": {
+                "type": [
+                  "string",
+                  "null"
+                ],
+                "description": "The payer's name from their split share or their invoice request, or null when they gave none. Filled in the queue only."
               }
             }
           }

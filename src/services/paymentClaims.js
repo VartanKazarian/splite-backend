@@ -142,15 +142,33 @@ async function declareClaim({
 }
 
 /** Claims awaiting a human, newest last so the queue reads top to bottom. */
+/*
+ * Con la mesa y el nombre de quien paga al lado.
+ *
+ * Con varios avisos en cola, el importe y la referencia no bastan para saber
+ * de qué mesa es cada uno: dos comensales de mesas distintas pagan a menudo lo
+ * mismo. El nombre sale de la parte del reparto si pagó una parte con nombre, o
+ * de la factura que pidió; si no dio ninguno, queda null y no se inventa.
+ */
+const CLAIM_COLUMNS = PAYMENT_COLUMNS.split(',').map(c => `p.${c.trim()}`).join(', ');
+
 async function listClaims({ restaurantId, billId = null, status = 'PENDING', limit = 50 }) {
   const { rows } = await db.query(
-    `SELECT ${PAYMENT_COLUMNS}
-       FROM payments
-      WHERE restaurant_id = $1
-        AND payment_method = 'PAGO_MOVIL'
-        AND ($2::uuid IS NULL OR bill_id = $2)
-        AND ($3::text IS NULL OR status = $3)
-      ORDER BY created_at ASC
+    `SELECT ${CLAIM_COLUMNS},
+            t.name AS table_name,
+            COALESCE(sp.name, fi.customer_name) AS payer_name
+       FROM payments p
+       JOIN bills b ON b.id = p.bill_id AND b.restaurant_id = p.restaurant_id
+       LEFT JOIN tables t ON t.id = b.table_id AND t.restaurant_id = p.restaurant_id
+       LEFT JOIN bill_split_participants sp
+              ON sp.id = p.split_participant_id AND sp.restaurant_id = p.restaurant_id
+       LEFT JOIN fiscal_invoice_intents fi
+              ON fi.payment_id = p.id AND fi.restaurant_id = p.restaurant_id
+      WHERE p.restaurant_id = $1
+        AND p.payment_method = 'PAGO_MOVIL'
+        AND ($2::uuid IS NULL OR p.bill_id = $2)
+        AND ($3::text IS NULL OR p.status = $3)
+      ORDER BY p.created_at ASC
       LIMIT $4`,
     [restaurantId, billId, status, limit]
   );

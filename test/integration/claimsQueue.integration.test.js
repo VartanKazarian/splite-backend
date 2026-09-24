@@ -79,6 +79,43 @@ describe('the claims queue, made visible', { skip }, () => {
     assert.equal(guestView.phoneOrigin, undefined);
   });
 
+  it('la cola dice de qué mesa es cada aviso y, si lo dio, quién paga', async () => {
+    /*
+     * Con diecisiete avisos en espera, importe y referencia no bastan: dos
+     * mesas pagan a menudo lo mismo. Lo que el verificador busca en el banco
+     * es además el total con propina, que es lo que llegó en la transferencia.
+     */
+    const table = await fixtures.createTable(restaurant.id, { name: 'Mesa 12' });
+    const bill = await fixtures.createBill({
+      restaurantId: restaurant.id, tableId: table.id, totalDue: 20000, totalDueVes: 20000
+    });
+    const named = await claims.declareClaim({
+      restaurantId: restaurant.id, billId: bill.id, amountVes: '5000', tipVes: 500,
+      reference: String(Date.now() + seq++).slice(-12),
+      payer: { type: 'GUEST', id: null },
+      invoice: { email: 'ana@example.com', name: 'Ana Pérez', taxId: null }
+    });
+    const anonymous = await declare(restaurant.id, bill, '3000');
+
+    const queue = (await claims.listClaims({ restaurantId: restaurant.id }))
+      .map(dto.staffPaymentClaim);
+    const byId = Object.fromEntries(queue.map(c => [c.id, c]));
+
+    assert.equal(byId[named.id].tableName, 'Mesa 12');
+    assert.equal(byId[named.id].payerName, 'Ana Pérez');
+    assert.equal(byId[named.id].totalPaidVes, '5500', 'lo que llegó al banco: parte + propina');
+    assert.equal(byId[anonymous.id].tableName, 'Mesa 12');
+    assert.equal(byId[anonymous.id].payerName, null, 'sin nombre no se inventa uno');
+  });
+
+  it('la cola de un restaurante no trae avisos de otro por la unión con mesas', async () => {
+    await declare(restaurant.id, await billFor(restaurant.id));
+    await declare(other.id, await billFor(other.id));
+    const mine = await claims.listClaims({ restaurantId: restaurant.id });
+    assert.equal(mine.length, 1);
+    assert.ok(mine.every(r => r.restaurant_id === restaurant.id));
+  });
+
   it('an empty queue reports zero rather than nothing', async () => {
     const summary = await claims.claimsSummary({ restaurantId: restaurant.id });
     assert.equal(summary.pending, 0);

@@ -1681,7 +1681,9 @@ Object.assign(schemas, {
           bankOrigin: { type: ['string', 'null'], description: 'Four-digit bank code. Claims declared before this field was a code may carry free text instead.' },
           bankOriginName: { type: ['string', 'null'], description: 'Resolved from `bankOrigin`, or null when it is not a code we know.' },
           idOrigin: { type: ['string', 'null'], description: "The payer's cédula or RIF, as the receiving bank prints it beside the movement." },
-          declaredAt: { type: ['string', 'null'], format: 'date-time' }
+          declaredAt: { type: ['string', 'null'], format: 'date-time' },
+          tableName: { type: ['string', 'null'], description: 'The table the bill is on. Filled in the queue (`GET /payments/claims`); null elsewhere.' },
+          payerName: { type: ['string', 'null'], description: "The payer's name from their split share or their invoice request, or null when they gave none. Filled in the queue only." }
         }
       }
     ]
