@@ -1,19 +1,46 @@
 const express = require('express');
 const {
   validateBody, loginSchema, refreshSchema, mfaChallengeSchema, mfaCodeSchema, changePasswordSchema,
-  displayNameSchema
+  displayNameSchema, invitationTokenSchema, acceptInvitationSchema
 } = require('../middleware/schemas');
 const {
   login, completeMfaLogin, refresh, revokeSession, currentUser, changeOwnPassword,
   setOwnDisplayName
 } = require('../services/auth');
 const mfa = require('../services/mfa');
+const invitations = require('../services/staffInvitations');
 const { authenticateToken } = require('../middleware/auth');
 const { verifyRefreshToken } = require('../utils/tokens');
 
 const router = express.Router();
 
 const meta = req => ({ ip: req.ip, userAgent: req.get('user-agent'), requestId: req.id });
+
+/**
+ * Una invitación al equipo, vista desde el enlace: a qué restaurante y con qué
+ * rol, antes de pedir contraseña. Sin sesión -- quien la abre todavía no tiene
+ * cuenta --, con el limitador de /auth por dirección. El token va en el cuerpo:
+ * en la ruta acabaría en los registros de acceso.
+ */
+router.post('/invitations/preview', validateBody(invitationTokenSchema), async (req, res, next) => {
+  try {
+    res.set('Cache-Control', 'no-store');
+    res.json(await invitations.previewInvitation(req.body.token));
+  } catch (err) { next(err); }
+});
+
+/** Aceptar: crea la cuenta con la contraseña de la persona y devuelve su sesión, como /login. */
+router.post('/invitations/accept', validateBody(acceptInvitationSchema), async (req, res, next) => {
+  try {
+    res.set('Cache-Control', 'no-store');
+    res.status(201).json(await invitations.acceptInvitation({
+      token: req.body.token,
+      password: req.body.password,
+      displayName: req.body.displayName ?? null,
+      meta: meta(req)
+    }));
+  } catch (err) { next(err); }
+});
 
 router.post('/login', validateBody(loginSchema), async (req, res, next) => {
   try {

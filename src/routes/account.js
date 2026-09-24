@@ -4,9 +4,11 @@ const { authenticateToken, requireRole } = require('../middleware/auth');
 const {
   validateBody, validateParams, payoutSchema, paymentProviderParamSchema,
   restaurantProfileSchema, fiscalSeriesSchema, fiscalRifSchema,
-  createStaffSchema, updateStaffSchema, resetStaffPasswordSchema, userIdParamSchema
+  createStaffSchema, updateStaffSchema, resetStaffPasswordSchema, userIdParamSchema,
+  createInvitationSchema, invitationIdParamSchema
 } = require('../middleware/schemas');
 const staff = require('../services/staff');
+const invitations = require('../services/staffInvitations');
 const providerConfigs = require('../payments/providerConfigs');
 const { logAudit, auditContext } = require('../services/audit');
 const banks = require('../payments/banks');
@@ -470,6 +472,52 @@ router.post(
         meta: auditContext(req)
       });
       res.json({ sessionsRevoked });
+    } catch (err) { next(err); }
+  }
+);
+
+/**
+ * Invitaciones al equipo. Ver `services/staffInvitations.js`.
+ *
+ * El enlace sale en la respuesta de crear, y sólo ahí: es lo que quien invita
+ * comparte por WhatsApp si el correo no está configurado o no llega. No se
+ * puede volver a pedir; se reenvía, y el anterior queda anulado.
+ */
+router.get('/invitations', managesStaff, async (req, res, next) => {
+  try {
+    const rows = await invitations.listInvitations({ restaurantId: req.user.restaurantId });
+    res.json({ data: rows.map(dto.staffInvitation) });
+  } catch (err) { next(err); }
+});
+
+router.post('/invitations', managesStaff, validateBody(createInvitationSchema), async (req, res, next) => {
+  try {
+    const { invitation, link, emailed } = await invitations.createInvitation({
+      restaurantId: req.user.restaurantId,
+      actor: { id: req.user.sub, role: req.user.role },
+      email: req.body.email,
+      role: req.body.role,
+      meta: auditContext(req)
+    });
+    // Que ningún intermediario guarde una respuesta con una llave dentro.
+    res.set('Cache-Control', 'no-store');
+    res.status(201).json({ invitation: dto.staffInvitation(invitation), link, emailed });
+  } catch (err) { next(err); }
+});
+
+router.delete(
+  '/invitations/:invitationId',
+  managesStaff,
+  validateParams(invitationIdParamSchema),
+  async (req, res, next) => {
+    try {
+      await invitations.revokeInvitation({
+        restaurantId: req.user.restaurantId,
+        actor: { id: req.user.sub, role: req.user.role },
+        invitationId: req.params.invitationId,
+        meta: auditContext(req)
+      });
+      res.status(204).end();
     } catch (err) { next(err); }
   }
 );

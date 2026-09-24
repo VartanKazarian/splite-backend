@@ -75,6 +75,13 @@ const REDACT_PATHS = [
   '*.accessToken',
   '*.refreshToken',
   '*.guestToken',
+  // Una invitación al equipo es una llave de entrada: el token viaja en el
+  // cuerpo de /auth/invitations/* y el enlace completo sale al crearla.
+  '*.token',
+  'body.token',
+  'req.body.token',
+  'link',
+  '*.link',
   // The diner's single-use C2P clave, and the identity documents that travel
   // beside it. The Mercantil adapter has its own redact() over the one call
   // site that deliberately logs a request body, and this is the net under it:

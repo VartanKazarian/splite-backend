@@ -901,6 +901,21 @@ function guestOrder(row) {
   };
 }
 
+/**
+ * Una invitación abierta. Nunca lleva el token ni su hash: el enlace se da una
+ * vez, al crearla, y no se puede volver a leer.
+ */
+function staffInvitation(row) {
+  return {
+    id: row.id,
+    email: row.email,
+    role: row.role,
+    invitedBy: row.invited_by ?? null,
+    createdAt: isoTimestamp(row.created_at),
+    expiresAt: isoTimestamp(row.expires_at)
+  };
+}
+
 function staffMember(row) {
   return {
     id: row.id,
@@ -921,5 +936,5 @@ module.exports = {
   isoDate, isoTimestamp, staffMember, guestOrder, billAdjustment,
   bill, billItem, billWithItems, guestBill,
   fiscalInvoice, fiscalInvoiceLine, fiscalInvoiceTax, fiscalRequest,
-  table, floorTable, product, publicProduct, menuCategory, menuDocument, brandingImage, qrContext, menuSettings, menuCharges, account, fiscalSeries, payout, guestPayee, paymentProviderConfig, paymentClaim, staffPaymentClaim, c2pCharge, billSplit
+  table, floorTable, product, publicProduct, menuCategory, menuDocument, brandingImage, qrContext, menuSettings, menuCharges, account, fiscalSeries, payout, guestPayee, paymentProviderConfig, paymentClaim, staffPaymentClaim, staffInvitation, c2pCharge, billSplit
 };

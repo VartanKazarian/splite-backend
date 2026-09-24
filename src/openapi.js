@@ -1651,6 +1651,19 @@ Object.assign(schemas, {
     }
   },
 
+  StaffInvitation: {
+    type: 'object',
+    description: 'An open invitation to join the team. Never carries the token or its hash: the link is returned once, when the invitation is created, and cannot be read again.',
+    properties: {
+      id: { type: 'string', format: 'uuid' },
+      email: { type: 'string', format: 'email' },
+      role: { type: 'string', enum: ['OWNER', 'MANAGER', 'CASHIER', 'WAITER'] },
+      invitedBy: { type: ['string', 'null'], format: 'uuid' },
+      createdAt: { type: 'string', format: 'date-time' },
+      expiresAt: { type: 'string', format: 'date-time' }
+    }
+  },
+
   StaffMember: {
     type: 'object',
     description:
@@ -2659,6 +2672,90 @@ const paths = {
         429: response('TooManyRequests'),
         500: response('ServerError'),
         503: response('ServiceUnavailable')
+      }
+    }
+  },
+
+  '/api/v1/auth/invitations/preview': {
+    post: {
+      tags: ['Auth'],
+      summary: 'What an invitation link is for, before accepting it',
+      operationId: 'previewStaffInvitation',
+      description: [
+        'Unauthenticated — whoever opens the link has no account yet — and rate limited with the rest',
+        'of /auth by address. The token travels in the body, never in the path: a path ends up in access',
+        'logs, and this token is a key.',
+        '',
+        'Expired, used, revoked and invented tokens all answer `INVITATION_INVALID`, so a caller trying',
+        'tokens learns nothing about which it hit.'
+      ].join('\n'),
+      security: [],
+      requestBody: {
+        required: true,
+        content: { 'application/json': { schema: { type: 'object', required: ['token'], properties: { token: { type: 'string', pattern: '^[A-Za-z0-9_-]{43}$', description: 'From the fragment of the invitation link.' } } } } }
+      },
+      responses: {
+        200: {
+          description: 'The restaurant, the address and the role.',
+          content: {
+            'application/json': {
+              schema: {
+                type: 'object',
+                properties: {
+                  email: { type: 'string', format: 'email' },
+                  role: { type: 'string', enum: ['OWNER', 'MANAGER', 'CASHIER', 'WAITER'] },
+                  restaurantName: { type: 'string' },
+                  expiresAt: { type: 'string', format: 'date-time' }
+                }
+              }
+            }
+          }
+        },
+        400: response('BadRequest'),
+        404: response('NotFound'),
+        429: response('TooManyRequests'),
+        500: response('ServerError')
+      }
+    }
+  },
+
+  '/api/v1/auth/invitations/accept': {
+    post: {
+      tags: ['Auth'],
+      summary: 'Accept an invitation: set your own password and sign in',
+      operationId: 'acceptStaffInvitation',
+      description: [
+        'Creates the account with the password the invited person chooses — nobody else ever knows it —',
+        'and returns a session exactly like `POST /api/v1/auth/login`. Single use: the invitation is',
+        'locked while it is accepted, so two clicks on the same link cannot create two accounts.',
+        '',
+        'An address that already has a Splite account answers `INVITATION_EMAIL_IN_USE` and creates',
+        'nothing: an email identifies one person across the whole system, not one per restaurant.'
+      ].join('\n'),
+      security: [],
+      requestBody: {
+        required: true,
+        content: {
+          'application/json': {
+            schema: {
+              type: 'object',
+              required: ['token', 'password'],
+              properties: {
+                token: { type: 'string', pattern: '^[A-Za-z0-9_-]{43}$', description: 'From the fragment of the invitation link.' },
+                password: { type: 'string', minLength: 12, maxLength: 128 },
+                displayName: { type: ['string', 'null'], maxLength: 80 }
+              }
+            }
+          }
+        }
+      },
+      responses: {
+        201: { description: 'The new session.', content: { 'application/json': { schema: ref('Session') } } },
+        400: response('BadRequest'),
+        404: response('NotFound'),
+        409: response('Conflict'),
+        429: response('TooManyRequests'),
+        500: response('ServerError')
       }
     }
   },
@@ -5665,6 +5762,99 @@ const paths = {
         },
         403: response('Forbidden'),
         409: response('Conflict'),
+        ...commonErrors
+      }
+    }
+  },
+
+  '/api/v1/account/invitations': {
+    get: {
+      tags: ['Account'],
+      summary: 'Open invitations to the team',
+      operationId: 'listStaffInvitations',
+      description: 'OWNER and MANAGER only. Open means not accepted, not revoked and not expired.',
+      security: staff,
+      responses: {
+        200: {
+          description: 'Open invitations, newest first.',
+          content: {
+            'application/json': {
+              schema: { type: 'object', properties: { data: { type: 'array', items: ref('StaffInvitation') } } }
+            }
+          }
+        },
+        403: response('Forbidden'),
+        ...commonErrors
+      }
+    },
+
+    post: {
+      tags: ['Account'],
+      summary: 'Invite somebody to the team',
+      operationId: 'createStaffInvitation',
+      description: [
+        'OWNER and MANAGER only, with the same rank rule as creating staff: a manager may only invite',
+        'to a role below their own.',
+        '',
+        'Returns the link **once**. Only its SHA-256 is stored, so it cannot be shown again; to send it',
+        'again, create a new invitation for the same address, which revokes the previous one. The token',
+        'rides in the link\'s fragment (`#...`), which browsers never send to a server.',
+        '',
+        '`emailed` says whether it also went out by email. It is false when mail is not configured',
+        '(the development `log` transport would write the link into production logs), and the link is',
+        'then shared by the person inviting — typically over WhatsApp. Valid for 7 days.'
+      ].join('\n'),
+      security: staff,
+      requestBody: {
+        required: true,
+        content: {
+          'application/json': {
+            schema: {
+              type: 'object',
+              required: ['email', 'role'],
+              properties: {
+                email: { type: 'string', format: 'email', maxLength: 254 },
+                role: { type: 'string', enum: ['OWNER', 'MANAGER', 'CASHIER', 'WAITER'] }
+              }
+            }
+          }
+        }
+      },
+      responses: {
+        201: {
+          description: 'Created.',
+          content: {
+            'application/json': {
+              schema: {
+                type: 'object',
+                properties: {
+                  invitation: ref('StaffInvitation'),
+                  link: { type: 'string', format: 'uri' },
+                  emailed: { type: 'boolean' }
+                }
+              }
+            }
+          }
+        },
+        403: response('Forbidden'),
+        409: response('Conflict'),
+        ...commonErrors
+      }
+    }
+  },
+
+  '/api/v1/account/invitations/{invitationId}': {
+    delete: {
+      tags: ['Account'],
+      summary: 'Revoke an open invitation',
+      operationId: 'revokeStaffInvitation',
+      description: 'OWNER and MANAGER only, and only for an invitation to a role they could have granted.',
+      security: staff,
+      parameters: [{ name: 'invitationId', in: 'path', required: true, schema: { type: 'string', format: 'uuid' } }],
+      responses: {
+        204: { description: 'Revoked.' },
+        403: response('Forbidden'),
+        404: response('NotFound'),
         ...commonErrors
       }
     }
