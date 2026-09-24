@@ -6,10 +6,11 @@ const { ApiError } = require('../errors');
 const { authenticateToken, requireRole } = require('../middleware/auth');
 const { requirePlan } = require('../middleware/plan');
 const { validateQuery, validateParams } = require('../middleware/schemas');
-const { fiscalRequestQuerySchema, fiscalIdParamSchema } = require('../middleware/schemas');
+const { fiscalRequestQuerySchema, fiscalIdParamSchema, fiscalExportQuerySchema } = require('../middleware/schemas');
 const invoicing = require('../services/fiscalInvoicing');
 const fiscalMail = require('../services/fiscalMail');
 const fiscalPdf = require('../services/fiscalPdf');
+const fiscalExport = require('../services/fiscalExport');
 
 /**
  * Las facturas fiscales, para el restaurante.
@@ -53,6 +54,32 @@ router.get('/invoices', validateQuery(fiscalRequestQuerySchema), async (req, res
     res.json({ data: rows.map(dto.fiscalInvoice), limit: req.query.limit, offset: req.query.offset });
   } catch (err) { next(err); }
 });
+
+/**
+ * Las facturas de un mes, en CSV, para el contador.
+ *
+ * Antes de `/invoices/:id`, que si no leería «export» como un id. Sin puerta de
+ * plan, como toda lectura; pero sólo dueño y encargado: es la lista entera de
+ * clientes con su RIF o cédula de golpe, que no es lo mismo que abrir una
+ * factura suelta. Ver `services/fiscalExport.js` para lo que el fichero es y
+ * lo que no.
+ */
+router.get(
+  '/invoices/export',
+  requireRole('OWNER', 'MANAGER'),
+  validateQuery(fiscalExportQuerySchema),
+  async (req, res, next) => {
+    try {
+      const docs = await fiscalExport.load({ restaurantId: req.user.restaurantId, month: req.query.month });
+      res.set({
+        'Content-Type': 'text/csv; charset=utf-8',
+        'Content-Disposition': `attachment; filename="${fiscalExport.filenameFor(req.query.month)}"`,
+        'Cache-Control': 'private, no-store'
+      });
+      res.send(fiscalExport.buildCsv(docs));
+    } catch (err) { next(err); }
+  }
+);
 
 /**
  * Una factura con sus líneas y su desglose por alícuota.

@@ -572,6 +572,11 @@ const fiscalRequestQuerySchema = Joi.object({
 
 const fiscalIdParamSchema = Joi.object({ id: uuid.required() });
 
+/** El mes de la exportación, «2026-09». El año se acota para que no se pida el año 3000. */
+const fiscalExportQuerySchema = Joi.object({
+  month: Joi.string().pattern(/^20\d{2}-(0[1-9]|1[0-2])$/).required()
+});
+
 /** Un pago que el comensal declaró y del que conoce el identificador. */
 const guestPaymentParamSchema = Joi.object({ id: uuid.required() });
 
@@ -1002,6 +1007,7 @@ module.exports = {
   requestInvoiceSchema,
   guestContactSchema,
   fiscalRequestQuerySchema,
+  fiscalExportQuerySchema,
   fiscalIdParamSchema,
   guestPaymentParamSchema,
   paymentProviderParamSchema,

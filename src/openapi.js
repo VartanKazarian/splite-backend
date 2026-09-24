@@ -4730,6 +4730,35 @@ const paths = {
     }
   },
 
+  '/api/v1/fiscal/invoices/export': {
+    get: {
+      tags: ['Fiscal'],
+      summary: "A month's fiscal documents as CSV, for the accountant",
+      operationId: 'exportFiscalInvoices',
+      description: [
+        'One row per document issued in that month **in Caracas time**, with the base and VAT split',
+        'by rate (one pair of columns per taxable rate that appears), exempt base, service and total.',
+        'Credit notes carry negative amounts so a column sums to the month\'s net sales.',
+        '',
+        'Semicolon-separated, comma decimals, UTF-8 with BOM — what a Spanish-locale spreadsheet opens',
+        'correctly. Text cells that a spreadsheet would read as a formula are neutralised with a',
+        'leading apostrophe (customer names are typed by diners).',
+        '',
+        'A summary for the accountant, **not** the official libro de ventas. OWNER and MANAGER only:',
+        'it lists every customer\'s tax id at once. Never gated by plan (it is a read).'
+      ].join('\n'),
+      security: staff,
+      parameters: [{
+        name: 'month', in: 'query', required: true,
+        schema: { type: 'string', pattern: '^20\\d{2}-(0[1-9]|1[0-2])$', example: '2026-09' }
+      }],
+      responses: {
+        200: { description: 'The CSV.', content: { 'text/csv': { schema: { type: 'string' } } } },
+        ...commonErrors
+      }
+    }
+  },
+
   '/api/v1/fiscal/invoices/{id}/pdf': {
     get: {
       tags: ['Fiscal'],
