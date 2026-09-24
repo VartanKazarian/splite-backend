@@ -1977,6 +1977,7 @@ Object.assign(schemas, {
         }
       },
       issuedAt: { type: 'string', format: 'date-time' },
+      tableName: { type: ['string', 'null'], description: 'The table the bill was on. Only in the list (`GET /fiscal/invoices`); null when the table was deleted.' },
       lines: { type: 'array', items: ref('FiscalInvoiceLine'), description: 'Only on a single-invoice read.' },
       taxes: { type: 'array', items: ref('FiscalInvoiceTax'), description: 'Only on a single-invoice read.' },
       delivery: {
