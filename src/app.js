@@ -31,6 +31,7 @@ const fiscalRoutes = require('./routes/fiscal');
 const webhookRoutes = require('./routes/webhooks');
 const bankConnectionRoutes = require('./routes/bankConnections');
 const bankInboundRoutes = require('./routes/bankInbound');
+const adminRoutes = require('./routes/admin');
 
 // Una vez, al arrancar: un adaptador incompleto tiene que impedir el arranque
 // y no fallar delante de un comensal que espera su factura.
@@ -212,6 +213,17 @@ app.use('/api/v1/webhooks', webhookRoutes);
 // quien la llama es una máquina, sin sesión, y la firma es su credencial.
 app.use('/api/v1/bank-connections', bankConnectionRoutes);
 app.use('/api/v1/bank-inbound', rateLimit({ windowSeconds: 60, max: 120, keyPrefix: 'bank-inbound' }), bankInboundRoutes);
+
+// La consola de Splite. Su login pasa por el mismo limitador estricto que el
+// del personal; el resto, por el general. Ninguna sesión de restaurante vale
+// aquí (ver middleware/operatorAuth.js).
+app.use('/api/v1/admin/auth', rateLimit({
+  windowSeconds: 60,
+  max: config.rateLimit.authMax,
+  keyPrefix: 'admin-auth',
+  failClosed: config.rateLimit.failClosedOnAuth
+}));
+app.use('/api/v1/admin', adminRoutes);
 
 // Mounted only when self-service registration is switched on. The route is the
 // one public write surface that creates tenants and sends mail, so its absence

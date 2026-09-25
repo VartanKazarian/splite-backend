@@ -108,7 +108,8 @@ function diff(from, to) {
  * una, así que dejarla puesta le enseñaría «tu prueba termina el día tal» a un
  * restaurante que acaba de pagar.
  */
-async function change({ restaurantId, tier, trialDays = null, note = null, force = false }) {
+async function change({ restaurantId, tier, trialDays = null, note = null, force = false,
+  operator = null, meta = {} }) {
   if (!entitlements.TIERS.includes(tier)) {
     throw new ApiError('VALIDATION_FAILED', `Unknown tier ${tier}`,
       { allowed: entitlements.TIERS });
@@ -172,9 +173,10 @@ async function change({ restaurantId, tier, trialDays = null, note = null, force
       [restaurantId, JSON.stringify({
         from: before.plan_tier,
         to: tier,
-        // El actor es una persona con acceso a la consola, y no hay forma de
-        // saber cuál. Se guarda lo que sí se sabe, en vez de inventar un id.
-        via: 'cli',
+        // Desde la línea de comandos no hay forma de saber quién fue; desde la
+        // consola sí, y va además en `operator_audit` con su id.
+        via: operator ? 'console' : 'cli',
+        operatorEmail: operator ? operator.email : undefined,
         note,
         forced: breaking.length > 0,
         breaking: breaking.length ? breaking : undefined,
@@ -182,6 +184,17 @@ async function change({ restaurantId, tier, trialDays = null, note = null, force
         lost: changes.lost
       })]
     );
+
+    if (operator) {
+      await client.query(
+        `INSERT INTO operator_audit
+           (operator_id, action, restaurant_id, resource_type, resource_id, details, ip, user_agent, request_id)
+         VALUES ($1, 'PLAN_CHANGED', $2, 'restaurant', $2, $3, $4, $5, $6)`,
+        [operator.id, restaurantId,
+          JSON.stringify({ from: before.plan_tier, to: tier, note, forced: breaking.length > 0, trialDays }),
+          meta.ip || null, meta.userAgent ? String(meta.userAgent).slice(0, 512) : null, meta.requestId || null]
+      );
+    }
 
     return { before, after: updated.rows[0], changes, breaking };
   });

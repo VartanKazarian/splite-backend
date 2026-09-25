@@ -12,6 +12,7 @@
     "migrate": "node scripts/migrate.js",
     "seed": "node scripts/seed.js",
     "onboarding": "node scripts/onboarding.js",
+    "operator": "node scripts/operator.js",
     "purge": "node scripts/purge.js",
     "reconcile": "node scripts/reconcile.js",
     "maintenance": "node scripts/maintenance.js",

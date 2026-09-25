@@ -97,6 +97,11 @@ const CODES = {
   STAFF_NOT_FOUND: 404,
   STAFF_INVITATION_NOT_FOUND: 404,
   BANK_CONNECTION_NOT_FOUND: 404,
+  // Consola de Splite.
+  OPERATOR_NOT_FOUND: 404,
+  // Enlace de alta caducado, usado o inventado: la misma respuesta.
+  OPERATOR_SETUP_INVALID: 404,
+  SUBSCRIPTION_CHARGE_NOT_FOUND: 404,
   // Caducada, usada, anulada o inventada: las cuatro responden igual, para no
   // decirle a quien prueba tokens cuál es.
   INVITATION_INVALID: 404,
@@ -129,6 +134,13 @@ const CODES = {
   // Un movimiento del banco respalda un aviso como mucho.
   BANK_MOVEMENT_ALREADY_USED: 409,
   BANK_CONNECTION_KIND_MISMATCH: 409,
+  OPERATOR_EMAIL_TAKEN: 409,
+  // Ese periodo ya tiene un cargo vivo: anúlalo antes de volver a cobrarlo.
+  SUBSCRIPTION_CHARGE_EXISTS: 409,
+  // Pagado o anulado: ya no admite pagos ni se anula otra vez.
+  SUBSCRIPTION_CHARGE_CLOSED: 409,
+  // No hay tarifa para ese plan y ciclo, ni precio pactado: no se puede cobrar.
+  SUBSCRIPTION_PRICE_MISSING: 409,
   PASSWORD_UNCHANGED: 409,
   STAFF_LAST_OWNER: 409,
   // Enrolment state, all of them "the account is not in the state this asks
