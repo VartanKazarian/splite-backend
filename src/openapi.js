@@ -1651,6 +1651,74 @@ Object.assign(schemas, {
     }
   },
 
+  BankConnection: {
+    type: 'object',
+    description: 'Where a restaurant\'s bank movements come from. Never carries a secret: none is stored, and a webhook\'s signing secret is returned only when the connection is created or its secret rotated.',
+    properties: {
+      id: { type: 'string', format: 'uuid' },
+      kind: { type: 'string', enum: ['WEBHOOK', 'STATEMENT_IMPORT'] },
+      label: { type: 'string' },
+      bankCode: { type: ['string', 'null'], pattern: '^\\d{4}$' },
+      autoConfirm: { type: 'boolean', description: 'Whether a MATCHED movement from here confirms a claim with nobody looking. Off by default; OWNER only.' },
+      secretVersion: { type: 'integer' },
+      columnMap: { type: ['object', 'null'], description: 'For STATEMENT_IMPORT: which column of the statement holds each value (0-based), saved so the next upload does not ask again.' },
+      lastMovementAt: { type: ['string', 'null'], format: 'date-time' },
+      lastError: { type: ['string', 'null'] },
+      lastErrorAt: { type: ['string', 'null'], format: 'date-time' },
+      createdAt: { type: 'string', format: 'date-time' }
+    }
+  },
+
+  BankMovementInput: {
+    type: 'object',
+    description: 'One incoming movement, in whatever format the bank writes it. `amountMinor` (digits, céntimos) takes precedence over `amount` (text: "1.234,56", "1234.56", "Bs 1.234,56"). Debits and anything that cannot be read unambiguously are rejected with a reason rather than guessed.',
+    properties: {
+      reference: { type: 'string', description: 'Digits are kept, everything else dropped. 4 to 40 digits.' },
+      amount: { type: 'string' },
+      amountMinor: { type: 'string', pattern: '^\\d{1,15}$' },
+      occurredAt: { type: ['string', 'null'], description: 'ISO 8601, DD/MM/YYYY or DD/MM/YYYY HH:mm. Without a zone it is read as Caracas time.' },
+      phoneOrigin: { type: ['string', 'null'] },
+      idOrigin: { type: ['string', 'null'], description: 'The payer\'s cédula or RIF, as the bank prints it.' },
+      bankCode: { type: ['string', 'null'], description: 'The payer\'s bank, four digits.' },
+      description: { type: ['string', 'null'] }
+    }
+  },
+
+  BankIngestResult: {
+    type: 'object',
+    properties: {
+      received: { type: 'integer' },
+      inserted: { type: 'integer' },
+      duplicates: { type: 'integer', description: 'Already known (same restaurant, reference and amount). Sending the same movement twice is harmless.' },
+      rejected: {
+        type: 'array',
+        items: { type: 'object', properties: { index: { type: 'integer' }, reason: { type: 'string', enum: ['shape', 'reference', 'amount', 'amount_precision', 'debit'] } } }
+      },
+      matches: {
+        type: 'object',
+        description: 'The pending Pago Móvil claims, checked again against every recent movement.',
+        properties: {
+          matched: { type: 'integer' }, mismatch: { type: 'integer' }, ambiguous: { type: 'integer' },
+          notFound: { type: 'integer' }, autoConfirmed: { type: 'integer' }
+        }
+      }
+    }
+  },
+
+  BankMovement: {
+    type: 'object',
+    properties: {
+      id: { type: 'string', format: 'uuid' },
+      reference: { type: 'string' },
+      amountMinor: { type: 'string' },
+      occurredAt: { type: ['string', 'null'], format: 'date-time' },
+      bankCode: { type: ['string', 'null'] },
+      description: { type: ['string', 'null'] },
+      receivedAt: { type: 'string', format: 'date-time' },
+      matched: { type: 'boolean', description: 'Already backs a confirmed claim.' }
+    }
+  },
+
   StaffInvitation: {
     type: 'object',
     description: 'An open invitation to join the team. Never carries the token or its hash: the link is returned once, when the invitation is created, and cannot be read again.',
@@ -1696,7 +1764,18 @@ Object.assign(schemas, {
           idOrigin: { type: ['string', 'null'], description: "The payer's cédula or RIF, as the receiving bank prints it beside the movement." },
           declaredAt: { type: ['string', 'null'], format: 'date-time' },
           tableName: { type: ['string', 'null'], description: 'The table the bill is on. Filled in the queue (`GET /payments/claims`); null elsewhere.' },
-          payerName: { type: ['string', 'null'], description: "The payer's name from their split share or their invoice request, or null when they gave none. Filled in the queue only." }
+          payerName: { type: ['string', 'null'], description: "The payer's name from their split share or their invoice request, or null when they gave none. Filled in the queue only." },
+          bankMatch: {
+            type: ['object', 'null'],
+            description: 'What the restaurant\'s bank connection says about this claim, the last time it was checked. Null when there is no connection or it was never checked. Queue only.',
+            properties: {
+              outcome: { type: 'string', enum: ['MATCHED', 'MISMATCH', 'AMBIGUOUS', 'NOT_FOUND'] },
+              disagreements: { type: 'array', items: { type: 'string', enum: ['amount', 'bank', 'phone', 'id'] } },
+              movementReference: { type: ['string', 'null'] },
+              autoConfirmed: { type: 'boolean' },
+              checkedAt: { type: ['string', 'null'], format: 'date-time' }
+            }
+          }
         }
       }
     ]
@@ -5767,6 +5846,182 @@ const paths = {
     }
   },
 
+  '/api/v1/bank-connections': {
+    get: {
+      tags: ['Bank connections'],
+      summary: 'The restaurant\'s bank connections',
+      operationId: 'listBankConnections',
+      description: 'OWNER, MANAGER and CASHIER — the people who verify payments.',
+      security: staff,
+      responses: {
+        200: { description: 'Active connections.', content: { 'application/json': { schema: { type: 'object', properties: { data: { type: 'array', items: ref('BankConnection') } } } } } },
+        403: response('Forbidden'),
+        ...commonErrors
+      }
+    },
+    post: {
+      tags: ['Bank connections'],
+      summary: 'Connect a source of bank movements',
+      operationId: 'createBankConnection',
+      description: [
+        'OWNER only. `WEBHOOK` accepts signed pushes from any system (a verification service, a bank-email',
+        'forwarder, a script) at `path`; the response carries the signing `secret` **once**. `STATEMENT_IMPORT`',
+        'accepts a bank statement uploaded from the panel and works with every bank. See docs/bank-connections.md.'
+      ].join('\n'),
+      security: staff,
+      requestBody: {
+        required: true,
+        content: {
+          'application/json': {
+            schema: {
+              type: 'object', required: ['kind', 'label'],
+              properties: {
+                kind: { type: 'string', enum: ['WEBHOOK', 'STATEMENT_IMPORT'] },
+                label: { type: 'string', maxLength: 80 },
+                bankCode: { type: ['string', 'null'], pattern: '^\\d{4}$' }
+              }
+            }
+          }
+        }
+      },
+      responses: {
+        201: {
+          description: 'Created.',
+          content: { 'application/json': { schema: { type: 'object', properties: { connection: ref('BankConnection'), secret: { type: 'string' }, path: { type: 'string' } } } } }
+        },
+        403: response('Forbidden'),
+        ...commonErrors
+      }
+    }
+  },
+
+  '/api/v1/bank-connections/{connectionId}': {
+    patch: {
+      tags: ['Bank connections'],
+      summary: 'Rename, trust, map columns or remove',
+      operationId: 'updateBankConnection',
+      description: 'OWNER only. Turning `autoConfirm` on re-checks the pending claims at once, so what already matched is confirmed. `active: false` removes the connection; its movements stay.',
+      security: staff,
+      parameters: [{ name: 'connectionId', in: 'path', required: true, schema: { type: 'string', format: 'uuid' } }],
+      requestBody: {
+        required: true,
+        content: {
+          'application/json': {
+            schema: {
+              type: 'object',
+              properties: {
+                label: { type: 'string', maxLength: 80 },
+                autoConfirm: { type: 'boolean' },
+                columnMap: { type: ['object', 'null'] },
+                active: { type: 'boolean' }
+              }
+            }
+          }
+        }
+      },
+      responses: {
+        200: { description: 'Updated.', content: { 'application/json': { schema: { type: 'object', properties: { connection: ref('BankConnection') } } } } },
+        403: response('Forbidden'),
+        404: response('NotFound'),
+        ...commonErrors
+      }
+    }
+  },
+
+  '/api/v1/bank-connections/{connectionId}/rotate-secret': {
+    post: {
+      tags: ['Bank connections'],
+      summary: 'Issue a new signing secret for a webhook connection',
+      operationId: 'rotateBankConnectionSecret',
+      description: 'OWNER only. The old secret stops working at once. Returned once, like at creation.',
+      security: staff,
+      parameters: [{ name: 'connectionId', in: 'path', required: true, schema: { type: 'string', format: 'uuid' } }],
+      responses: {
+        200: { description: 'The new secret.', content: { 'application/json': { schema: { type: 'object', properties: { connection: ref('BankConnection'), secret: { type: 'string' }, path: { type: 'string' } } } } } },
+        403: response('Forbidden'),
+        404: response('NotFound'),
+        409: response('Conflict'),
+        ...commonErrors
+      }
+    }
+  },
+
+  '/api/v1/bank-connections/{connectionId}/import': {
+    post: {
+      tags: ['Bank connections'],
+      summary: 'Import movements from a bank statement',
+      operationId: 'importBankMovements',
+      description: [
+        'OWNER, MANAGER and CASHIER, on a STATEMENT_IMPORT connection. The panel splits the file into',
+        'columns and sends up to 500 rows per call; each row is validated on its own, so unreadable rows',
+        'come back with a reason and do not stop the others. Idempotent: the same statement twice adds nothing.',
+        'After storing, every pending Pago Móvil claim is checked again.'
+      ].join('\n'),
+      security: staff,
+      parameters: [{ name: 'connectionId', in: 'path', required: true, schema: { type: 'string', format: 'uuid' } }],
+      requestBody: {
+        required: true,
+        content: { 'application/json': { schema: { type: 'object', required: ['movements'], properties: { movements: { type: 'array', minItems: 1, maxItems: 500, items: ref('BankMovementInput') }, columnMap: { type: ['object', 'null'], description: 'Optional: remember which column holds each value, for the next upload.' } } } } }
+      },
+      responses: {
+        200: { description: 'What was stored and what matched.', content: { 'application/json': { schema: ref('BankIngestResult') } } },
+        403: response('Forbidden'),
+        404: response('NotFound'),
+        409: response('Conflict'),
+        ...commonErrors
+      }
+    }
+  },
+
+  '/api/v1/bank-connections/{connectionId}/movements': {
+    get: {
+      tags: ['Bank connections'],
+      summary: 'Recent movements from one connection',
+      operationId: 'listBankMovements',
+      description: 'The last 50, newest first — to check that movements are arriving.',
+      security: staff,
+      parameters: [{ name: 'connectionId', in: 'path', required: true, schema: { type: 'string', format: 'uuid' } }],
+      responses: {
+        200: { description: 'Movements.', content: { 'application/json': { schema: { type: 'object', properties: { data: { type: 'array', items: ref('BankMovement') } } } } } },
+        403: response('Forbidden'),
+        404: response('NotFound'),
+        ...commonErrors
+      }
+    }
+  },
+
+  '/api/v1/bank-inbound/{connectionId}': {
+    post: {
+      tags: ['Bank connections'],
+      summary: 'Push bank movements, signed',
+      operationId: 'pushBankMovements',
+      description: [
+        'For machines, no session. Two headers: `X-Splite-Timestamp` (Unix seconds) and',
+        '`X-Splite-Signature: sha256=<hex HMAC-SHA256(secret, "<timestamp>.<raw body>")>`. The signature',
+        'covers the exact bytes sent. More than 5 minutes off is rejected. An unknown connection, a',
+        'wrong signature and a stale timestamp all answer the same 401. Retrying is safe: movements are',
+        'idempotent. Up to 500 per call. See docs/bank-connections.md for a worked example.'
+      ].join('\n'),
+      security: [],
+      parameters: [
+        { name: 'connectionId', in: 'path', required: true, schema: { type: 'string', format: 'uuid' } },
+        { name: 'X-Splite-Timestamp', in: 'header', required: true, schema: { type: 'string', pattern: '^\\d+$' } },
+        { name: 'X-Splite-Signature', in: 'header', required: true, schema: { type: 'string', pattern: '^sha256=[0-9a-f]{64}$' } }
+      ],
+      requestBody: {
+        required: true,
+        content: { 'application/json': { schema: { type: 'object', required: ['movements'], properties: { movements: { type: 'array', minItems: 1, maxItems: 500, items: ref('BankMovementInput') } } } } }
+      },
+      responses: {
+        200: { description: 'What was stored and what matched.', content: { 'application/json': { schema: ref('BankIngestResult') } } },
+        400: response('BadRequest'),
+        401: response('Unauthorized'),
+        429: response('TooManyRequests'),
+        500: response('ServerError')
+      }
+    }
+  },
+
   '/api/v1/account/invitations': {
     get: {
       tags: ['Account'],
@@ -6435,6 +6690,7 @@ const document = {
     { name: 'Exchange rate' },
     { name: 'Webhooks' },
     { name: 'Account' },
+    { name: 'Bank connections', description: 'Bank movements from any bank — signed pushes or uploaded statements — checked against pending Pago Móvil claims.' },
     // Listed unconditionally even though its operations are only described when
     // ONBOARDING_ENABLED is on: a tag with no operations reads as a feature that
     // exists and is switched off, which is true, whereas a tag that appears and

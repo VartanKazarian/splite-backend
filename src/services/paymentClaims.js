@@ -3,6 +3,7 @@ const config = require('../config');
 const { ApiError } = require('../errors');
 const { applyToBill, settlementView, toPaymentAmount } = require('./locks');
 const { recordPayment, transitionPayment, PAYMENT_COLUMNS } = require('./payments');
+const bankReconciliation = require('./bankReconciliation');
 const { logAudit } = require('./audit');
 const { logger } = require('../connectors/logger');
 const invoiceIntents = require('./invoiceIntents');
@@ -126,6 +127,10 @@ async function declareClaim({
       ...meta
     });
 
+    // Por si el dinero llegó antes que el aviso: con una conexión bancaria, se
+    // mira ya. No lanza nunca; el aviso queda declarado pase lo que pase.
+    await bankReconciliation.reconcileAfterClaim(restaurantId);
+
     return claim;
   } catch (err) {
     // The partial unique index in migration 014. Someone has already claimed
@@ -156,7 +161,12 @@ async function listClaims({ restaurantId, billId = null, status = 'PENDING', lim
   const { rows } = await db.query(
     `SELECT ${CLAIM_COLUMNS},
             t.name AS table_name,
-            COALESCE(sp.name, fi.customer_name) AS payer_name
+            COALESCE(sp.name, fi.customer_name) AS payer_name,
+            bm.outcome AS bank_match_outcome,
+            bm.disagreements AS bank_match_disagreements,
+            bm.auto_confirmed AS bank_match_auto,
+            bm.checked_at AS bank_match_checked_at,
+            mv.reference AS bank_match_reference
        FROM payments p
        JOIN bills b ON b.id = p.bill_id AND b.restaurant_id = p.restaurant_id
        LEFT JOIN tables t ON t.id = b.table_id AND t.restaurant_id = p.restaurant_id
@@ -164,6 +174,10 @@ async function listClaims({ restaurantId, billId = null, status = 'PENDING', lim
               ON sp.id = p.split_participant_id AND sp.restaurant_id = p.restaurant_id
        LEFT JOIN fiscal_invoice_intents fi
               ON fi.payment_id = p.id AND fi.restaurant_id = p.restaurant_id
+       LEFT JOIN payment_bank_matches bm
+              ON bm.payment_id = p.id AND bm.restaurant_id = p.restaurant_id
+       LEFT JOIN bank_movements mv
+              ON mv.id = bm.movement_id AND mv.restaurant_id = p.restaurant_id
       WHERE p.restaurant_id = $1
         AND p.payment_method = 'PAGO_MOVIL'
         AND ($2::uuid IS NULL OR p.bill_id = $2)
@@ -218,7 +232,14 @@ async function claimsSummary({ restaurantId }) {
  * claim cannot overpay a bill or close one that was voided while it sat in the
  * queue.
  */
-async function confirmClaim({ restaurantId, claimId, actor, meta = {} }) {
+/**
+ * `via: 'BANK'` es la confirmación que hace un movimiento del banco que casó
+ * con el aviso (ver `services/bankReconciliation.js`), y lleva el movimiento
+ * que la respalda. Confirmada por quien sea, el movimiento queda marcado como
+ * usado en la misma transacción: un pago no respalda dos avisos, que es lo que
+ * impide cobrar dos veces con la referencia de otro.
+ */
+async function confirmClaim({ restaurantId, claimId, actor, via = 'STAFF', bankMovementId = null, meta = {} }) {
   const result = await db.withTransaction(async client => {
     const { rows } = await client.query(
       `SELECT id, bill_id, amount_ves, tip_ves, status, payment_method
@@ -247,9 +268,11 @@ async function confirmClaim({ restaurantId, claimId, actor, meta = {} }) {
       paymentId: claim.id,
       restaurantId,
       toStatus: 'SUCCEEDED',
-      reason: 'Verified against the restaurant bank account by staff',
-      actorType: 'STAFF',
-      actorId: actor?.id ?? null,
+      reason: via === 'BANK'
+        ? 'Matched to a movement reported by the restaurant bank connection'
+        : 'Verified against the restaurant bank account by staff',
+      actorType: via === 'BANK' ? 'PROVIDER' : 'STAFF',
+      actorId: via === 'BANK' ? null : (actor?.id ?? null),
       // A member of staff has found this transfer in the bank account, so the
       // money's arrival is not in question -- only where to file it. If the
       // split went stale or was voided while the claim sat in the queue, the
@@ -261,6 +284,29 @@ async function confirmClaim({ restaurantId, claimId, actor, meta = {} }) {
       // argued with by retrying.
       onShareRefusal: 'DETACH'
     });
+
+    // El movimiento del banco que respalda esto, si lo hay. Por el banco es
+    // obligatorio y tiene que estar libre; a mano, se aprovecha el que el
+    // banco ya había casado con este aviso, si nadie lo ha usado.
+    let movementId = bankMovementId;
+    if (!movementId) {
+      const suggested = await client.query(
+        `SELECT movement_id FROM payment_bank_matches
+          WHERE payment_id = $1 AND restaurant_id = $2 AND outcome = 'MATCHED'`,
+        [claim.id, restaurantId]
+      );
+      movementId = suggested.rows[0]?.movement_id ?? null;
+    }
+    if (movementId) {
+      const marked = await client.query(
+        `UPDATE bank_movements SET matched_payment_id = $1
+          WHERE id = $2 AND restaurant_id = $3 AND matched_payment_id IS NULL`,
+        [claim.id, movementId, restaurantId]
+      );
+      if (via === 'BANK' && marked.rowCount === 0) {
+        throw new ApiError('BANK_MOVEMENT_ALREADY_USED', 'That bank movement already backs another claim');
+      }
+    }
 
     // The tip is reported back rather than left implicit: the figure staff just
     // verified against the bank app is `amount_ves + tip_ves`, and only the
@@ -278,12 +324,13 @@ async function confirmClaim({ restaurantId, claimId, actor, meta = {} }) {
 
   await logAudit({
     restaurantId,
-    actorId: actor?.id ?? null,
+    actorId: via === 'BANK' ? null : (actor?.id ?? null),
     action: 'PAYMENT_CLAIM_CONFIRMED',
     resourceType: 'payment',
     resourceId: claimId,
     details: {
       billStatus: result.status, amountPaid: result.amountPaid,
+      ...(via === 'BANK' ? { via: 'BANK', bankMovementId } : {}),
       ...(result.shareDetached ? { shareDetached: result.shareDetached } : {})
     },
     ...meta
