@@ -29,6 +29,8 @@ const paymentRoutes = require('./routes/payments');
 const orderRoutes = require('./routes/orders');
 const fiscalRoutes = require('./routes/fiscal');
 const webhookRoutes = require('./routes/webhooks');
+const bankConnectionRoutes = require('./routes/bankConnections');
+const bankInboundRoutes = require('./routes/bankInbound');
 
 // Una vez, al arrancar: un adaptador incompleto tiene que impedir el arranque
 // y no fallar delante de un comensal que espera su factura.
@@ -204,6 +206,12 @@ app.use('/api/v1/fiscal', fiscalRoutes);
 // answer there too, and any middleware attached by prefix -- authentication,
 // rate limiting -- is then skipped by changing the URL.
 app.use('/api/v1/webhooks', webhookRoutes);
+
+// Las conexiones con el banco del restaurante, y la entrada firmada de
+// movimientos. La entrada va en su propio router y con su propio limitador:
+// quien la llama es una máquina, sin sesión, y la firma es su credencial.
+app.use('/api/v1/bank-connections', bankConnectionRoutes);
+app.use('/api/v1/bank-inbound', rateLimit({ windowSeconds: 60, max: 120, keyPrefix: 'bank-inbound' }), bankInboundRoutes);
 
 // Mounted only when self-service registration is switched on. The route is the
 // one public write surface that creates tenants and sends mail, so its absence

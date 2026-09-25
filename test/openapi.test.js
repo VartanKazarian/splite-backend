@@ -140,6 +140,13 @@ test('an operation taking a path parameter documents 404', () => {
   for (const [name, op] of operations()) {
     const hasPathParam = /\{[A-Za-z0-9_]+\}/.test(name);
     if (!hasPathParam) continue;
+    // The signed bank push answers an unknown connection with the same 401 as a
+    // bad signature, so a caller cannot probe which ids exist. It cannot return
+    // 404, and documenting one would describe a response the app never sends.
+    if (name.includes('/bank-inbound/')) {
+      assert.ok(!op.responses['404'], `${name} must not reveal unknown connections with a 404`);
+      continue;
+    }
     assert.ok(op.responses['404'], `${name} takes a path parameter but does not document 404`);
   }
 });

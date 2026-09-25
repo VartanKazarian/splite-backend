@@ -24,6 +24,55 @@ const createStaffSchema = Joi.object({
   role: Joi.string().valid(...ROLES).required()
 });
 
+/**
+ * Conexiones con el banco. `kind` elige la fuente; las APIs directas de cada
+ * banco entrarán como otro valor.
+ */
+const createBankConnectionSchema = Joi.object({
+  kind: Joi.string().valid('WEBHOOK', 'STATEMENT_IMPORT').required(),
+  label: Joi.string().trim().min(1).max(80).required(),
+  bankCode: Joi.string().pattern(/^\d{4}$/).allow(null)
+});
+
+/** Qué columna del estado de cuenta es cada dato (índices desde 0). */
+const bankColumnMapSchema = Joi.object({
+  reference: Joi.number().integer().min(0).max(199).required(),
+  amount: Joi.number().integer().min(0).max(199).required(),
+  date: Joi.number().integer().min(0).max(199).allow(null),
+  description: Joi.number().integer().min(0).max(199).allow(null),
+  phone: Joi.number().integer().min(0).max(199).allow(null),
+  delimiter: Joi.string().valid(',', ';', '\t', '|').allow(null),
+  hasHeader: Joi.boolean()
+});
+
+const updateBankConnectionSchema = Joi.object({
+  label: Joi.string().trim().min(1).max(80),
+  autoConfirm: Joi.boolean(),
+  columnMap: bankColumnMapSchema.allow(null),
+  active: Joi.boolean()
+}).min(1);
+
+const bankConnectionIdParamSchema = Joi.object({ connectionId: uuid.required() });
+
+/**
+ * Movimientos, de un webhook o de un estado de cuenta ya partido en columnas.
+ * La forma de cada uno la valida el normalizador, fila a fila, para poder
+ * devolver cuáles no se entendieron sin rechazar las demás.
+ */
+const bankMovementsSchema = Joi.object({
+  movements: Joi.array().items(Joi.object({
+    reference: Joi.alternatives(Joi.string().max(60), Joi.number()),
+    amount: Joi.alternatives(Joi.string().max(40), Joi.number()),
+    amountMinor: Joi.alternatives(Joi.string().max(20), Joi.number().integer()),
+    occurredAt: Joi.string().max(40).allow(null, ''),
+    date: Joi.string().max(40).allow(null, ''),
+    phoneOrigin: Joi.string().max(30).allow(null, ''),
+    idOrigin: Joi.string().max(30).allow(null, ''),
+    bankCode: Joi.string().max(10).allow(null, ''),
+    description: Joi.string().max(500).allow(null, '')
+  }).unknown(false)).min(1).max(500).required()
+});
+
 /** Invitar: la dirección y el rol. La contraseña la pone quien acepta. */
 const createInvitationSchema = Joi.object({
   email: Joi.string().email({ minDomainSegments: 2 }).max(254).lowercase().required(),
@@ -1031,6 +1080,10 @@ module.exports = {
   fiscalRequestQuerySchema,
   fiscalExportQuerySchema,
   createInvitationSchema,
+  createBankConnectionSchema,
+  updateBankConnectionSchema,
+  bankConnectionIdParamSchema,
+  bankMovementsSchema,
   invitationIdParamSchema,
   invitationTokenSchema,
   acceptInvitationSchema,

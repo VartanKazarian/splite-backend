@@ -98,12 +98,27 @@ function disagreements(claim, movement) {
   // redondear aquí sería inventar dinero que nadie transfirió.
   if (String(movement.amountMinor) !== String(claim.amountMinor)) bad.push('amount');
 
-  if (movement.bankCode != null && String(movement.bankCode) !== String(claim.bankCode)) {
+  // Lo que falta de cualquiera de los dos lados no se compara: si el comensal
+  // no dijo su banco, «viene de otro banco» no es algo que se pueda afirmar.
+  // Antes un aviso sin banco o sin teléfono no casaba nunca con un movimiento
+  // que sí los traía, y la validación sólo servía para quien los rellenaba.
+  const known = value => value != null && String(value).trim() !== '';
+
+  if (known(movement.bankCode) && known(claim.bankCode)
+      && String(movement.bankCode) !== String(claim.bankCode)) {
     bad.push('bank');
   }
 
-  if (movement.phoneOrigin != null && !phoneAgrees(claim.phoneOrigin, movement.phoneOrigin)) {
+  if (known(movement.phoneOrigin) && known(claim.phoneOrigin)
+      && !phoneAgrees(claim.phoneOrigin, movement.phoneOrigin)) {
     bad.push('phone');
+  }
+
+  // La cédula o el RIF que el banco imprime junto al movimiento: si los dos
+  // lados la tienen, tiene que ser la misma persona.
+  if (known(movement.idOrigin) && known(claim.idOrigin)
+      && digits(movement.idOrigin) !== digits(claim.idOrigin)) {
+    bad.push('id');
   }
 
   return bad;

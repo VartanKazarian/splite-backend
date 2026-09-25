@@ -1,3 +1,4 @@
+const bankReconciliation = require('./services/bankReconciliation');
 const { usdReference } = require('./services/split');
 const banks = require('./payments/banks');
 const entitlements = require('./services/entitlements');
@@ -250,7 +251,10 @@ function staffPaymentClaim(row) {
     // Sólo los trae la cola (`listClaims`); confirmar o rechazar devuelve la
     // fila sin ellos, y entonces son null en vez de faltar.
     tableName: row.table_name ?? null,
-    payerName: row.payer_name ?? null
+    payerName: row.payer_name ?? null,
+    // Lo que dice el banco de este aviso, si hay una conexión bancaria. Null
+    // cuando no se ha mirado nunca.
+    bankMatch: bankReconciliation.bankMatchView(row)
   };
 }
 
@@ -902,6 +906,40 @@ function guestOrder(row) {
 }
 
 /**
+ * Una conexión con el banco. Nunca lleva un secreto: no hay ninguno guardado,
+ * y el de un webhook sólo sale al crearla o rotarla.
+ */
+function bankConnection(row) {
+  return {
+    id: row.id,
+    kind: row.kind,
+    label: row.label,
+    bankCode: row.bank_code ?? null,
+    autoConfirm: row.auto_confirm === true,
+    secretVersion: row.secret_version,
+    columnMap: row.column_map ?? null,
+    lastMovementAt: row.last_movement_at ? isoTimestamp(row.last_movement_at) : null,
+    lastError: row.last_error ?? null,
+    lastErrorAt: row.last_error_at ? isoTimestamp(row.last_error_at) : null,
+    createdAt: isoTimestamp(row.created_at)
+  };
+}
+
+/** Un movimiento recibido, para comprobar que llegan. Sin la cédula del pagador. */
+function bankMovement(row) {
+  return {
+    id: row.id,
+    reference: row.reference,
+    amountMinor: String(row.amount_minor),
+    occurredAt: row.occurred_at ? isoTimestamp(row.occurred_at) : null,
+    bankCode: row.bank_code ?? null,
+    description: row.description ?? null,
+    receivedAt: isoTimestamp(row.received_at),
+    matched: row.matched_payment_id != null
+  };
+}
+
+/**
  * Una invitación abierta. Nunca lleva el token ni su hash: el enlace se da una
  * vez, al crearla, y no se puede volver a leer.
  */
@@ -936,5 +974,5 @@ module.exports = {
   isoDate, isoTimestamp, staffMember, guestOrder, billAdjustment,
   bill, billItem, billWithItems, guestBill,
   fiscalInvoice, fiscalInvoiceLine, fiscalInvoiceTax, fiscalRequest,
-  table, floorTable, product, publicProduct, menuCategory, menuDocument, brandingImage, qrContext, menuSettings, menuCharges, account, fiscalSeries, payout, guestPayee, paymentProviderConfig, paymentClaim, staffPaymentClaim, staffInvitation, c2pCharge, billSplit
+  table, floorTable, product, publicProduct, menuCategory, menuDocument, brandingImage, qrContext, menuSettings, menuCharges, account, fiscalSeries, payout, guestPayee, paymentProviderConfig, paymentClaim, staffPaymentClaim, staffInvitation, bankConnection, bankMovement, c2pCharge, billSplit
 };

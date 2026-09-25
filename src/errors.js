@@ -57,6 +57,8 @@ const CODES = {
   // 401 -- who the caller is could not be established.
   AUTH_TOKEN_MISSING: 401,
   AUTH_TOKEN_INVALID: 401,
+  // Firma mala, hora fuera de ventana o conexión inexistente: todo responde igual.
+  BANK_INBOUND_UNAUTHORIZED: 401,
   INVALID_CREDENTIALS: 401,
   MFA_CODE_INVALID: 401,
   GUEST_SESSION_MISSING: 401,
@@ -94,6 +96,7 @@ const CODES = {
   NOT_FOUND: 404,
   STAFF_NOT_FOUND: 404,
   STAFF_INVITATION_NOT_FOUND: 404,
+  BANK_CONNECTION_NOT_FOUND: 404,
   // Caducada, usada, anulada o inventada: las cuatro responden igual, para no
   // decirle a quien prueba tokens cuál es.
   INVITATION_INVALID: 404,
@@ -123,6 +126,9 @@ const CODES = {
   // La dirección ya tiene cuenta en Splite: el correo identifica a una sola
   // persona en todo el sistema, no una por restaurante.
   INVITATION_EMAIL_IN_USE: 409,
+  // Un movimiento del banco respalda un aviso como mucho.
+  BANK_MOVEMENT_ALREADY_USED: 409,
+  BANK_CONNECTION_KIND_MISMATCH: 409,
   PASSWORD_UNCHANGED: 409,
   STAFF_LAST_OWNER: 409,
   // Enrolment state, all of them "the account is not in the state this asks
