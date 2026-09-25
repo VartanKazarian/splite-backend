@@ -38,6 +38,8 @@ npm run operator -- enable tu@correo.com
 
 El secreto del autenticador no se guarda en la base de datos. Se deriva del secreto del servidor (`JWT_ACCESS_SECRET`), del id del operador y de una versión. Por eso `reset` basta para invalidar el autenticador anterior.
 
+**Ojo:** si algún día se rota `JWT_ACCESS_SECRET`, cambian también todos los autenticadores de la consola. Habría que hacer `reset` a cada operador.
+
 ## Cobros
 
 - **Precios**: se ponen en la consola, por plan y ciclo (mensual o anual), con fecha de inicio. Un precio nuevo no cambia los cargos ya hechos.
