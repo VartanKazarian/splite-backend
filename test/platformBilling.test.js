@@ -49,3 +49,8 @@ test('el secreto del autenticador depende del operador y de su versión', () => 
   assert.notEqual(a, totpSecretFor({ id: 'a', totp_version: 2 }), 'reset must invalidate the old authenticator');
   assert.notEqual(a, totpSecretFor({ id: 'b', totp_version: 1 }));
 });
+
+test('el enlace de alta apunta a la consola del frontend, con el token en el fragmento', () => {
+  const link = operators.setupLink('abc123');
+  assert.match(link, /^https?:\/\/[^#]+\/admin\/alta#abc123$/);
+});

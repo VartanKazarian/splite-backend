@@ -281,7 +281,7 @@ async function current(operatorId) {
 }
 
 function setupLink(token) {
-  return `${config.appBaseUrl.replace(/\/$/, '')}/admin/alta#${token}`;
+  return `${config.onboarding.appBaseUrl}/admin/alta#${token}`;
 }
 
 module.exports = {
