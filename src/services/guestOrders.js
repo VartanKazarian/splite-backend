@@ -2,6 +2,7 @@ const db = require('../connectors/base');
 const config = require('../config');
 const billItems = require('./billItems');
 const { snapshotFx } = require('./billOpen');
+const { assertMayOpenBills } = require('./subscriptionGate');
 const { ApiError } = require('../errors');
 
 /**
@@ -63,6 +64,9 @@ async function placeOrder({ restaurantId, tableId, guestSessionId = null, items 
     let billId = existing.rows[0]?.id;
 
     if (!billId) {
+      // Suspendido desde la consola: el pedido no abre una cuenta nueva. Una
+      // mesa que ya tenía cuenta sigue pidiendo y pagando.
+      await assertMayOpenBills(client, restaurantId);
       const created = await client.query(
         `INSERT INTO bills (restaurant_id, table_id, total_due, subtotal_minor, currency,
                             vat_bps, service_charge_bps,

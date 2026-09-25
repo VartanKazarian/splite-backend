@@ -26,7 +26,10 @@ const STEPS = [
   // las otras dos por nada y porque su fallo es el menos grave de los tres: un
   // correo que no salió se vuelve a intentar en el pase siguiente, mientras que
   // el descuadre que reporta `reconcile` no se arregla solo.
-  { name: 'fiscal-mail', script: 'fiscal-mail.js' }
+  { name: 'fiscal-mail', script: 'fiscal-mail.js' },
+  // Los cobros de Splite a los restaurantes: renovar y recordar. Como
+  // fiscal-mail, un correo que no sale no es un 1 (ver scripts/billing.js).
+  { name: 'billing', script: 'billing.js' }
 ];
 
 let worst = 0;

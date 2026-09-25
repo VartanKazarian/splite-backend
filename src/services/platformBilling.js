@@ -333,7 +333,7 @@ function addDays(isoDate, days) {
  * plan y ciclo en la fecha de inicio. Un restaurante en prueba no tiene precio
  * de lista, así que no se le cobra por accidente.
  */
-async function createCharge({ operator, restaurantId, periodStart = null, meta = {} }) {
+async function createCharge({ operator = null, restaurantId, periodStart = null, meta = {}, via = 'console' }) {
   const today = fx.caracasToday();
   return db.withTransaction(async client => {
     const { rows } = await client.query(
@@ -372,7 +372,7 @@ async function createCharge({ operator, restaurantId, periodStart = null, meta =
            (restaurant_id, tier, billing_cycle, period_start, period_end, amount_usd, due_on, created_by)
          VALUES ($1, $2, $3, $4::DATE, $5::DATE, $6, $7::DATE, $8)
          RETURNING *, 0 AS applied_usd`,
-        [restaurantId, r.plan_tier, r.billing_cycle, start, end, String(amount), addDays(start, DUE_DAYS), operator.id]
+        [restaurantId, r.plan_tier, r.billing_cycle, start, end, String(amount), addDays(start, DUE_DAYS), operator ? operator.id : null]
       ));
     } catch (err) {
       if (err.code === '23505') {
@@ -381,9 +381,9 @@ async function createCharge({ operator, restaurantId, periodStart = null, meta =
       throw err;
     }
     await operators.audit(client, {
-      operatorId: operator.id, action: 'CHARGE_CREATED', restaurantId,
+      operatorId: operator ? operator.id : null, action: 'CHARGE_CREATED', restaurantId,
       resourceType: 'subscription_charge', resourceId: inserted[0].id,
-      details: { periodStart: start, periodEnd: end, amountUsd: String(amount), tier: r.plan_tier }, meta
+      details: { periodStart: start, periodEnd: end, amountUsd: String(amount), tier: r.plan_tier, via }, meta
     });
     return chargeView(inserted[0]);
   });
@@ -440,65 +440,80 @@ async function todaysRate() {
  * en el rastro.
  */
 async function recordPayment({ operator, restaurantId, input, meta = {} }) {
-  const { chargeId = null, method, currency, amount, reference = null, receivedOn, notes = null, settle = false } = input;
+  const prepared = await preparePayment(input);
+  return db.withTransaction(client => recordPaymentWith(client, { operator, restaurantId, input, prepared, meta }));
+}
+
+/** Importe en céntimos, tasa y lo que descuenta en dólares. Fuera de la transacción: puede ir al BCV. */
+async function preparePayment(input) {
+  const { currency, amount } = input;
   const rateText = currency === 'VES' ? (input.fxRate || await todaysRate()) : null;
   const amountMinor = money.toMinor(amount, 'Amount');
   const applied = currency === 'USD'
     ? amountMinor
     : money.divideByRate(amountMinor, money.parseRate(rateText), 'Applied amount');
+  return { rateText, amountMinor, applied };
+}
 
-  return db.withTransaction(async client => {
-    const { rows: r } = await client.query('SELECT id FROM restaurants WHERE id = $1', [restaurantId]);
-    if (!r.length) throw new ApiError('RESTAURANT_NOT_FOUND', 'Restaurant not found');
+/**
+ * El registro del pago, dentro de una transacción ajena. Lo usa también la
+ * confirmación de un aviso de «Ya pagué», que tiene que marcar el aviso y
+ * registrar el pago juntos o ninguna de las dos cosas.
+ */
+async function recordPaymentWith(client, { operator, restaurantId, input, prepared, meta = {} }) {
+  const { chargeId = null, method, currency, reference = null, receivedOn, notes = null, settle = false } = input;
+  const { rateText, amountMinor, applied } = prepared;
 
-    let charge = null;
-    if (chargeId) {
-      charge = await lockCharge(client, chargeId);
-      if (charge.restaurant_id !== restaurantId) {
-        throw new ApiError('SUBSCRIPTION_CHARGE_NOT_FOUND', 'Charge not found');
-      }
-      if (charge.status !== 'OPEN') {
-        throw new ApiError('SUBSCRIPTION_CHARGE_CLOSED', 'This charge is already closed', { status: charge.status });
-      }
+  const { rows: r } = await client.query('SELECT id FROM restaurants WHERE id = $1', [restaurantId]);
+  if (!r.length) throw new ApiError('RESTAURANT_NOT_FOUND', 'Restaurant not found');
+
+  let charge = null;
+  if (chargeId) {
+    charge = await lockCharge(client, chargeId);
+    if (charge.restaurant_id !== restaurantId) {
+      throw new ApiError('SUBSCRIPTION_CHARGE_NOT_FOUND', 'Charge not found');
     }
-
-    const { rows: inserted } = await client.query(
-      `INSERT INTO subscription_payments
-         (restaurant_id, charge_id, method, currency, amount, fx_rate, applied_usd, reference,
-          received_on, notes, recorded_by)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9::DATE, $10, $11)
-       RETURNING *`,
-      [restaurantId, chargeId, method, currency, String(amountMinor),
-        currency === 'VES' ? rateText : null, String(applied), reference, receivedOn, notes, operator.id]
-    );
-
-    let closed = false;
-    if (charge) {
-      const paid = BigInt(charge.applied_usd) + applied;
-      if (paid >= BigInt(charge.amount_usd) || settle) {
-        await client.query(
-          `UPDATE subscription_charges SET status = 'PAID', paid_at = NOW(), updated_at = NOW() WHERE id = $1`,
-          [charge.id]
-        );
-        closed = true;
-      }
+    if (charge.status !== 'OPEN') {
+      throw new ApiError('SUBSCRIPTION_CHARGE_CLOSED', 'This charge is already closed', { status: charge.status });
     }
+  }
 
-    await operators.audit(client, {
-      operatorId: operator.id, action: 'PAYMENT_RECORDED', restaurantId,
-      resourceType: 'subscription_payment', resourceId: inserted[0].id,
-      details: {
-        chargeId, method, currency, amount: String(amountMinor), fxRate: currency === 'VES' ? rateText : null,
-        appliedUsd: String(applied), closedCharge: closed,
-        settledShort: closed && settle && BigInt(charge.applied_usd) + applied < BigInt(charge.amount_usd)
-      },
-      meta
-    });
+  const { rows: inserted } = await client.query(
+    `INSERT INTO subscription_payments
+       (restaurant_id, charge_id, method, currency, amount, fx_rate, applied_usd, reference,
+        received_on, notes, recorded_by)
+     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9::DATE, $10, $11)
+     RETURNING *`,
+    [restaurantId, chargeId, method, currency, String(amountMinor),
+      currency === 'VES' ? rateText : null, String(applied), reference, receivedOn, notes, operator.id]
+  );
 
-    const payment = paymentView({ ...inserted[0], recorded_by_email: operator.email });
-    const chargeAfter = charge ? chargeView(await lockCharge(client, charge.id)) : null;
-    return { payment, charge: chargeAfter };
+  let closed = false;
+  if (charge) {
+    const paid = BigInt(charge.applied_usd) + applied;
+    if (paid >= BigInt(charge.amount_usd) || settle) {
+      await client.query(
+        `UPDATE subscription_charges SET status = 'PAID', paid_at = NOW(), updated_at = NOW() WHERE id = $1`,
+        [charge.id]
+      );
+      closed = true;
+    }
+  }
+
+  await operators.audit(client, {
+    operatorId: operator.id, action: 'PAYMENT_RECORDED', restaurantId,
+    resourceType: 'subscription_payment', resourceId: inserted[0].id,
+    details: {
+      chargeId, method, currency, amount: String(amountMinor), fxRate: currency === 'VES' ? rateText : null,
+      appliedUsd: String(applied), closedCharge: closed,
+      settledShort: closed && settle && BigInt(charge.applied_usd) + applied < BigInt(charge.amount_usd)
+    },
+    meta
   });
+
+  const payment = paymentView({ ...inserted[0], recorded_by_email: operator.email });
+  const chargeAfter = charge ? chargeView(await lockCharge(client, charge.id)) : null;
+  return { payment, charge: chargeAfter };
 }
 
 /** Los cargos de todos los clientes. OVERDUE es un filtro, no un estado guardado. */
@@ -565,9 +580,10 @@ async function addPrice({ operator, tier, billingCycle, amountUsd, effectiveFrom
 module.exports = {
   CYCLES, PAID_TIERS, SUB_STATUSES, METHODS, DUE_DAYS,
   listClients, getClient, changePlan, updateSubscription,
-  createCharge, voidCharge, recordPayment, listCharges,
+  createCharge, voidCharge, recordPayment, preparePayment, recordPaymentWith, listCharges,
+  CLIENT_SQL, clientView, chargeView, lockCharge, addMonths, addDays,
   listPrices, addPrice,
-  _internals: { addMonths, addDays, stateOf, monthlyValue }
+  _internals: { addMonths, addDays, stateOf, monthlyValue, day }
 };
 
 // Evita que un plan desconocido se cuele en la lista de precios por otra vía.

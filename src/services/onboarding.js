@@ -375,9 +375,12 @@ async function listLeads({ status = null, limit = 50 } = {}) {
 async function markLead(leadId, status, reviewNotes = null) {
   const { rows } = await db.query(
     `UPDATE restaurant_signups
-        SET status = $2,
-            review_notes = COALESCE($3, review_notes),
-            contacted_at = CASE WHEN $2 = 'CONTACTED' THEN NOW() ELSE contacted_at END
+        SET status = $2::VARCHAR,
+            review_notes = COALESCE($3::TEXT, review_notes),
+            -- Los tipos a mano: sin ellos Postgres deduce uno para $2 en el SET
+            -- y otro en la comparación, y la consulta no llega a ejecutarse
+            -- («inconsistent types deduced for parameter $2»).
+            contacted_at = CASE WHEN $2::VARCHAR = 'CONTACTED' THEN NOW() ELSE contacted_at END
       WHERE id = $1
       RETURNING id, status`,
     [leadId, status, reviewNotes]

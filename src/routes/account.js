@@ -5,7 +5,7 @@ const {
   validateBody, validateParams, payoutSchema, paymentProviderParamSchema,
   restaurantProfileSchema, fiscalSeriesSchema, fiscalRifSchema,
   createStaffSchema, updateStaffSchema, resetStaffPasswordSchema, userIdParamSchema,
-  createInvitationSchema, invitationIdParamSchema
+  createInvitationSchema, invitationIdParamSchema, subscriptionNoticeSchema
 } = require('../middleware/schemas');
 const staff = require('../services/staff');
 const invitations = require('../services/staffInvitations');
@@ -18,6 +18,7 @@ const guestContacts = require('../services/guestContacts');
 const numbering = require('../services/fiscalNumbering');
 const issuer = require('../services/fiscalIssuer');
 const { formatRif } = require('../utils/rif');
+const subscriptionNotices = require('../services/subscriptionNotices');
 
 const router = express.Router();
 router.use(authenticateToken);
@@ -242,6 +243,28 @@ router.put(
  * usado, y lo único que se puede hacer con los demás correos es mandarles algo
  * que no pidieron.
  */
+/*
+ * Lo que el restaurante le paga a Splite. Dueño y encargado: es dinero del
+ * negocio, no del turno. Ver services/subscriptionNotices.js.
+ */
+router.get('/subscription', requireRole('OWNER', 'MANAGER'), async (req, res, next) => {
+  try {
+    res.json(await subscriptionNotices.forRestaurant(req.user.restaurantId));
+  } catch (err) { next(err); }
+});
+
+router.post(
+  '/subscription/notices', requireRole('OWNER', 'MANAGER'), validateBody(subscriptionNoticeSchema),
+  async (req, res, next) => {
+    try {
+      const notice = await subscriptionNotices.submitNotice({
+        restaurantId: req.user.restaurantId, userId: req.user.sub, input: req.body, meta: auditContext(req)
+      });
+      res.status(201).json({ notice });
+    } catch (err) { next(err); }
+  }
+);
+
 router.get('/contacts', requireRole('OWNER', 'MANAGER'), async (req, res, next) => {
   try {
     const rows = await guestContacts.listConsented({

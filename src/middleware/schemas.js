@@ -1133,7 +1133,57 @@ const adminPriceSchema = Joi.object({
   effectiveFrom: isoDay.allow(null)
 });
 
+
+/** «Ya pagué», desde el panel del restaurante. */
+const subscriptionNoticeSchema = Joi.object({
+  chargeId: uuid.allow(null),
+  method: Joi.string().valid('PAGO_MOVIL', 'TRANSFER', 'USD_CASH', 'ZELLE', 'OTHER').required(),
+  currency: Joi.string().valid('VES', 'USD').required(),
+  amount: digits.required(),
+  reference: Joi.string().trim().pattern(/^[0-9A-Za-z-]{4,40}$/).allow('', null),
+  paidOn: isoDay.required(),
+  notes: Joi.string().trim().max(500).allow('', null)
+});
+
+const adminNoticeParamSchema = Joi.object({ noticeId: uuid.required() });
+const adminNoticesQuerySchema = Joi.object({ status: Joi.string().valid('PENDING', 'CONFIRMED', 'REJECTED') });
+const adminConfirmNoticeSchema = Joi.object({
+  fxRate: Joi.string().pattern(/^\d{1,12}(\.\d{1,8})?$/).allow(null, ''),
+  settle: Joi.boolean().default(false)
+});
+const adminRejectNoticeSchema = Joi.object({ reason: Joi.string().trim().min(3).max(500).required() });
+
+const optionalText = max => Joi.string().trim().max(max).allow('', null);
+const adminPaymentDetailsSchema = Joi.object({
+  holder: optionalText(120),
+  idNumber: optionalText(20),
+  bankName: optionalText(60),
+  bankCode: Joi.string().pattern(/^\d{4}$/).allow('', null),
+  phone: optionalText(20),
+  accountNumber: optionalText(30),
+  zelle: optionalText(120),
+  notes: optionalText(300)
+});
+
+const adminLeadParamSchema = Joi.object({ leadId: uuid.required() });
+const adminLeadsQuerySchema = Joi.object({
+  status: Joi.string().valid('NEW', 'CONTACTED', 'INVITED', 'ONBOARDED', 'REJECTED')
+});
+const adminLeadStatusSchema = Joi.object({
+  status: Joi.string().valid('CONTACTED', 'REJECTED').required(),
+  notes: Joi.string().trim().max(1000).allow('', null)
+});
+
 module.exports = {
+  subscriptionNoticeSchema,
+  adminNoticeParamSchema,
+  adminNoticesQuerySchema,
+  adminConfirmNoticeSchema,
+  adminRejectNoticeSchema,
+  adminPaymentDetailsSchema,
+  adminLeadParamSchema,
+  adminLeadsQuerySchema,
+  adminLeadStatusSchema,
   operatorLoginSchema,
   operatorSetupStartSchema,
   operatorSetupCompleteSchema,

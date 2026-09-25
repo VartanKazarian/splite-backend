@@ -1651,6 +1651,60 @@ Object.assign(schemas, {
     }
   },
 
+  PaymentDetails: {
+    type: 'object',
+    description: 'Where restaurants pay Splite. Shown to them on purpose; nothing here is secret.',
+    properties: {
+      holder: { type: ['string', 'null'] },
+      idNumber: { type: ['string', 'null'], description: 'RIF or cédula.' },
+      bankName: { type: ['string', 'null'] },
+      bankCode: { type: ['string', 'null'], pattern: '^\\d{4}$' },
+      phone: { type: ['string', 'null'], description: 'Pago Móvil number.' },
+      accountNumber: { type: ['string', 'null'] },
+      zelle: { type: ['string', 'null'] },
+      notes: { type: ['string', 'null'] }
+    }
+  },
+
+  SubscriptionNotice: {
+    type: 'object',
+    description: 'A restaurant saying it paid Splite. Not a payment until someone at Splite confirms it.',
+    properties: {
+      id: { type: 'string', format: 'uuid' },
+      restaurantId: { type: 'string', format: 'uuid' },
+      restaurantName: { type: 'string' },
+      chargeId: { type: ['string', 'null'], format: 'uuid' },
+      chargePeriodStart: { type: ['string', 'null'], format: 'date' },
+      method: { type: 'string', enum: ['PAGO_MOVIL', 'TRANSFER', 'USD_CASH', 'ZELLE', 'OTHER'] },
+      currency: { type: 'string', enum: ['VES', 'USD'] },
+      amount: minorUnits,
+      reference: { type: ['string', 'null'] },
+      paidOn: { type: 'string', format: 'date' },
+      notes: { type: ['string', 'null'] },
+      status: { type: 'string', enum: ['PENDING', 'CONFIRMED', 'REJECTED'] },
+      rejectReason: { type: ['string', 'null'] },
+      submittedBy: { type: ['string', 'null'] },
+      reviewedAt: { type: ['string', 'null'], format: 'date-time' },
+      createdAt: { type: 'string', format: 'date-time' }
+    }
+  },
+
+  Lead: {
+    type: 'object',
+    properties: {
+      id: { type: 'string', format: 'uuid' },
+      restaurantName: { type: 'string' },
+      rif: { type: ['string', 'null'] },
+      email: { type: 'string' },
+      phone: { type: ['string', 'null'] },
+      status: { type: 'string', enum: ['NEW', 'CONTACTED', 'INVITED', 'ONBOARDED', 'REJECTED'] },
+      rifChecksumOk: { type: ['boolean', 'null'] },
+      createdAt: { type: 'string', format: 'date-time' },
+      invitedAt: { type: ['string', 'null'], format: 'date-time' },
+      consumedAt: { type: ['string', 'null'], format: 'date-time' }
+    }
+  },
+
   OperatorSession: {
     type: 'object',
     description: 'A console session. Signed with a different key and audience from staff sessions: neither opens the other\'s routes.',
@@ -5173,7 +5227,10 @@ const paths = {
         '',
         'Bounded harder than the staff order endpoint — 20 lines of up to 20 units, against 50 of 999.',
         'The QR is stuck to the table and anyone who photographs it can open a session, so the room worth',
-        'leaving is a table\'s order, not four hundred portions. Rate limited to 10 per minute per session.'
+        'leaving is a table\'s order, not four hundred portions. Rate limited to 10 per minute per session.',
+        '',
+        '`403 SUBSCRIPTION_SUSPENDED` when the order would open a new bill and Splite suspended the',
+        'restaurant\'s subscription. A table that already has a bill keeps ordering and paying.'
       ].join('\n'),
       security: [{ guestAuth: [] }],
       requestBody: {
@@ -5216,6 +5273,7 @@ const paths = {
             }
           }
         },
+        403: response('Forbidden'),
         ...commonErrors
       }
     }
@@ -6151,6 +6209,169 @@ const paths = {
       responses: {
         201: { description: 'Set.', content: { 'application/json': { schema: { type: 'object', properties: { price: ref('PlanPrice') } } } } },
         403: response('Forbidden'), ...commonErrors
+      }
+    }
+  },
+
+  '/api/v1/account/subscription': {
+    get: {
+      tags: ['Account'], summary: 'What the restaurant pays Splite', operationId: 'getSubscription',
+      description: 'OWNER and MANAGER. Plan, price, balance, the last charges (with the amount in Bs at today\'s BCV rate when there is one), where to pay Splite and the restaurant\'s own payment notices. Never Splite\'s internal notes.',
+      security: staff, 'x-required-roles': ['OWNER', 'MANAGER'],
+      responses: {
+        200: { description: 'The subscription.', content: { 'application/json': { schema: { type: 'object', properties: {
+          subscription: { type: 'object', properties: {
+            tier: { type: 'string' }, state: { type: 'string' }, status: { type: 'string' }, billingCycle: { type: 'string' },
+            priceUsd: { ...minorUnits, type: ['string', 'null'] }, trialEndsAt: { type: ['string', 'null'], format: 'date-time' },
+            balanceUsd: minorUnits, balanceVesToday: { ...minorUnits, type: ['string', 'null'] }
+          } },
+          charges: { type: 'array', items: ref('AdminCharge') },
+          notices: { type: 'array', items: ref('SubscriptionNotice') },
+          paymentDetails: { oneOf: [ref('PaymentDetails'), { type: 'null' }] },
+          rate: { type: ['object', 'null'], properties: { rate: { type: 'string' }, valueDate: { type: ['string', 'null'], format: 'date' } } }
+        } } } } },
+        403: response('Forbidden'), ...commonErrors
+      }
+    }
+  },
+
+  '/api/v1/account/subscription/notices': {
+    post: {
+      tags: ['Account'], summary: 'Tell Splite you paid', operationId: 'submitSubscriptionNotice',
+      description: 'OWNER and MANAGER. Stays PENDING until someone at Splite finds it in the bank and confirms it (then it is recorded as a payment) or rejects it with a reason. The same reference cannot be reported twice unless the earlier notice was rejected.',
+      security: staff, 'x-required-roles': ['OWNER', 'MANAGER'],
+      requestBody: { required: true, content: { 'application/json': { schema: { type: 'object', required: ['method', 'currency', 'amount', 'paidOn'], properties: {
+        chargeId: { type: ['string', 'null'], format: 'uuid' },
+        method: { type: 'string', enum: ['PAGO_MOVIL', 'TRANSFER', 'USD_CASH', 'ZELLE', 'OTHER'] },
+        currency: { type: 'string', enum: ['VES', 'USD'] },
+        amount: minorUnits,
+        reference: { type: ['string', 'null'] },
+        paidOn: { type: 'string', format: 'date' },
+        notes: { type: ['string', 'null'] }
+      } } } } },
+      responses: {
+        201: { description: 'Received.', content: { 'application/json': { schema: { type: 'object', properties: { notice: ref('SubscriptionNotice') } } } } },
+        403: response('Forbidden'), 404: response('NotFound'), 409: response('Conflict'), ...commonErrors
+      }
+    }
+  },
+
+  '/api/v1/admin/notices': {
+    get: {
+      tags: ['Operator console'], summary: 'Payment notices from restaurants', operationId: 'adminListNotices',
+      description: 'ADMIN and SUPPORT. PENDING by default.',
+      security: operator, 'x-required-roles': ['ADMIN', 'SUPPORT'],
+      parameters: [{ name: 'status', in: 'query', schema: { type: 'string', enum: ['PENDING', 'CONFIRMED', 'REJECTED'] } }],
+      responses: {
+        200: { description: 'Notices.', content: { 'application/json': { schema: { type: 'object', properties: { data: { type: 'array', items: ref('SubscriptionNotice') } } } } } },
+        403: response('Forbidden'), ...commonErrors
+      }
+    }
+  },
+
+  '/api/v1/admin/notices/{noticeId}/confirm': {
+    post: {
+      tags: ['Operator console'], summary: 'The money arrived: record it', operationId: 'adminConfirmNotice',
+      description: 'ADMIN only. Records the payment from the notice (VES at `fxRate`, or today\'s BCV rate) and marks the notice confirmed, in one transaction. If the charge was closed meanwhile, the payment is recorded on account.',
+      security: operator, 'x-required-roles': ['ADMIN'],
+      parameters: [{ name: 'noticeId', in: 'path', required: true, schema: { type: 'string', format: 'uuid' } }],
+      requestBody: { required: false, content: { 'application/json': { schema: { type: 'object', properties: { fxRate: { type: ['string', 'null'] }, settle: { type: 'boolean' } } } } } },
+      responses: {
+        200: { description: 'Recorded.', content: { 'application/json': { schema: { type: 'object', properties: { payment: ref('AdminPayment'), charge: { oneOf: [ref('AdminCharge'), { type: 'null' }] } } } } } },
+        403: response('Forbidden'), 404: response('NotFound'), 409: response('Conflict'), ...commonErrors
+      }
+    }
+  },
+
+  '/api/v1/admin/notices/{noticeId}/reject': {
+    post: {
+      tags: ['Operator console'], summary: 'Not in the bank: reject with a reason', operationId: 'adminRejectNotice',
+      description: 'ADMIN only. The restaurant sees the reason.',
+      security: operator, 'x-required-roles': ['ADMIN'],
+      parameters: [{ name: 'noticeId', in: 'path', required: true, schema: { type: 'string', format: 'uuid' } }],
+      requestBody: { required: true, content: { 'application/json': { schema: { type: 'object', required: ['reason'], properties: { reason: { type: 'string', minLength: 3, maxLength: 500 } } } } } },
+      responses: {
+        200: { description: 'Rejected.', content: { 'application/json': { schema: { type: 'object', properties: { notice: ref('SubscriptionNotice') } } } } },
+        403: response('Forbidden'), 404: response('NotFound'), 409: response('Conflict'), ...commonErrors
+      }
+    }
+  },
+
+  '/api/v1/admin/settings/payment-details': {
+    get: {
+      tags: ['Operator console'], summary: 'Where restaurants pay Splite', operationId: 'adminGetPaymentDetails',
+      security: operator, 'x-required-roles': ['ADMIN', 'SUPPORT'],
+      responses: {
+        200: { description: 'Details.', content: { 'application/json': { schema: { type: 'object', properties: { paymentDetails: ref('PaymentDetails') } } } } },
+        403: response('Forbidden'), ...commonErrors
+      }
+    },
+    put: {
+      tags: ['Operator console'], summary: 'Set where restaurants pay Splite', operationId: 'adminSetPaymentDetails',
+      description: 'ADMIN only. Shown in every restaurant\'s panel and in the reminders. Replaces the whole set.',
+      security: operator, 'x-required-roles': ['ADMIN'],
+      requestBody: { required: true, content: { 'application/json': { schema: ref('PaymentDetails') } } },
+      responses: {
+        200: { description: 'Saved.', content: { 'application/json': { schema: { type: 'object', properties: { paymentDetails: ref('PaymentDetails') } } } } },
+        403: response('Forbidden'), ...commonErrors
+      }
+    }
+  },
+
+  '/api/v1/admin/metrics': {
+    get: {
+      tags: ['Operator console'], summary: 'How the business is doing', operationId: 'adminMetrics',
+      description: 'ADMIN and SUPPORT. Recurring revenue, outstanding, clients per state, trial-to-paid conversion over 180 days, cancellations in the last 30, and six months of new clients, charged and collected (US dollar cents). `rateBps` is basis points: 2500 = 25 %.',
+      security: operator, 'x-required-roles': ['ADMIN', 'SUPPORT'],
+      responses: {
+        200: { description: 'Metrics.', content: { 'application/json': { schema: { type: 'object', properties: {
+          monthlyRecurringUsd: minorUnits, outstandingUsd: minorUnits, byState: { type: 'object' }, totalClients: { type: 'integer' },
+          pendingNotices: { type: 'integer' },
+          trialConversion: { type: 'object', properties: { windowDays: { type: 'integer' }, started: { type: 'integer' }, paying: { type: 'integer' }, rateBps: { type: ['integer', 'null'] } } },
+          cancelledLast30Days: { type: 'integer' },
+          months: { type: 'array', items: { type: 'object', properties: { month: { type: 'string' }, newClients: { type: 'integer' }, chargedUsd: minorUnits, collectedUsd: minorUnits } } }
+        } } } } },
+        403: response('Forbidden'), ...commonErrors
+      }
+    }
+  },
+
+  '/api/v1/admin/leads': {
+    get: {
+      tags: ['Operator console'], summary: 'Requests from "Quiero Splite"', operationId: 'adminListLeads',
+      description: 'ADMIN and SUPPORT. Newest first, up to 200.',
+      security: operator, 'x-required-roles': ['ADMIN', 'SUPPORT'],
+      parameters: [{ name: 'status', in: 'query', schema: { type: 'string', enum: ['NEW', 'CONTACTED', 'INVITED', 'ONBOARDED', 'REJECTED'] } }],
+      responses: {
+        200: { description: 'Leads.', content: { 'application/json': { schema: { type: 'object', properties: { data: { type: 'array', items: ref('Lead') } } } } } },
+        403: response('Forbidden'), ...commonErrors
+      }
+    }
+  },
+
+  '/api/v1/admin/leads/{leadId}/status': {
+    post: {
+      tags: ['Operator console'], summary: 'Mark a request contacted or rejected', operationId: 'adminMarkLead',
+      description: 'ADMIN only. The same as `npm run onboarding -- contacted|reject`, with the operator in the trail.',
+      security: operator, 'x-required-roles': ['ADMIN'],
+      parameters: [{ name: 'leadId', in: 'path', required: true, schema: { type: 'string', format: 'uuid' } }],
+      requestBody: { required: true, content: { 'application/json': { schema: { type: 'object', required: ['status'], properties: { status: { type: 'string', enum: ['CONTACTED', 'REJECTED'] }, notes: { type: ['string', 'null'] } } } } } },
+      responses: {
+        200: { description: 'Marked.', content: { 'application/json': { schema: { type: 'object', properties: { lead: { type: 'object', properties: { id: { type: 'string', format: 'uuid' }, status: { type: 'string' } } } } } } } },
+        403: response('Forbidden'), 404: response('NotFound'), ...commonErrors
+      }
+    }
+  },
+
+  '/api/v1/admin/leads/{leadId}/invite': {
+    post: {
+      tags: ['Operator console'], summary: 'Email the single-use signup link', operationId: 'adminInviteLead',
+      description: 'ADMIN only. The same as `npm run onboarding -- invite`. Needs ONBOARDING_ENABLED, or the link would lead to a page that does not exist (409 ONBOARDING_DISABLED).',
+      security: operator, 'x-required-roles': ['ADMIN'],
+      parameters: [{ name: 'leadId', in: 'path', required: true, schema: { type: 'string', format: 'uuid' } }],
+      responses: {
+        200: { description: 'Invited.', content: { 'application/json': { schema: { type: 'object', properties: { lead: { type: 'object', properties: { id: { type: 'string', format: 'uuid' }, email: { type: 'string' }, restaurantName: { type: 'string' } } } } } } } },
+        403: response('Forbidden'), 404: response('NotFound'), 409: response('Conflict'), ...commonErrors
       }
     }
   },

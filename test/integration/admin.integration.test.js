@@ -200,6 +200,13 @@ describe('consola de operador', { skip }, () => {
         body: { tier: 'PRO', billingCycle: 'MONTHLY', amountUsd: '5900', effectiveFrom: '2020-01-01' }
       });
       assert.equal(price.status, 201, JSON.stringify(price.body));
+      // Y otro desde hoy: la migración 051 pone el PRO de salida (29 $) con fecha
+      // de su día, que sin esto mandaría sobre el de 2020 en los cargos de hoy.
+      const todayPrice = await call('POST', '/api/v1/admin/prices', {
+        token: adminOp.token,
+        body: { tier: 'PRO', billingCycle: 'MONTHLY', amountUsd: '5900', effectiveFrom: fx.caracasToday() }
+      });
+      assert.equal(todayPrice.status, 201, JSON.stringify(todayPrice.body));
       restaurant = await fixtures.createRestaurant({ name: `Cliente ${stamp}` });
     });
 

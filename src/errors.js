@@ -89,6 +89,9 @@ const CODES = {
   STAFF_OUTRANKED: 403,
   STAFF_ROLE_TOO_HIGH: 403,
   STAFF_SELF_FORBIDDEN: 403,
+  // Suscripción suspendida o cancelada desde la consola: no se abren cuentas
+  // nuevas. Las abiertas siguen funcionando.
+  SUBSCRIPTION_SUSPENDED: 403,
 
   // 404 -- named per resource, so a client can tell which lookup failed
   // without parsing prose. All of these mean "not found *in your restaurant*";
@@ -102,6 +105,8 @@ const CODES = {
   // Enlace de alta caducado, usado o inventado: la misma respuesta.
   OPERATOR_SETUP_INVALID: 404,
   SUBSCRIPTION_CHARGE_NOT_FOUND: 404,
+  SUBSCRIPTION_NOTICE_NOT_FOUND: 404,
+  LEAD_NOT_FOUND: 404,
   // Caducada, usada, anulada o inventada: las cuatro responden igual, para no
   // decirle a quien prueba tokens cuál es.
   INVITATION_INVALID: 404,
@@ -141,6 +146,12 @@ const CODES = {
   SUBSCRIPTION_CHARGE_CLOSED: 409,
   // No hay tarifa para ese plan y ciclo, ni precio pactado: no se puede cobrar.
   SUBSCRIPTION_PRICE_MISSING: 409,
+  // Esa referencia ya se avisó y está pendiente o confirmada.
+  SUBSCRIPTION_NOTICE_DUPLICATE: 409,
+  // Ya confirmado o rechazado.
+  SUBSCRIPTION_NOTICE_CLOSED: 409,
+  // Invitar necesita el alta por enlace encendida (ONBOARDING_ENABLED).
+  ONBOARDING_DISABLED: 409,
   PASSWORD_UNCHANGED: 409,
   STAFF_LAST_OWNER: 409,
   // Enrolment state, all of them "the account is not in the state this asks
