@@ -2,6 +2,7 @@ const express = require('express');
 const db = require('../connectors/base');
 const config = require('../config');
 const { authenticateToken, requireRole } = require('../middleware/auth');
+const { assertMayOpenBills } = require('../services/subscriptionGate');
 const rateLimit = require('../middleware/rateLimit');
 const {
   validateBody,
@@ -152,6 +153,7 @@ router.post(
             billId: open.rows[0].id
           });
         }
+        await assertMayOpenBills(client, req.user.restaurantId);
 
         // The bill is denominated in whatever the menu quotes, at the rate
         // frozen above, before this transaction opened.
@@ -259,6 +261,7 @@ router.post(
         let billId = existing.rows[0]?.id;
 
         if (!billId) {
+          await assertMayOpenBills(client, restaurantId);
           const created = await client.query(
             // Same rule as POST /bills: the person who opened it. This path is
             // the one a waiter actually uses -- they add the first order and

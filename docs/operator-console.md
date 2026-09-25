@@ -53,3 +53,32 @@ El secreto del autenticador no se guarda en la base de datos. Se deriva del secr
   - Lo que el pago descuenta del cargo queda fijado con esa tasa.
   - Si el pago cubre lo que falta, el cargo queda pagado.
 - **Suspender o cancelar** una suscripción hoy solo queda registrado. Todavía no apaga nada en el producto: qué pierde un restaurante que no paga es una decisión pendiente.
+
+## Segunda vuelta: lo que corre solo
+
+- **Precios de salida.** STARTER 9 $, PRO 29 $ y ENTERPRISE 59 $ al mes, desde el 25/09/2026 (migración 051). Se cambian en la consola, en Precios.
+- **Renovación nocturna** (`npm run billing`, dentro de `npm run maintenance`).
+  - Cuando termina un periodo, genera el cargo del siguiente, con el precio de ese día.
+  - Solo renueva a quien ya se le empezó a cobrar: el primer cargo lo genera una persona desde la consola.
+  - No renueva pruebas, suspendidos ni cancelados.
+- **Recordatorios por correo al dueño.**
+  - Hay tres por cargo, cada uno una sola vez: al generarse, al vencer y a los 7 días de vencido.
+  - Un correo que falla se reintenta la noche siguiente.
+  - Llevan el monto en $ y en Bs a la tasa BCV del día, y los datos de cobro de Splite.
+- **Datos de cobro de Splite** (a dónde pagan los restaurantes): se ponen en la consola, en Precios. Sin ellos, los recordatorios salen sin la sección «Puedes pagar a».
+
+## «Ya pagué»
+
+- En Configuración → Suscripción, el dueño o el encargado ve su plan, lo que debe (en $ y en Bs a la tasa de hoy) y a dónde pagar. Desde ahí avisa de un pago.
+- **El aviso no es un pago.** Queda pendiente en Cobros de la consola, y al equipo le llega un correo a `ONBOARDING_TEAM_EMAIL`.
+- **Confirmar** registra el pago de verdad, a la tasa que se indique o a la del BCV de hoy.
+- **Rechazar** exige un motivo, y el restaurante lo ve.
+- La misma referencia no se puede avisar dos veces, salvo que se rechazara.
+
+## Qué pasa si no paga
+
+- **Nada se corta solo.** Un cargo vencido solo manda recordatorios y enseña un aviso en el panel del restaurante.
+- **Suspender o cancelar** la suscripción desde la consola es una decisión de una persona. Su único efecto: **no se pueden abrir cuentas nuevas** (`403 SUBSCRIPTION_SUSPENDED`).
+- Las mesas que ya tienen cuenta siguen pidiendo, dividiendo y pagando: un comensal nunca se queda sin poder pagar.
+- Al reactivar, todo vuelve a funcionar.
+- **Una prueba que termina** tampoco corta nada: sale como «Prueba vencida» en Clientes para que alguien llame.
