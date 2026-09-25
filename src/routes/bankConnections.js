@@ -4,7 +4,7 @@ const dto = require('../dto');
 const { authenticateToken, requireRole } = require('../middleware/auth');
 const {
   validateBody, validateParams, createBankConnectionSchema, updateBankConnectionSchema,
-  bankConnectionIdParamSchema, bankMovementsSchema
+  bankConnectionIdParamSchema, bankImportSchema
 } = require('../middleware/schemas');
 const { auditContext } = require('../services/audit');
 const connections = require('../services/bankConnections');
@@ -84,7 +84,7 @@ router.post(
  * tandas de hasta 500 filas. Cada fila la valida el normalizador.
  */
 router.post(
-  '/:connectionId/import', verifiers, validateParams(bankConnectionIdParamSchema), validateBody(bankMovementsSchema),
+  '/:connectionId/import', verifiers, validateParams(bankConnectionIdParamSchema), validateBody(bankImportSchema),
   async (req, res, next) => {
     try {
       const connection = await connections.getConnection({
@@ -93,6 +93,9 @@ router.post(
       if (connection.kind !== 'STATEMENT_IMPORT') {
         const { ApiError } = require('../errors');
         throw new ApiError('BANK_CONNECTION_KIND_MISMATCH', 'Only a statement-import connection accepts uploads');
+      }
+      if (req.body.columnMap !== undefined) {
+        await connections.saveColumnMap({ connection, columnMap: req.body.columnMap });
       }
       res.json(await connections.ingest({ connection, rows: req.body.movements }));
     } catch (err) { next(err); }

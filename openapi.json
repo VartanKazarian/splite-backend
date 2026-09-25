@@ -12439,6 +12439,13 @@
                     "items": {
                       "$ref": "#/components/schemas/BankMovementInput"
                     }
+                  },
+                  "columnMap": {
+                    "type": [
+                      "object",
+                      "null"
+                    ],
+                    "description": "Optional: remember which column holds each value, for the next upload."
                   }
                 }
               }

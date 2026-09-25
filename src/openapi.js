@@ -5961,7 +5961,7 @@ const paths = {
       parameters: [{ name: 'connectionId', in: 'path', required: true, schema: { type: 'string', format: 'uuid' } }],
       requestBody: {
         required: true,
-        content: { 'application/json': { schema: { type: 'object', required: ['movements'], properties: { movements: { type: 'array', minItems: 1, maxItems: 500, items: ref('BankMovementInput') } } } } }
+        content: { 'application/json': { schema: { type: 'object', required: ['movements'], properties: { movements: { type: 'array', minItems: 1, maxItems: 500, items: ref('BankMovementInput') }, columnMap: { type: ['object', 'null'], description: 'Optional: remember which column holds each value, for the next upload.' } } } } }
       },
       responses: {
         200: { description: 'What was stored and what matched.', content: { 'application/json': { schema: ref('BankIngestResult') } } },

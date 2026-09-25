@@ -221,7 +221,7 @@ describe('conexiones con el banco', { skip }, () => {
     const { claim, reference: ref } = await pendingClaim();
     const res = await call('POST', `/api/v1/bank-connections/${id}/import`, {
       token: cashierToken,
-      body: { movements: [
+      body: { columnMap: { reference: 1, amount: 3, date: 0, description: 2, hasHeader: true }, movements: [
         { reference: ref, amount: '110,00', date: '24/09/2026', description: 'PAGO MOVIL' },
         { reference: reference(), amount: '-50,00' },
         { reference: '12', amount: '10,00' }
@@ -231,6 +231,9 @@ describe('conexiones con el banco', { skip }, () => {
     assert.equal(res.body.inserted, 1);
     assert.deepEqual(res.body.rejected, [{ index: 1, reason: 'debit' }, { index: 2, reason: 'reference' }]);
     assert.equal((await matchOf(claim.id)).outcome, 'MATCHED');
+
+    const again = await call('GET', '/api/v1/bank-connections', { token: cashierToken });
+    assert.equal(again.body.data.find(c => c.id === id).columnMap.amount, 3, 'caja deja el mapeo guardado');
 
     const listed = await call('GET', `/api/v1/bank-connections/${id}/movements`, { token: cashierToken });
     assert.ok(listed.body.data.some(m => m.reference === ref));

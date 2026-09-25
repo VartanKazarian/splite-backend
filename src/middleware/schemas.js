@@ -73,6 +73,13 @@ const bankMovementsSchema = Joi.object({
   }).unknown(false)).min(1).max(500).required()
 });
 
+/**
+ * Subir un estado de cuenta: los movimientos y, si se quiere recordar, qué
+ * columna era cada dato. Quien importa a diario es caja, así que guardar el
+ * mapeo va con la importación y no con la edición de la conexión (del dueño).
+ */
+const bankImportSchema = bankMovementsSchema.keys({ columnMap: bankColumnMapSchema.allow(null) });
+
 /** Invitar: la dirección y el rol. La contraseña la pone quien acepta. */
 const createInvitationSchema = Joi.object({
   email: Joi.string().email({ minDomainSegments: 2 }).max(254).lowercase().required(),
@@ -1084,6 +1091,7 @@ module.exports = {
   updateBankConnectionSchema,
   bankConnectionIdParamSchema,
   bankMovementsSchema,
+  bankImportSchema,
   invitationIdParamSchema,
   invitationTokenSchema,
   acceptInvitationSchema,

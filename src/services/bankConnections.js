@@ -212,6 +212,14 @@ async function authenticateInbound({ connectionId, timestamp, signature, rawBody
   return connection;
 }
 
+/** Recordar qué columna del estado de cuenta es cada dato, para la próxima vez. */
+async function saveColumnMap({ connection, columnMap }) {
+  await db.query(
+    'UPDATE bank_connections SET column_map = $3, updated_at = now() WHERE id = $1 AND restaurant_id = $2',
+    [connection.id, connection.restaurant_id, columnMap]
+  );
+}
+
 /** Los últimos movimientos de una conexión, para ver que llegan. */
 async function recentMovements({ restaurantId, connectionId, limit = 50 }) {
   await getConnection({ restaurantId, connectionId });
@@ -229,5 +237,5 @@ async function recentMovements({ restaurantId, connectionId, limit = 50 }) {
 module.exports = {
   SIGNATURE_WINDOW_SECONDS, MAX_MOVEMENTS_PER_CALL,
   listConnections, getConnection, createConnection, updateConnection, rotateSecret,
-  ingest, authenticateInbound, recentMovements, signatureFor, secretFor, inboundPath
+  ingest, saveColumnMap, authenticateInbound, recentMovements, signatureFor, secretFor, inboundPath
 };
