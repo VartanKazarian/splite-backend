@@ -1651,6 +1651,107 @@ Object.assign(schemas, {
     }
   },
 
+  OperatorSession: {
+    type: 'object',
+    description: 'A console session. Signed with a different key and audience from staff sessions: neither opens the other\'s routes.',
+    properties: {
+      accessToken: { type: 'string' },
+      expiresIn: { type: 'integer', description: 'Seconds. There is no refresh; sign in again.' },
+      operator: ref('Operator')
+    }
+  },
+
+  Operator: {
+    type: 'object',
+    properties: {
+      id: { type: 'string', format: 'uuid' },
+      email: { type: 'string', format: 'email' },
+      displayName: { type: 'string' },
+      role: { type: 'string', enum: ['ADMIN', 'SUPPORT'] },
+      active: { type: 'boolean' },
+      activated: { type: 'boolean' },
+      lastLoginAt: { type: ['string', 'null'], format: 'date-time' }
+    }
+  },
+
+  AdminClient: {
+    type: 'object',
+    description: 'A restaurant as Splite bills it. Amounts are US dollar cents as strings.',
+    properties: {
+      id: { type: 'string', format: 'uuid' },
+      name: { type: 'string' },
+      rif: { type: ['string', 'null'] },
+      ownerEmail: { type: ['string', 'null'] },
+      tier: { type: 'string', enum: ['TRIAL', 'STARTER', 'PRO', 'ENTERPRISE'] },
+      trialEndsAt: { type: ['string', 'null'], format: 'date-time' },
+      state: { type: 'string', enum: ['TRIAL', 'TRIAL_EXPIRED', 'ACTIVE', 'OVERDUE', 'SUSPENDED', 'CANCELLED'], description: 'One word for the situation. CANCELLED and SUSPENDED win over everything; OVERDUE means an open charge is past its due date.' },
+      subscriptionStatus: { type: 'string', enum: ['ACTIVE', 'SUSPENDED', 'CANCELLED'] },
+      billingCycle: { type: 'string', enum: ['MONTHLY', 'ANNUAL'] },
+      customPriceUsd: { ...minorUnits, type: ['string', 'null'] },
+      listPriceUsd: { ...minorUnits, type: ['string', 'null'] },
+      priceUsd: { ...minorUnits, type: ['string', 'null'], description: 'What the next charge will be: the agreed price, else the list price. Null on a trial.' },
+      monthlyValueUsd: { ...minorUnits, type: ['string', 'null'] },
+      balanceUsd: minorUnits,
+      lastActivityAt: { type: ['string', 'null'], format: 'date-time', description: 'When the restaurant last opened a bill.' },
+      createdAt: { type: 'string', format: 'date-time' },
+      notes: { type: ['string', 'null'] }
+    }
+  },
+
+  AdminCharge: {
+    type: 'object',
+    description: 'What a restaurant owes Splite for one period. **Not a fiscal invoice.**',
+    properties: {
+      id: { type: 'string', format: 'uuid' },
+      restaurantId: { type: 'string', format: 'uuid' },
+      restaurantName: { type: 'string' },
+      tier: { type: 'string' },
+      billingCycle: { type: 'string', enum: ['MONTHLY', 'ANNUAL'] },
+      periodStart: { type: 'string', format: 'date' },
+      periodEnd: { type: 'string', format: 'date' },
+      amountUsd: minorUnits,
+      paidUsd: minorUnits,
+      remainingUsd: minorUnits,
+      dueOn: { type: 'string', format: 'date' },
+      status: { type: 'string', enum: ['OPEN', 'PAID', 'VOID'] },
+      overdue: { type: 'boolean' },
+      paidAt: { type: ['string', 'null'], format: 'date-time' },
+      voidReason: { type: ['string', 'null'] },
+      createdAt: { type: 'string', format: 'date-time' }
+    }
+  },
+
+  AdminPayment: {
+    type: 'object',
+    properties: {
+      id: { type: 'string', format: 'uuid' },
+      restaurantId: { type: 'string', format: 'uuid' },
+      chargeId: { type: ['string', 'null'], format: 'uuid' },
+      method: { type: 'string', enum: ['PAGO_MOVIL', 'TRANSFER', 'USD_CASH', 'ZELLE', 'OTHER'] },
+      currency: { type: 'string', enum: ['VES', 'USD'] },
+      amount: minorUnits,
+      fxRate: { type: ['string', 'null'], description: 'Bs per US dollar used to apply a VES payment. Fixed when recorded.' },
+      appliedUsd: minorUnits,
+      reference: { type: ['string', 'null'] },
+      receivedOn: { type: 'string', format: 'date' },
+      notes: { type: ['string', 'null'] },
+      recordedBy: { type: ['string', 'null'] },
+      createdAt: { type: 'string', format: 'date-time' }
+    }
+  },
+
+  PlanPrice: {
+    type: 'object',
+    properties: {
+      id: { type: 'string', format: 'uuid' },
+      tier: { type: 'string', enum: ['STARTER', 'PRO', 'ENTERPRISE'] },
+      billingCycle: { type: 'string', enum: ['MONTHLY', 'ANNUAL'] },
+      amountUsd: minorUnits,
+      effectiveFrom: { type: 'string', format: 'date' },
+      createdAt: { type: 'string', format: 'date-time' }
+    }
+  },
+
   BankConnection: {
     type: 'object',
     description: 'Where a restaurant\'s bank movements come from. Never carries a secret: none is stored, and a webhook\'s signing secret is returned only when the connection is created or its secret rotated.',
@@ -2481,6 +2582,7 @@ const parameters = {
 };
 
 const staff = [{ staffAuth: [] }];
+const operator = [{ operatorAuth: [] }];
 
 const onboardingPaths = {
   '/api/v1/onboarding/restaurants': {
@@ -5846,6 +5948,213 @@ const paths = {
     }
   },
 
+  '/api/v1/admin/auth/login': {
+    post: {
+      tags: ['Operator console'],
+      summary: 'Sign in to the Splite console',
+      operationId: 'operatorLogin',
+      description: 'Email, password and the authenticator code in one request. Every failure is the same `INVALID_CREDENTIALS`, and a code works once. Rate-limited like the staff login.',
+      security: [],
+      requestBody: { required: true, content: { 'application/json': { schema: { type: 'object', required: ['email', 'password', 'code'], properties: { email: { type: 'string', format: 'email' }, password: { type: 'string' }, code: { type: 'string', pattern: '^[0-9]{6}$' } } } } } },
+      responses: {
+        200: { description: 'Signed in.', content: { 'application/json': { schema: ref('OperatorSession') } } },
+        400: response('BadRequest'), 401: response('Unauthorized'), 429: response('TooManyRequests'), 500: response('ServerError')
+      }
+    }
+  },
+
+  '/api/v1/admin/auth/setup/start': {
+    post: {
+      tags: ['Operator console'],
+      summary: 'Open a setup link',
+      operationId: 'operatorSetupStart',
+      description: 'The link comes from `npm run operator -- create|reset`. Returns what the authenticator needs. Repeatable until the setup is completed; an expired, used or unknown token is a 404.',
+      security: [],
+      requestBody: { required: true, content: { 'application/json': { schema: { type: 'object', required: ['token'], properties: { token: { type: 'string' } } } } } },
+      responses: {
+        200: { description: 'Authenticator details.', content: { 'application/json': { schema: { type: 'object', properties: { email: { type: 'string' }, displayName: { type: 'string' }, secret: { type: 'string' }, otpauthUri: { type: 'string' } } } } } },
+        400: response('BadRequest'), 404: response('NotFound'), 429: response('TooManyRequests'), 500: response('ServerError')
+      }
+    }
+  },
+
+  '/api/v1/admin/auth/setup/complete': {
+    post: {
+      tags: ['Operator console'],
+      summary: 'Finish setup: password and a first code',
+      operationId: 'operatorSetupComplete',
+      description: 'The password needs 14 characters or more. The code proves the authenticator is linked; the second factor is mandatory for every operator. Signs the operator in.',
+      security: [],
+      requestBody: { required: true, content: { 'application/json': { schema: { type: 'object', required: ['token', 'password', 'code'], properties: { token: { type: 'string' }, password: { type: 'string', minLength: 14 }, code: { type: 'string', pattern: '^[0-9]{6}$' } } } } } },
+      responses: {
+        200: { description: 'Signed in.', content: { 'application/json': { schema: ref('OperatorSession') } } },
+        400: response('BadRequest'), 401: response('Unauthorized'), 404: response('NotFound'), 429: response('TooManyRequests'), 500: response('ServerError')
+      }
+    }
+  },
+
+  '/api/v1/admin/me': {
+    get: {
+      tags: ['Operator console'], summary: 'Who is signed in', operationId: 'operatorMe',
+      security: operator, 'x-required-roles': ['ADMIN', 'SUPPORT'],
+      responses: {
+        200: { description: 'The operator.', content: { 'application/json': { schema: { type: 'object', properties: { operator: ref('Operator') } } } } },
+        403: response('Forbidden'), ...commonErrors
+      }
+    }
+  },
+
+  '/api/v1/admin/clients': {
+    get: {
+      tags: ['Operator console'], summary: 'Every restaurant, with plan, price, balance and activity', operationId: 'adminListClients',
+      description: 'ADMIN and SUPPORT. `summary` counts restaurants per state and adds up monthly recurring revenue (ACTIVE and OVERDUE, annual prices divided by twelve) and what is outstanding.',
+      security: operator, 'x-required-roles': ['ADMIN', 'SUPPORT'],
+      parameters: [
+        { name: 'q', in: 'query', schema: { type: 'string', maxLength: 80 }, description: 'Name, RIF or any staff email.' },
+        { name: 'state', in: 'query', schema: { type: 'string', enum: ['TRIAL', 'TRIAL_EXPIRED', 'ACTIVE', 'OVERDUE', 'SUSPENDED', 'CANCELLED'] } }
+      ],
+      responses: {
+        200: { description: 'Clients.', content: { 'application/json': { schema: { type: 'object', properties: { data: { type: 'array', items: ref('AdminClient') }, summary: { type: 'object', properties: { total: { type: 'integer' }, byState: { type: 'object' }, monthlyRecurringUsd: minorUnits, outstandingUsd: minorUnits } } } } } } },
+        403: response('Forbidden'), ...commonErrors
+      }
+    }
+  },
+
+  '/api/v1/admin/clients/{restaurantId}': {
+    get: {
+      tags: ['Operator console'], summary: 'One client: billing, usage, setup and history', operationId: 'adminGetClient',
+      description: 'ADMIN and SUPPORT. `usage` is the last 30 days; `history` is the console\'s own trail for this restaurant, newest first.',
+      security: operator, 'x-required-roles': ['ADMIN', 'SUPPORT'],
+      parameters: [{ name: 'restaurantId', in: 'path', required: true, schema: { type: 'string', format: 'uuid' } }],
+      responses: {
+        200: { description: 'The client.', content: { 'application/json': { schema: { type: 'object', properties: {
+          client: ref('AdminClient'),
+          charges: { type: 'array', items: ref('AdminCharge') },
+          payments: { type: 'array', items: ref('AdminPayment') },
+          usage: { type: 'object', properties: { bills30d: { type: 'integer' }, collectedVes30d: minorUnits, tables: { type: 'integer' }, staff: { type: 'integer' }, products: { type: 'integer' }, bankConnections: { type: 'integer' } } },
+          setup: { type: 'object', properties: { menuLoaded: { type: 'boolean' }, tablesCreated: { type: 'boolean' }, rifSet: { type: 'boolean' }, bankConnected: { type: 'boolean' } } },
+          history: { type: 'array', items: { type: 'object', properties: { action: { type: 'string' }, details: { type: ['object', 'null'] }, operatorEmail: { type: ['string', 'null'] }, at: { type: 'string', format: 'date-time' } } } }
+        } } } } },
+        403: response('Forbidden'), 404: response('NotFound'), ...commonErrors
+      }
+    }
+  },
+
+  '/api/v1/admin/clients/{restaurantId}/plan': {
+    patch: {
+      tags: ['Operator console'], summary: 'Change the plan', operationId: 'adminChangePlan',
+      description: 'ADMIN only. The same rule as `npm run plan -- set`: a downgrade that removes something the restaurant already uses (fiscal invoicing) needs `force`. Leaving TRIAL clears the trial date.',
+      security: operator, 'x-required-roles': ['ADMIN'],
+      parameters: [{ name: 'restaurantId', in: 'path', required: true, schema: { type: 'string', format: 'uuid' } }],
+      requestBody: { required: true, content: { 'application/json': { schema: { type: 'object', required: ['tier'], properties: { tier: { type: 'string', enum: ['TRIAL', 'STARTER', 'PRO', 'ENTERPRISE'] }, trialDays: { type: ['integer', 'null'], minimum: 1, maximum: 365 }, force: { type: 'boolean' }, note: { type: ['string', 'null'] } } } } } },
+      responses: {
+        200: { description: 'Changed.', content: { 'application/json': { schema: { type: 'object', properties: { tier: { type: 'string' }, trialEndsAt: { type: ['string', 'null'], format: 'date-time' }, gained: { type: 'array', items: { type: 'string' } }, lost: { type: 'array', items: { type: 'string' } } } } } } },
+        403: response('Forbidden'), 404: response('NotFound'), 409: response('Conflict'), ...commonErrors
+      }
+    }
+  },
+
+  '/api/v1/admin/clients/{restaurantId}/subscription': {
+    patch: {
+      tags: ['Operator console'], summary: 'Billing cycle, agreed price, status and notes', operationId: 'adminUpdateSubscription',
+      description: 'ADMIN only. `customPriceUsd: null` goes back to the list price. SUSPENDED and CANCELLED are recorded for billing; they do not yet switch anything off in the product.',
+      security: operator, 'x-required-roles': ['ADMIN'],
+      parameters: [{ name: 'restaurantId', in: 'path', required: true, schema: { type: 'string', format: 'uuid' } }],
+      requestBody: { required: true, content: { 'application/json': { schema: { type: 'object', properties: { billingCycle: { type: 'string', enum: ['MONTHLY', 'ANNUAL'] }, customPriceUsd: { ...minorUnits, type: ['string', 'null'] }, status: { type: 'string', enum: ['ACTIVE', 'SUSPENDED', 'CANCELLED'] }, notes: { type: ['string', 'null'] }, reason: { type: ['string', 'null'] } } } } } },
+      responses: {
+        200: { description: 'The client, updated (same shape as GET).', content: { 'application/json': { schema: { type: 'object', properties: { client: ref('AdminClient') } } } } },
+        403: response('Forbidden'), 404: response('NotFound'), ...commonErrors
+      }
+    }
+  },
+
+  '/api/v1/admin/clients/{restaurantId}/charges': {
+    post: {
+      tags: ['Operator console'], summary: 'Charge the next period', operationId: 'adminCreateCharge',
+      description: 'ADMIN only. Without `periodStart`, the period starts where the last live charge ended, or today. The amount is the agreed price, else the list price for the plan and cycle on that date; a trial has none, so it cannot be charged by accident. Due five days after the period starts.',
+      security: operator, 'x-required-roles': ['ADMIN'],
+      parameters: [{ name: 'restaurantId', in: 'path', required: true, schema: { type: 'string', format: 'uuid' } }],
+      requestBody: { required: false, content: { 'application/json': { schema: { type: 'object', properties: { periodStart: { type: ['string', 'null'], format: 'date' } } } } } },
+      responses: {
+        201: { description: 'Created.', content: { 'application/json': { schema: { type: 'object', properties: { charge: ref('AdminCharge') } } } } },
+        403: response('Forbidden'), 404: response('NotFound'), 409: response('Conflict'), ...commonErrors
+      }
+    }
+  },
+
+  '/api/v1/admin/clients/{restaurantId}/payments': {
+    post: {
+      tags: ['Operator console'], summary: 'Record a payment received', operationId: 'adminRecordPayment',
+      description: 'ADMIN only. A VES payment needs a rate; without `fxRate` today\'s BCV rate is used, and if there is none the request is refused rather than guessed. What it takes off the charge is fixed at that rate. When a charge is covered it becomes PAID; `settle` closes it despite a small shortfall, and says so in the trail.',
+      security: operator, 'x-required-roles': ['ADMIN'],
+      parameters: [{ name: 'restaurantId', in: 'path', required: true, schema: { type: 'string', format: 'uuid' } }],
+      requestBody: { required: true, content: { 'application/json': { schema: { type: 'object', required: ['method', 'currency', 'amount', 'receivedOn'], properties: {
+        chargeId: { type: ['string', 'null'], format: 'uuid' },
+        method: { type: 'string', enum: ['PAGO_MOVIL', 'TRANSFER', 'USD_CASH', 'ZELLE', 'OTHER'] },
+        currency: { type: 'string', enum: ['VES', 'USD'] },
+        amount: minorUnits,
+        fxRate: { type: ['string', 'null'], pattern: '^\\d{1,12}(\\.\\d{1,8})?$' },
+        reference: { type: ['string', 'null'] },
+        receivedOn: { type: 'string', format: 'date' },
+        notes: { type: ['string', 'null'] },
+        settle: { type: 'boolean' }
+      } } } } },
+      responses: {
+        201: { description: 'Recorded.', content: { 'application/json': { schema: { type: 'object', properties: { payment: ref('AdminPayment'), charge: { oneOf: [ref('AdminCharge'), { type: 'null' }] } } } } } },
+        403: response('Forbidden'), 404: response('NotFound'), 409: response('Conflict'), ...commonErrors
+      }
+    }
+  },
+
+  '/api/v1/admin/charges': {
+    get: {
+      tags: ['Operator console'], summary: 'Charges across every client', operationId: 'adminListCharges',
+      description: 'ADMIN and SUPPORT. `OVERDUE` is a filter (open and past due), not a stored status. Up to 500, latest due date first.',
+      security: operator, 'x-required-roles': ['ADMIN', 'SUPPORT'],
+      parameters: [{ name: 'status', in: 'query', schema: { type: 'string', enum: ['OPEN', 'OVERDUE', 'PAID', 'VOID'] } }],
+      responses: {
+        200: { description: 'Charges.', content: { 'application/json': { schema: { type: 'object', properties: { data: { type: 'array', items: ref('AdminCharge') } } } } } },
+        403: response('Forbidden'), ...commonErrors
+      }
+    }
+  },
+
+  '/api/v1/admin/charges/{chargeId}/void': {
+    post: {
+      tags: ['Operator console'], summary: 'Void a charge made by mistake', operationId: 'adminVoidCharge',
+      description: 'ADMIN only, with a reason. Only an open charge with no payments applied; its period can then be charged again.',
+      security: operator, 'x-required-roles': ['ADMIN'],
+      parameters: [{ name: 'chargeId', in: 'path', required: true, schema: { type: 'string', format: 'uuid' } }],
+      requestBody: { required: true, content: { 'application/json': { schema: { type: 'object', required: ['reason'], properties: { reason: { type: 'string', minLength: 3, maxLength: 500 } } } } } },
+      responses: {
+        200: { description: 'Voided.', content: { 'application/json': { schema: { type: 'object', properties: { charge: ref('AdminCharge') } } } } },
+        403: response('Forbidden'), 404: response('NotFound'), 409: response('Conflict'), ...commonErrors
+      }
+    }
+  },
+
+  '/api/v1/admin/prices': {
+    get: {
+      tags: ['Operator console'], summary: 'The price list', operationId: 'adminListPrices',
+      description: 'ADMIN and SUPPORT. `current` is what applies today per plan and cycle; `history` is every price ever set.',
+      security: operator, 'x-required-roles': ['ADMIN', 'SUPPORT'],
+      responses: {
+        200: { description: 'Prices.', content: { 'application/json': { schema: { type: 'object', properties: { current: { type: 'array', items: ref('PlanPrice') }, history: { type: 'array', items: ref('PlanPrice') } } } } } },
+        403: response('Forbidden'), ...commonErrors
+      }
+    },
+    post: {
+      tags: ['Operator console'], summary: 'Set a price from a date', operationId: 'adminSetPrice',
+      description: 'ADMIN only. A new price is a new row from `effectiveFrom` (default today): charges already made keep their amount. The same plan, cycle and date replaces that day\'s price.',
+      security: operator, 'x-required-roles': ['ADMIN'],
+      requestBody: { required: true, content: { 'application/json': { schema: { type: 'object', required: ['tier', 'billingCycle', 'amountUsd'], properties: { tier: { type: 'string', enum: ['STARTER', 'PRO', 'ENTERPRISE'] }, billingCycle: { type: 'string', enum: ['MONTHLY', 'ANNUAL'] }, amountUsd: minorUnits, effectiveFrom: { type: ['string', 'null'], format: 'date' } } } } } },
+      responses: {
+        201: { description: 'Set.', content: { 'application/json': { schema: { type: 'object', properties: { price: ref('PlanPrice') } } } } },
+        403: response('Forbidden'), ...commonErrors
+      }
+    }
+  },
+
   '/api/v1/bank-connections': {
     get: {
       tags: ['Bank connections'],
@@ -6690,6 +6999,7 @@ const document = {
     { name: 'Exchange rate' },
     { name: 'Webhooks' },
     { name: 'Account' },
+    { name: 'Operator console', description: 'For Splite\'s own team, not restaurants: clients, plans, charges and payments. Separate sign-in with a mandatory second factor; see scripts/operator.js.' },
     { name: 'Bank connections', description: 'Bank movements from any bank — signed pushes or uploaded statements — checked against pending Pago Móvil claims.' },
     // Listed unconditionally even though its operations are only described when
     // ONBOARDING_ENABLED is on: a tag with no operations reads as a feature that
@@ -6705,6 +7015,12 @@ const document = {
         scheme: 'bearer',
         bearerFormat: 'JWT',
         description: 'Short-lived staff access token from /api/v1/auth/login.'
+      },
+      operatorAuth: {
+        type: 'http',
+        scheme: 'bearer',
+        bearerFormat: 'JWT',
+        description: 'Console session from /api/v1/admin/auth/login. Signed with a different key and audience from staff tokens; neither is accepted by the other\'s routes.'
       },
       guestAuth: {
         type: 'http',

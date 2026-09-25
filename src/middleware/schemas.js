@@ -1059,7 +1059,94 @@ const validateBody = schema => validate(schema, 'body');
 const validateParams = schema => validate(schema, 'params');
 const validateQuery = schema => validate(schema, 'query');
 
+
+/*
+ * La consola de Splite. Importes en céntimos de dólar como texto de dígitos,
+ * igual que el resto de la API.
+ */
+const digits = Joi.string().pattern(/^[0-9]{1,15}$/);
+const isoDay = Joi.string().pattern(/^\d{4}-\d{2}-\d{2}$/);
+const sixDigits = Joi.string().pattern(/^[0-9]{6}$/).required();
+
+const operatorLoginSchema = Joi.object({
+  email: Joi.string().email({ minDomainSegments: 2 }).max(254).lowercase().required(),
+  password: Joi.string().min(1).max(128).required(),
+  code: sixDigits
+});
+
+const operatorSetupStartSchema = Joi.object({ token: Joi.string().min(20).max(128).required() });
+
+const operatorSetupCompleteSchema = Joi.object({
+  token: Joi.string().min(20).max(128).required(),
+  // Más larga que la del personal: esta cuenta ve a todos los restaurantes.
+  password: Joi.string().min(14).max(128).required(),
+  code: sixDigits
+});
+
+const adminRestaurantParamSchema = Joi.object({ restaurantId: uuid.required() });
+const adminChargeParamSchema = Joi.object({ chargeId: uuid.required() });
+
+const adminClientsQuerySchema = Joi.object({
+  q: Joi.string().trim().max(80).allow(''),
+  state: Joi.string().valid('TRIAL', 'TRIAL_EXPIRED', 'ACTIVE', 'OVERDUE', 'SUSPENDED', 'CANCELLED')
+});
+
+const adminPlanSchema = Joi.object({
+  tier: Joi.string().valid('TRIAL', 'STARTER', 'PRO', 'ENTERPRISE').required(),
+  trialDays: Joi.number().integer().min(1).max(365).allow(null),
+  force: Joi.boolean().default(false),
+  note: Joi.string().trim().max(500).allow('', null)
+});
+
+const adminSubscriptionSchema = Joi.object({
+  billingCycle: Joi.string().valid('MONTHLY', 'ANNUAL'),
+  customPriceUsd: digits.allow(null),
+  status: Joi.string().valid('ACTIVE', 'SUSPENDED', 'CANCELLED'),
+  notes: Joi.string().trim().max(2000).allow('', null),
+  reason: Joi.string().trim().max(500).allow('', null)
+}).min(1);
+
+const adminChargeSchema = Joi.object({ periodStart: isoDay.allow(null) });
+
+const adminVoidChargeSchema = Joi.object({ reason: Joi.string().trim().min(3).max(500).required() });
+
+const adminPaymentSchema = Joi.object({
+  chargeId: uuid.allow(null),
+  method: Joi.string().valid('PAGO_MOVIL', 'TRANSFER', 'USD_CASH', 'ZELLE', 'OTHER').required(),
+  currency: Joi.string().valid('VES', 'USD').required(),
+  amount: digits.required(),
+  fxRate: Joi.string().pattern(/^\d{1,12}(\.\d{1,8})?$/).allow(null),
+  reference: Joi.string().trim().max(64).allow('', null),
+  receivedOn: isoDay.required(),
+  notes: Joi.string().trim().max(1000).allow('', null),
+  settle: Joi.boolean().default(false)
+});
+
+const adminChargesQuerySchema = Joi.object({
+  status: Joi.string().valid('OPEN', 'OVERDUE', 'PAID', 'VOID')
+});
+
+const adminPriceSchema = Joi.object({
+  tier: Joi.string().valid('STARTER', 'PRO', 'ENTERPRISE').required(),
+  billingCycle: Joi.string().valid('MONTHLY', 'ANNUAL').required(),
+  amountUsd: digits.required(),
+  effectiveFrom: isoDay.allow(null)
+});
+
 module.exports = {
+  operatorLoginSchema,
+  operatorSetupStartSchema,
+  operatorSetupCompleteSchema,
+  adminRestaurantParamSchema,
+  adminChargeParamSchema,
+  adminClientsQuerySchema,
+  adminPlanSchema,
+  adminSubscriptionSchema,
+  adminChargeSchema,
+  adminVoidChargeSchema,
+  adminPaymentSchema,
+  adminChargesQuerySchema,
+  adminPriceSchema,
   loginSchema,
   ROLES,
   createStaffSchema,
