@@ -5,7 +5,7 @@ const jwt = require('jsonwebtoken');
 const config = require('../config');
 const db = require('../connectors/base');
 const { ApiError } = require('../errors');
-const { hashToken } = require('../utils/tokens');
+const { hashToken, safeEqual } = require('../utils/tokens');
 const totp = require('./totp');
 const loginThrottle = require('./loginThrottle');
 const { ARGON2_OPTIONS } = require('./auth');
@@ -165,6 +165,60 @@ async function setActive({ email, active }) {
   });
 }
 
+/** La frase de arranque más corta que se acepta. */
+const BOOTSTRAP_MIN_LENGTH = 24;
+
+/**
+ * ¿Se puede usar el arranque? Pura, para probarla sin base de datos.
+ *
+ * Las tres condiciones a la vez: la frase está configurada y es larga, todavía
+ * no existe ningún operador, y la frase enviada es la misma. Cualquier fallo
+ * responde igual, para que el endpoint no sirva para averiguar si la frase
+ * está puesta o si ya hay operadores.
+ */
+function bootstrapAllowed({ configured, provided, existing }) {
+  if (!configured || configured.length < BOOTSTRAP_MIN_LENGTH) return false;
+  if (existing > 0) return false;
+  return safeEqual(String(provided || ''), configured);
+}
+
+/**
+ * El primer operador, desde el navegador.
+ *
+ * Existe porque crear operadores sólo por línea de comandos exige entrar al
+ * contenedor en producción, y eso no siempre está a mano (desde un teléfono,
+ * por ejemplo). La frase la pone el dueño en las variables de Railway, así que
+ * quien la conoce ya tiene acceso a la infraestructura. En cuanto hay un
+ * operador, el arranque deja de existir aunque la variable siga puesta: los
+ * siguientes se crean con `npm run operator`.
+ *
+ * Devuelve el token de alta: el resto -- autenticador, contraseña, primer
+ * código -- es el alta de siempre.
+ */
+async function bootstrap({ token, email, displayName, meta = {} }) {
+  const denied = () => new ApiError('OPERATOR_BOOTSTRAP_UNAVAILABLE', 'Bootstrap is not available');
+  const configured = config.operatorBootstrapToken;
+  if (!configured || configured.length < BOOTSTRAP_MIN_LENGTH) throw denied();
+
+  const setup = newSetupToken();
+  return db.withTransaction(async client => {
+    // Dos arranques a la vez no pueden crear dos operadores.
+    await client.query('LOCK TABLE platform_operators IN SHARE ROW EXCLUSIVE MODE');
+    const { rows: count } = await client.query('SELECT count(*)::INT AS n FROM platform_operators');
+    if (!bootstrapAllowed({ configured, provided: token, existing: count[0].n })) throw denied();
+
+    const { rows } = await client.query(
+      `INSERT INTO platform_operators (email, display_name, role, setup_token_hash, setup_expires_at)
+       VALUES ($1, $2, 'ADMIN', $3, NOW() + INTERVAL '1 hour')
+       RETURNING ${COLUMNS}`,
+      [email, displayName, setup.hash]
+    );
+    await audit(client, { operatorId: null, action: 'OPERATOR_BOOTSTRAPPED', resourceType: 'operator',
+      resourceId: rows[0].id, details: { email, via: 'bootstrap' }, meta });
+    return { operator: view(rows[0]), token: setup.token };
+  });
+}
+
 async function listOperators() {
   const { rows } = await db.query(`SELECT ${COLUMNS} FROM platform_operators ORDER BY created_at`);
   return rows.map(view);
@@ -286,7 +340,7 @@ function setupLink(token) {
 
 module.exports = {
   ROLES, SETUP_TTL_HOURS, SESSION_TTL_SECONDS, AUDIENCE,
-  createOperator, resetOperator, setActive, listOperators,
+  createOperator, resetOperator, setActive, listOperators, bootstrap, bootstrapAllowed, BOOTSTRAP_MIN_LENGTH,
   setupStart, setupComplete, login, current, audit, view,
   signSession, verifySession, setupLink,
   _internals: { totpSecretFor, sessionKey }

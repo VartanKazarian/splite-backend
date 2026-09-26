@@ -213,6 +213,10 @@ module.exports = {
    * six digits; short enough that a challenge captured in transit is worthless
    * by the time it is replayed.
    */
+  // El primer acceso a la consola, sin línea de comandos: una frase que el
+  // dueño pone en Railway. Sólo vale mientras no existe ningún operador; el
+  // primero que se crea la apaga para siempre (ver services/operators.js).
+  operatorBootstrapToken: process.env.OPERATOR_BOOTSTRAP_TOKEN || '',
   mfa: {
     secretKeys: process.env.MFA_SECRET_KEYS || '',
     activeKeyVersion: integer('MFA_ACTIVE_KEY_VERSION', 1),

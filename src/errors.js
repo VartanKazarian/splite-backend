@@ -104,6 +104,8 @@ const CODES = {
   OPERATOR_NOT_FOUND: 404,
   // Enlace de alta caducado, usado o inventado: la misma respuesta.
   OPERATOR_SETUP_INVALID: 404,
+  // Arranque sin frase, con frase mala o con operadores ya creados: igual.
+  OPERATOR_BOOTSTRAP_UNAVAILABLE: 404,
   SUBSCRIPTION_CHARGE_NOT_FOUND: 404,
   SUBSCRIPTION_NOTICE_NOT_FOUND: 404,
   LEAD_NOT_FOUND: 404,

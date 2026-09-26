@@ -15,6 +15,18 @@ La consola es para el equipo de Splite, no para los restaurantes. Muestra todos 
 
 ## Dar de alta al primer operador
 
+### Desde el navegador (sin entrar al servidor)
+
+Sirve, por ejemplo, desde el teléfono.
+
+1. En Railway, en el servicio `splite-backend`, abre Variables y añade `OPERATOR_BOOTSTRAP_TOKEN`. Pon como valor una frase larga que solo sepas tú, de 24 caracteres o más, por ejemplo una oración entera. Railway volverá a desplegar el servicio.
+2. Abre `https://splite.lovable.app/admin/alta`, entra en «Primer acceso» y escribe esa frase, tu correo y tu nombre.
+3. Sigue el alta normal: escanea el QR con el autenticador, elige tu contraseña y escribe el código.
+
+Esto solo funciona **mientras no exista ningún operador**. El primero que se crea lo apaga para siempre, aunque la variable siga puesta; aun así, puedes borrarla después. Cualquier fallo responde igual (404), así que la respuesta no revela si la frase está puesta ni si ya hay operadores.
+
+### Desde la línea de comandos
+
 Crear operadores solo se puede hacer desde la línea de comandos, dentro del servicio en Railway. La consola no puede crear cuentas de consola.
 
 ```sh

@@ -9,6 +9,7 @@ const { signAccessToken } = require('../../src/utils/tokens');
 const operators = require('../../src/services/operators');
 const totp = require('../../src/services/totp');
 const fx = require('../../src/services/fx');
+const config = require('../../src/config');
 const app = require('../../src/app');
 
 /**
@@ -143,6 +144,35 @@ describe('consola de operador', { skip }, () => {
       });
       assert.equal(res.status, 401);
       assert.equal(res.body.error.code, 'INVALID_CREDENTIALS');
+    });
+  });
+
+  describe('primer acceso sin línea de comandos', () => {
+    const body = { token: 'x'.repeat(40), email: `boot-${stamp}@example.com`, displayName: 'Arranque' };
+
+    it('sin la variable puesta no existe', async () => {
+      const saved = config.operatorBootstrapToken;
+      config.operatorBootstrapToken = '';
+      try {
+        const res = await call('POST', '/api/v1/admin/auth/bootstrap', { body });
+        assert.equal(res.status, 404);
+        assert.equal(res.body.error.code, 'OPERATOR_BOOTSTRAP_UNAVAILABLE');
+      } finally {
+        config.operatorBootstrapToken = saved;
+      }
+    });
+
+    it('con operadores ya creados tampoco, aunque la frase sea la buena', async () => {
+      const saved = config.operatorBootstrapToken;
+      config.operatorBootstrapToken = body.token;
+      try {
+        const res = await call('POST', '/api/v1/admin/auth/bootstrap', { body });
+        assert.equal(res.status, 404);
+        const { rows } = await db.query('SELECT 1 FROM platform_operators WHERE email = $1', [body.email]);
+        assert.equal(rows.length, 0, 'no operator may be created');
+      } finally {
+        config.operatorBootstrapToken = saved;
+      }
     });
   });
 
