@@ -1074,6 +1074,12 @@ const operatorLoginSchema = Joi.object({
   code: sixDigits
 });
 
+const operatorBootstrapSchema = Joi.object({
+  token: Joi.string().min(1).max(256).required(),
+  email: Joi.string().email({ minDomainSegments: 2 }).max(254).lowercase().required(),
+  displayName: Joi.string().trim().min(1).max(80).required()
+});
+
 const operatorSetupStartSchema = Joi.object({ token: Joi.string().min(20).max(128).required() });
 
 const operatorSetupCompleteSchema = Joi.object({
@@ -1175,6 +1181,7 @@ const adminLeadStatusSchema = Joi.object({
 });
 
 module.exports = {
+  operatorBootstrapSchema,
   subscriptionNoticeSchema,
   adminNoticeParamSchema,
   adminNoticesQuerySchema,

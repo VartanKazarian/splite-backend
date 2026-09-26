@@ -2,7 +2,7 @@ const express = require('express');
 
 const {
   validateBody, validateParams, validateQuery,
-  operatorLoginSchema, operatorSetupStartSchema, operatorSetupCompleteSchema,
+  operatorLoginSchema, operatorSetupStartSchema, operatorSetupCompleteSchema, operatorBootstrapSchema,
   adminRestaurantParamSchema, adminChargeParamSchema, adminClientsQuerySchema, adminPlanSchema,
   adminSubscriptionSchema, adminChargeSchema, adminVoidChargeSchema, adminPaymentSchema,
   adminChargesQuerySchema, adminPriceSchema, adminNoticeParamSchema, adminNoticesQuerySchema,
@@ -33,6 +33,13 @@ router.use(noStore);
 router.post('/auth/login', validateBody(operatorLoginSchema), async (req, res, next) => {
   try {
     res.json(await operators.login({ ...req.body, meta: auditContext(req) }));
+  } catch (err) { next(err); }
+});
+
+router.post('/auth/bootstrap', validateBody(operatorBootstrapSchema), async (req, res, next) => {
+  try {
+    const { token } = await operators.bootstrap({ ...req.body, meta: auditContext(req) });
+    res.status(201).json({ setupToken: token });
   } catch (err) { next(err); }
 });
 

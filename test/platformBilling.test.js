@@ -54,3 +54,13 @@ test('el enlace de alta apunta a la consola del frontend, con el token en el fra
   const link = operators.setupLink('abc123');
   assert.match(link, /^https?:\/\/[^#]+\/admin\/alta#abc123$/);
 });
+
+test('el arranque sólo vale con la frase larga, la misma, y sin operadores', () => {
+  const phrase = 'una frase larga que sólo sabe el dueño';
+  const ok = { configured: phrase, provided: phrase, existing: 0 };
+  assert.equal(operators.bootstrapAllowed(ok), true);
+  assert.equal(operators.bootstrapAllowed({ ...ok, existing: 1 }), false, 'gone once an operator exists');
+  assert.equal(operators.bootstrapAllowed({ ...ok, provided: `${phrase}x` }), false);
+  assert.equal(operators.bootstrapAllowed({ ...ok, configured: '' }), false, 'off when unset');
+  assert.equal(operators.bootstrapAllowed({ configured: 'corta', provided: 'corta', existing: 0 }), false, 'short phrases refused');
+});

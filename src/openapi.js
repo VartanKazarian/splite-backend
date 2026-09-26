@@ -6021,6 +6021,27 @@ const paths = {
     }
   },
 
+  '/api/v1/admin/auth/bootstrap': {
+    post: {
+      tags: ['Operator console'],
+      summary: 'Create the first operator from the browser',
+      operationId: 'operatorBootstrap',
+      description: [
+        'Only while no operator exists, and only with the phrase set in `OPERATOR_BOOTSTRAP_TOKEN` (24+ characters).',
+        'Creates an ADMIN and returns a setup token for `/auth/setup/start` — the second factor is still mandatory.',
+        'Once one operator exists this is gone for good, even if the variable stays set; later operators come from',
+        '`npm run operator`. Every refusal is the same 404, so it reveals neither whether the phrase is set nor whether',
+        'operators exist. Rate-limited like the login.'
+      ].join('\n'),
+      security: [],
+      requestBody: { required: true, content: { 'application/json': { schema: { type: 'object', required: ['token', 'email', 'displayName'], properties: { token: { type: 'string' }, email: { type: 'string', format: 'email' }, displayName: { type: 'string', maxLength: 80 } } } } } },
+      responses: {
+        201: { description: 'Created; continue with the setup token.', content: { 'application/json': { schema: { type: 'object', properties: { setupToken: { type: 'string' } } } } } },
+        400: response('BadRequest'), 404: response('NotFound'), 429: response('TooManyRequests'), 500: response('ServerError')
+      }
+    }
+  },
+
   '/api/v1/admin/auth/setup/start': {
     post: {
       tags: ['Operator console'],
