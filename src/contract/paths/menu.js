@@ -671,6 +671,47 @@ const publicMenu = {
     }
   },
 
+  '/api/v1/menu/products/order': {
+    put: {
+      tags: ['Menu'],
+      summary: 'Reorder the products of one section',
+      'x-required-roles': ['OWNER', 'MANAGER'],
+      description: [
+        'Roles: OWNER, MANAGER. The array *is* the order: `position` becomes the index.',
+        '',
+        '`ids` must be exactly the products of that section — every one of them, and no other. A',
+        'missing id, one from another section or one from another restaurant changes nothing and',
+        'answers 404. Accepting part of a section would leave two products sharing a position and',
+        'the name deciding between them, which is what reordering is for removing.',
+        '',
+        '`categoryId: null` orders the products that have no section. A product created or moved',
+        'into a section goes to its end.'
+      ].join('\n'),
+      security: staff,
+      requestBody: {
+        required: true,
+        content: { 'application/json': { schema: {
+          type: 'object',
+          required: ['categoryId', 'ids'],
+          properties: {
+            categoryId: { type: ['string', 'null'], format: 'uuid', description: 'The section, or null for the products without one.' },
+            ids: {
+              type: 'array', minItems: 1, maxItems: 500, uniqueItems: true,
+              items: { type: 'string', format: 'uuid' },
+              description: 'Every product of the section, in the order they should appear.'
+            }
+          }
+        } } }
+      },
+      responses: {
+        204: { description: 'Reordered.' },
+        ...commonErrors,
+        403: response('Forbidden'),
+        404: { description: 'The list is not exactly that section. Nothing was changed.', content: { 'application/json': { schema: ref('Error') } } }
+      }
+    }
+  },
+
   '/api/v1/menu/products/{id}': {
     patch: {
       tags: ['Menu'],

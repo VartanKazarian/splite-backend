@@ -981,6 +981,13 @@ const reorderCategoriesSchema = Joi.object({
   ids: Joi.array().items(uuid.required()).min(1).max(200).unique().required()
 });
 
+// Una sección entera, en el orden en que debe verse. `categoryId: null` es la
+// lista de los que no tienen sección, que también tiene su orden.
+const reorderProductsSchema = Joi.object({
+  categoryId: uuid.allow(null).required(),
+  ids: Joi.array().items(uuid.required()).min(1).max(500).unique().required()
+});
+
 const listProductsQuerySchema = Joi.object({
   ...paginationKeys,
   active: Joi.boolean(),
@@ -1283,6 +1290,7 @@ module.exports = {
   createCategorySchema,
   updateCategorySchema,
   reorderCategoriesSchema,
+  reorderProductsSchema,
   categoryIdParamSchema,
   restaurantIdParamSchema,
   productImageParamSchema,
