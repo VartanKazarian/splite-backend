@@ -551,9 +551,11 @@ Deactivating a section hides its products from the public menu without touching
 each one: the kitchen ran out of fish, and the whole block goes off for the
 evening.
 
-Still open: nothing reorders sections or renames them yet. `position` is set
-from the order sections first appear in an import, and there is no endpoint to
-change it — so the order a menu is imported in is the order it keeps.
+Sections are reordered and renamed through the endpoints under
+[Menu sections](#menu-sections), and the dishes inside a section through
+`PUT /api/v1/menu/products/order`. A product created, or moved into a section,
+goes to the end of it rather than to its alphabetical slot among dishes somebody
+has already ordered by hand.
 
 ## Wire format
 
@@ -1307,6 +1309,7 @@ every product in it.
 POST   /api/v1/menu/categories        create, at the end unless told otherwise
 PATCH  /api/v1/menu/categories/{id}   rename, move, or take off the menu
 PUT    /api/v1/menu/categories/order  the whole new order, as an array of ids
+PUT    /api/v1/menu/products/order    one section's dishes, in their new order
 DELETE /api/v1/menu/categories/{id}   remove the heading, keep the food
 GET    /api/v1/menu/categories        with a count per section, and the loose ones
 ```
@@ -1324,6 +1327,12 @@ leave the menu in one permanently. It runs in a transaction, because the
 statement matches only the caller's own rows: a list padded with another
 tenant's ids would reorder the rest and *then* fail, so rolling back is what
 makes the 404 mean nothing happened.
+
+The dishes inside a section follow the same rule, with one more: the list must
+be **exactly** that section — every product in it and nothing else. A partial
+list would leave two dishes sharing a position and the name deciding between
+them, which is what reordering exists to remove. `categoryId: null` orders the
+dishes without a section.
 
 **Deleting a section does not delete its food.** The foreign key is `ON DELETE
 SET NULL (category_id)` — naming the column, because the unqualified form on a

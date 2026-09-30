@@ -21,6 +21,7 @@ const {
   createCategorySchema,
   updateCategorySchema,
   reorderCategoriesSchema,
+  reorderProductsSchema,
   categoryIdParamSchema
 } = require('../middleware/schemas');
 const { logAudit, auditContext } = require('../services/audit');
@@ -942,8 +943,12 @@ router.post(
         withCategoryName(`
           INSERT INTO menu_products
             (restaurant_id, name, description, price_minor_units, currency, category_id, active,
-             tax_category, vat_bps)
-          VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+             tax_category, vat_bps, position)
+          VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9,
+                  -- Al final de su sección. Con 0 se colaba por orden alfabético
+                  -- entre los que el restaurante ya había ordenado a mano.
+                  (SELECT COALESCE(MAX(position), -1) + 1 FROM menu_products
+                    WHERE restaurant_id = $1 AND category_id IS NOT DISTINCT FROM $6::uuid))
           RETURNING *`),
         [
           req.user.restaurantId,
@@ -976,6 +981,55 @@ router.post(
       }
       next(err);
     }
+  }
+);
+
+/**
+ * El orden de los platos dentro de una sección, entero de una vez.
+ *
+ * Igual que el de las secciones: `position` pasa a ser el índice en la lista,
+ * en una sola sentencia y dentro de una transacción. La lista tiene que ser la
+ * sección completa y sólo ella: un id de otra sección o de otro restaurante, o
+ * uno que falte, deja la carta como estaba y responde 404. Aceptar una parte
+ * dejaría dos platos con el mismo puesto y el orden decidido por el nombre,
+ * que es justo lo que esto viene a quitar.
+ */
+router.put(
+  '/products/order',
+  requireRole('OWNER', 'MANAGER'),
+  validateBody(reorderProductsSchema),
+  async (req, res, next) => {
+    try {
+      const { categoryId, ids } = req.body;
+      await db.withTransaction(async client => {
+        const { rows: section } = await client.query(
+          `SELECT id FROM menu_products
+            WHERE restaurant_id = $1 AND category_id IS NOT DISTINCT FROM $2::uuid
+            FOR UPDATE`,
+          [req.user.restaurantId, categoryId]
+        );
+        const inSection = new Set(section.map(r => r.id));
+        if (section.length !== ids.length || !ids.every(id => inSection.has(id))) {
+          throw new ApiError('PRODUCT_NOT_FOUND', 'The list must be exactly the products of that section');
+        }
+        await client.query(
+          `UPDATE menu_products AS p
+              SET position = o.ordinality - 1
+             FROM unnest($2::uuid[]) WITH ORDINALITY AS o(id, ordinality)
+            WHERE p.id = o.id AND p.restaurant_id = $1`,
+          [req.user.restaurantId, ids]
+        );
+      });
+
+      await logAudit({
+        ...auditContext(req),
+        action: 'MENU_PRODUCTS_REORDERED',
+        resourceType: 'menu_category',
+        resourceId: categoryId
+      });
+
+      res.status(204).end();
+    } catch (err) { next(err); }
   }
 );
 
@@ -1012,6 +1066,15 @@ router.patch(
                  price_minor_units = COALESCE($3, price_minor_units),
                  active = COALESCE($4, active),
                  category_id = CASE WHEN $5::boolean THEN $6::uuid ELSE category_id END,
+                 -- Cambiar de sección lo manda al final de la nueva: su puesto
+                 -- en la vieja no significa nada allí. En el SET, category_id
+                 -- todavía es el de antes.
+                 position = CASE
+                   WHEN $5::boolean AND category_id IS DISTINCT FROM $6::uuid THEN
+                     (SELECT COALESCE(MAX(m.position), -1) + 1 FROM menu_products m
+                       WHERE m.restaurant_id = $8 AND m.category_id IS NOT DISTINCT FROM $6::uuid)
+                   ELSE position
+                 END,
                  tax_category = COALESCE($9, tax_category),
                  vat_bps = CASE
                    WHEN $10::boolean THEN $11::integer
