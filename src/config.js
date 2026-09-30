@@ -196,7 +196,12 @@ module.exports = {
     get accessSecret() { return secretValue('jwtAccessSecret'); },
     get refreshSecret() { return secretValue('jwtRefreshSecret'); },
     accessTtl: process.env.JWT_ACCESS_TTL || '15m',
-    refreshTtlSeconds: integer('JWT_REFRESH_TTL_SECONDS', 60 * 60 * 24 * 30),
+    // Catorce días sin usarse, no catorce días en total: cada renovación emite
+    // un token nuevo con el plazo entero, así que un aparato que se usa a
+    // diario no vuelve a pedir la contraseña. Eran treinta. El token vive en el
+    // almacenamiento del navegador, y lo que se acorta es cuánto le sirve a
+    // quien se lo lleve de un teléfono olvidado o de un fallo de script.
+    refreshTtlSeconds: integer('JWT_REFRESH_TTL_SECONDS', 60 * 60 * 24 * 14),
     issuer: 'splite-api',
     audience: 'splite'
   },
@@ -393,12 +398,14 @@ module.exports = {
     detail: boolean('HEALTH_DETAIL', !isProduction)
   },
   docs: {
-    // The spec is a contract that frontends and payment providers consume, so
-    // it is served by default. It documents shapes and status codes, not
-    // secrets, and the API surface is not itself confidential. Set
-    // DOCS_ENABLED=false to withhold it and distribute openapi.json out of band
-    // instead.
-    enabled: boolean('DOCS_ENABLED', true)
+    // Served by default everywhere except production. The contract a frontend
+    // or a provider needs is the committed `openapi.json`, which does not
+    // depend on this; what this controls is a live Swagger UI that walks
+    // anyone on the internet through every route, role and error code of a
+    // payments API. That is free reconnaissance and nobody in production
+    // needs it. DOCS_ENABLED=true turns it back on for a deployment that wants
+    // it.
+    enabled: boolean('DOCS_ENABLED', !isProduction)
   },
   log: {
     // debug in development, info in production. `silent` is honoured too, which
@@ -444,7 +451,24 @@ module.exports = {
      * techo en el sitio donde importaría, que es justo lo que hace que sea
      * seguro dejarlo abierto en los demás.
      */
-    apiMax: isProduction ? 120 : integer('RATE_LIMIT_API_MAX', 120),
+    apiMax: isProduction ? 1200 : integer('RATE_LIMIT_API_MAX', 1200),
+    /**
+     * El techo por miembro del personal y minuto, en toda la API.
+     *
+     * El de arriba mira la dirección y por eso tiene que ser alto: un
+     * restaurante entero -- la tableta de la barra, los teléfonos de los
+     * meseros y los comensales en el wifi del local -- sale por una sola IP,
+     * y las operadoras móviles de Venezuela juntan a muchos clientes detrás de
+     * otra. Con 120 por dirección, una tableta y cinco comensales en el mismo
+     * wifi bastaban para que todos recibieran 429 en plena cena.
+     *
+     * Éste mira quién llama, verificando la firma del token antes de contar,
+     * así que no lo comparte nadie más. Alto porque un restaurante suele usar
+     * la misma cuenta en varios aparatos a la vez y cada pantalla del panel
+     * refresca sola unas treinta veces por minuto. Mismo candado: en
+     * producción no se cambia.
+     */
+    staffMax: isProduction ? 600 : integer('RATE_LIMIT_STAFF_MAX', 600),
     /**
      * El techo de `/api/v1/auth`, que es el que de verdad protege algo: es lo
      * que impide probar contraseñas a mansalva.
@@ -477,8 +501,12 @@ module.exports = {
      * Vale la pena anotar lo que esto deja ver del producto, que no se arregla
      * aquí: si tres visitas a pantallas del panel gastan sesenta llamadas en un
      * minuto, el panel refresca más de lo que hace falta.
+     *
+     * Era sesenta. Es por cuenta, y una cuenta suele estar abierta en la
+     * tableta de la barra y en dos teléfonos a la vez, así que sesenta se
+     * repartían entre tres aparatos que refrescan solos.
      */
-    billsMax: isProduction ? 60 : integer('RATE_LIMIT_BILLS_MAX', 60)
+    billsMax: isProduction ? 300 : integer('RATE_LIMIT_BILLS_MAX', 300)
   },
   payments: {
     /**

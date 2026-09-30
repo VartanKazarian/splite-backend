@@ -13,6 +13,7 @@ const openapi = require('./openapi');
 const { logger } = require('./connectors/logger');
 const { registerFiscalProviders } = require('./fiscal/register');
 const rateLimit = require('./middleware/rateLimit');
+const { staffSubject, credentialAttempt } = require('./middleware/rateLimitKeys');
 const errorHandler = require('./middleware/errorHandler');
 const metrics = require('./services/metrics');
 const { safeEqual } = require('./utils/tokens');
@@ -162,20 +163,34 @@ app.use(pinoHttp({
 }));
 
 app.use(rateLimit({ windowSeconds: 60, max: config.rateLimit.apiMax, keyPrefix: 'api' }));
+// Por quien llama y no por dónde: el techo de arriba lo comparte todo un
+// restaurante en el mismo wifi, éste no lo comparte nadie. Sólo cuenta tokens
+// del personal con la firma verificada; el resto pasa de largo.
+app.use(rateLimit({
+  windowSeconds: 60,
+  max: config.rateLimit.staffMax,
+  keyPrefix: 'rl:staff',
+  identify: staffSubject
+}));
 
+// Diez por dirección, pero sólo para lo que adivina algo: contraseñas,
+// códigos, invitaciones. Leer, renovar o cerrar la sesión no cuenta aquí
+// (`credentialAttempt`), porque el panel lo pide en cada pantalla y tres
+// teléfonos en el mismo wifi se quedaban sin panel.
 app.use('/api/v1/auth', rateLimit({
   windowSeconds: 60,
   max: config.rateLimit.authMax,
   keyPrefix: 'auth',
-  failClosed: config.rateLimit.failClosedOnAuth
+  failClosed: config.rateLimit.failClosedOnAuth,
+  identify: credentialAttempt
 }), authRoutes);
-// A coarse backstop only, and deliberately generous. It runs before any guest
-// authentication, so it can key on nothing but the address -- and a whole
-// restaurant of diners arrives from one carrier NAT address. The tight,
-// meaningful limit is per session, applied inside the router once the session
-// has been verified; 30 a minute here was one shared bucket for every table in
-// the room, which throttled a busy Friday rather than an abuser.
-app.use('/api/v1/guest', rateLimit({ windowSeconds: 60, max: 240, keyPrefix: 'guest' }), guestRoutes);
+// No per-address limiter of its own any more. It was 30 a minute, then 240,
+// and each was one shared bucket for every diner on the venue WiFi: a bill
+// screen polls about twenty times a minute, so a dozen diners filled it. The
+// address backstop on `/api/v1` covers the whole API; the meaningful limits are
+// per session, inside the router once the session has been verified, plus the
+// per-address ones on the two routes that create a credential.
+app.use('/api/v1/guest', guestRoutes);
 // bills and tables carry their own limiter, mounted after authentication so it
 // keys on the staff member rather than on a shared NAT address.
 app.use('/api/v1/bills', billRoutes);

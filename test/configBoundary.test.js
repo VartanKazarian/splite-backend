@@ -243,9 +243,10 @@ test('a mailbox address is refused as the sender for an API transport', () => {
  * que falle si alguien lo cambia, no con un comentario.
  */
 for (const { name, key, fallback, raised } of [
-  { name: 'RATE_LIMIT_API_MAX', key: 'apiMax', fallback: '120', raised: '600' },
+  { name: 'RATE_LIMIT_API_MAX', key: 'apiMax', fallback: '1200', raised: '5000' },
+  { name: 'RATE_LIMIT_STAFF_MAX', key: 'staffMax', fallback: '600', raised: '5000' },
   { name: 'RATE_LIMIT_AUTH_MAX', key: 'authMax', fallback: '10', raised: '60' },
-  { name: 'RATE_LIMIT_BILLS_MAX', key: 'billsMax', fallback: '60', raised: '600' }
+  { name: 'RATE_LIMIT_BILLS_MAX', key: 'billsMax', fallback: '300', raised: '5000' }
 ]) {
   test(`${name} sube el techo fuera de producción y se ignora dentro`, () => {
     const read = `console.log(require(${JSON.stringify(CONFIG)}).rateLimit.${key});`;
@@ -270,3 +271,27 @@ for (const { name, key, fallback, raised } of [
     assert.equal(byDefault.out.trim(), fallback);
   });
 }
+
+/**
+ * La documentación en vivo no se sirve en producción salvo que se pida.
+ *
+ * Un Swagger UI público de una API de pagos es un mapa de cada ruta, rol y
+ * código de error para quien lo encuentre. Lo que consume un cliente es el
+ * openapi.json del repositorio, que no depende de esto.
+ */
+test('DOCS_ENABLED: apagado por defecto en producción, encendido fuera', () => {
+  const read = `console.log(require(${JSON.stringify(CONFIG)}).docs.enabled);`;
+  const prodEnv = { NODE_ENV: 'production', DATABASE_URL: 'postgres://x/y' };
+
+  const prod = runNode(read, prodEnv);
+  assert.ok(prod.ok, prod.out);
+  assert.equal(prod.out.trim(), 'false', 'producción sirve /docs sin que nadie lo pidiera');
+
+  const optedIn = runNode(read, { ...prodEnv, DOCS_ENABLED: 'true' });
+  assert.ok(optedIn.ok, optedIn.out);
+  assert.equal(optedIn.out.trim(), 'true');
+
+  const dev = runNode(read, { NODE_ENV: 'development' });
+  assert.ok(dev.ok, dev.out);
+  assert.equal(dev.out.trim(), 'true');
+});

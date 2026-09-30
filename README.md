@@ -52,15 +52,38 @@ opens so a diner's total cannot move while they eat.
   against real Postgres and Redis, a blocking audit of production dependencies,
   invisible-character guard, image build
 
+**Running the business**
+
+- Automatic confirmation of declared Pago Móvil against the restaurant's own bank
+  movements — a statement upload from any bank, or a signed webhook — matched by
+  the same rule a waiter would use, and never guessed. See
+  [`docs/bank-connections.md`](docs/bank-connections.md)
+- Ordering from the table, with a tray and an audible alert for staff — see
+  [Ordering from the table](#ordering-from-the-table)
+- An operator console for the Splite team (`/api/v1/admin`), with its own
+  accounts, mandatory second factor and an audit trail: every client's plan,
+  price, charges, payments, payment notices and leads. See
+  [`docs/operator-console.md`](docs/operator-console.md)
+- Subscriptions: monthly charges, reminders, the restaurant's own "I paid"
+  notice, and suspension that only stops new bills from opening
+
 Restaurants arrive through a reviewed registration form rather than a seed
 script — see [Registering a restaurant](#registering-a-restaurant).
+
+**Further documentation** lives next to this file:
+[`docs/bank-connections.md`](docs/bank-connections.md) (how bank movements reach
+Splite and confirm payments), [`docs/operator-console.md`](docs/operator-console.md)
+(the team console, subscriptions and the first operator), and
+[`docs/FRONTEND_BRIEF.md`](docs/FRONTEND_BRIEF.md) (conventions a client cannot
+infer from the spec).
 
 Bills settle from four directions — the till, a diner's declared Pago Móvil, a
 Mercantil C2P charge, and a signed provider webhook — all through one settlement
 function. See [Getting paid](#getting-paid). **Card payments are not built**:
 that needs an acquirer.
 
-Not yet built: card payments, and automatic bank reconciliation. See
+Not yet built: card payments, and direct API connections to individual banks
+(statement upload and signed webhooks work with every bank today). See
 [Open points](#open-points).
 
 Several features are **off until a deployment configures them** — see
@@ -169,9 +192,8 @@ these do not** — they mean stop offering the feature on this server.
 | **Store bank credentials** | `PAYMENT_CREDENTIALS_KEYS` | 503 `PAYMENT_CREDENTIALS_KEY_MISSING` | — |
 | **Issue fiscal invoices** | `FISCAL_PROVIDER`. Either `own` — Splite issues and numbers them itself, against the series each restaurant has configured — or the name of an authorised imprenta digital with an adapter. `FISCAL_MOCK_ENABLED=true` registers the mock instead, and **the boot guard refuses it in production** — its documents carry invented `MOCK-` numbers. Setting `FISCAL_PROVIDER` in production also makes the `MAIL_*` settings mandatory, because an issued invoice is emailed to whoever asked for it | 503 `FISCAL_PROVIDER_NOT_CONFIGURED`, and under `own` a restaurant with no series gets 409 `FISCAL_SERIES_MISSING` | `plan.capabilities.fiscalInvoicing` on `GET /api/v1/account`, which answers the separate question of whether the plan includes it |
 | **Charge through Mercantil C2P** | `MERCANTIL_C2P_URL`, **and** credentials stored per restaurant, **and** those credentials proven by a real call | 503 `PAYMENT_PROVIDER_MISCONFIGURED` | `chargeable` on `GET /api/v1/account/banks` |
-| **Self-service signup** | `ONBOARDING_ENABLED=true` and a mail provider | The routes are **not mounted at all** — 404, not 503 | — |
 | **Foreign-currency menus** | `FX_ENABLED` (on by default) and a reachable BCV | 503 `FX_UNAVAILABLE`, but only after the stored-rate fallback is exhausted | `GET /api/v1/exchange-rate` |
-| **Browsable contract at `/docs`** | `DOCS_ENABLED` (on by default) | Not served | — |
+| **Browsable contract at `/docs`** | `DOCS_ENABLED` (on by default outside production, **off in production**) | Not served | — |
 | **Prometheus metrics at `/metrics`** | `METRICS_TOKEN` | Not mounted — 404, not 401 | — |
 | **Which dependency is down, on `/health/ready`** | `HEALTH_DETAIL` (on by default outside production) | The body is `{"status":"not_ready"}` and nothing else. The status code, 200 or 503, never changes either way | — |
 
@@ -216,11 +238,21 @@ documented for several commits while the router was not mounted at all, and
 `GET /api/v1/tables` returned 404. Two hand-maintained lists disagree eventually;
 one generated contract with a test behind it does not.
 
+The document is written by hand, split by area: `src/contract/schemas.js` for
+the shapes, `src/contract/paths/<area>.js` for the routes (auth, guest, bills,
+menu, payments, account, admin, bank…), and `src/contract/common.js` for what
+they share. `src/openapi.js` puts them back together **in a fixed order** — each
+area file exports its routes in named pieces, because the output is compared
+text for text with `openapi.json` and moving a piece changes the document even
+when no route changed. Add a route to the piece where its neighbours live.
+
 `npm run openapi:check` fails if the committed `openapi.json` has drifted from
 the code, so the artifact a frontend generates from cannot fall behind the API
 it describes. Regenerate it with `npm run openapi:dump`.
 
-Set `DOCS_ENABLED=false` to withhold both served endpoints; the committed file
+Both served endpoints are **off in production by default** — a live Swagger UI
+of a payments API is a map of every route and role for anyone who finds it —
+and on everywhere else. `DOCS_ENABLED` overrides either way; the committed file
 is unaffected.
 
 Monetary amounts cross the wire as **strings**, because a JSON number has
@@ -732,11 +764,12 @@ socket or even loads the library. `src/server.js` closes it during shutdown,
 because a pooled socket left open holds the event loop past the last request and
 turns a graceful shutdown into a forced one.
 
-There is deliberately no HTTP route for the invite step. Every authenticated
-surface in this API is scoped to a restaurant the caller belongs to, and there is
-no platform-operator role — inventing one to serve a handful of approvals a week
-would be a second authentication model to secure and keep correct forever. The
-team uses:
+The team invites from the operator console (**Altas**, `POST
+/api/v1/admin/leads/{leadId}/invite`), which calls the same functions as the
+command line — see [`docs/operator-console.md`](docs/operator-console.md). The
+console is a separate authentication model with its own accounts and a
+mandatory second factor, never a restaurant role with extra rights. From the
+command line:
 
 ```bash
 npm run onboarding -- list NEW
@@ -884,13 +917,10 @@ confirmation there only teaches people to pass `--force` every time.
 name, marking which ones the API enforces and which are only descriptive.
 "ENTERPRISE" on its own does not tell you what you just sold.
 
-A command line rather than a console, for the reason `scripts/onboarding.js`
-already gives: every authenticated surface here is scoped to a restaurant the
-caller belongs to, and there is no platform-operator role. Inventing one to
-serve a handful of plan changes would be a second authentication model to
-secure and keep correct forever. The logic lives in `src/services/plans.js`, so
-a console — if the volume ever justifies one — calls that rather than
-reimplementing the rules.
+The operator console changes plans too, through the same
+`src/services/plans.js`, so the rules live in one place and a change made from
+the console lands in `operator_audit` beside the rest of that client's history.
+See [`docs/operator-console.md`](docs/operator-console.md).
 
 Mail goes through `src/services/mailer.js`, a port with two adapters. `log`
 writes the message and its link to the logger and sends nothing; it is refused
@@ -961,9 +991,10 @@ worth knowing: enrolling and then immediately signing in on a second device
 inside the same thirty seconds will refuse the code showing on screen. It
 resolves itself at the next step, and the alternative is a replayable code.
 
-**Recovery codes are not a nicety.** There is no admin surface in this system —
-inviting a restaurant is a CLI command — so an owner who loses their phone with
-no code is locked out of their own business with nobody able to let them back
+**Recovery codes are not a nicety.** Nobody at Splite can switch off a
+restaurant owner's second factor — the operator console manages plans and
+billing, not restaurant accounts — so an owner who loses their phone with no
+code is locked out of their own business with nobody able to let them back
 in. Ten are issued when the factor is confirmed, readable exactly once, and each
 is spendable in place of a TOTP code. The response never says which kind
 completed a login: distinguishing them would tell somebody holding a stolen
@@ -3404,7 +3435,7 @@ npx openapi-typescript openapi.json -o src/api.d.ts
 
 Regenerate the artifact with `npm run openapi:dump` after changing any route or
 schema. The live document is also served at `/openapi.json`, with Swagger UI at
-`/docs` while `DOCS_ENABLED=true`.
+`/docs` while `DOCS_ENABLED` is on (by default everywhere but production).
 
 ## Production notes
 
@@ -3569,23 +3600,42 @@ to that, and both are unbuilt.
 
 ## Rate limiting
 
-Three layers, and which one does the real work depends on whether the caller has
+Several layers, and which one does the real work depends on whether the caller has
 been identified yet.
 
-| Where | Keys on | Why |
-| --- | --- | --- |
-| `/api/v1` | address | coarse backstop, mounted before any authentication |
-| `POST /guest/sessions` | address | nothing else exists yet — this is where a credential is created |
-| authenticated guest routes | guest session | mounted after `authenticateGuest` |
-| `/api/v1/bills` | staff subject | mounted after `authenticateToken` |
-| `/api/v1/auth` | address, **fail-closed** | the limiter is what stands between an attacker and a password |
+| Where | Keys on | Ceiling (production, fixed) | Why |
+| --- | --- | --- | --- |
+| `/api/v1` | address | 1200 / min | coarse backstop, mounted before any authentication |
+| `/api/v1` with a staff token | staff subject, **signature verified** | 600 / min | the real per-caller limit for the panel |
+| `POST /guest/sessions`, `POST /guest/qr/context` | address | 60 / min | nothing else exists yet — this is where a credential is created |
+| authenticated guest routes | guest session | 60 / min | mounted after `authenticateGuest` |
+| `/api/v1/bills` | staff subject | 300 / min | mounted after `authenticateToken` |
+| `/api/v1/auth` attempts | address, **fail-closed** | 10 / min | the limiter is what stands between an attacker and a password |
 
 The distinction that matters: **a credential identifies a caller, an address
-identifies a network.** Diners are on phones behind carrier NAT, and diners on
-the venue WiFi share one address outright, so a per-IP limit on the guest
-surface throttles every table in the room at once — a busy Friday rather than an
-abuser. The guest limit was 30 a minute for the whole restaurant; it is now 60 a
-minute per session, with a generous address-level backstop behind it.
+identifies a network.** A whole restaurant — the bar tablet, the waiters'
+phones and every diner on the venue WiFi — leaves through one address, and
+Venezuelan carriers put many subscribers behind another. A bill screen polls
+about twenty times a minute and a panel screen about thirty, so the old 120 per
+address was spent by one tablet and five diners, and every one of them got 429
+mid-service. The address limit is now only a backstop; the limits that bound
+real use are per staff member and per guest session.
+
+The staff limiter runs before authentication, so it verifies the token's
+signature itself before counting (`src/middleware/rateLimitKeys.js`). Counting
+an unverified `sub` would let anyone open a fresh bucket per request by making
+tokens up; a forged or expired token is simply not counted there and falls to
+the address backstop, and the route rejects it anyway.
+
+`/api/v1/auth` counts **only what guesses something**: login, the second
+factor, changing a password, accepting an invitation. Reading the session
+(`GET /me`), renewing it with a 256-bit refresh token and logging out no longer
+count, because the panel reads the session on every screen and three phones on
+one WiFi used to spend the ten attempts without anyone trying a password.
+
+The public menu photo and brand endpoints allow 1200 a minute per address for
+the same reason: ten diners opening a forty-photo menu is four hundred requests
+in a minute, even though each phone then caches them for a year.
 
 Only `/auth` fails closed. There the limiter is the brute-force protection
 itself. Everywhere else it bounds volume, and refusing every diner in the
@@ -3613,22 +3663,21 @@ what gets built, and they are parked deliberately rather than guessed at.
 | --- | --- | --- |
 | ~~**On what domain does Splite send?**~~ **Answered: `splite.lat`.** | Nothing. Onboarding mail sends over `MAIL_TRANSPORT=resend` from a verified domain. | Closed. It was answered earlier than planned because the host forced it: Railway disables outbound SMTP below Pro, so sending through the team's Gmail mailbox — which this table previously recommended — cannot work there at all. See [How the mail actually leaves](#how-the-mail-actually-leaves). No code changed; it was three variables. |
 | **Which card acquirer?** | Card payments entirely, and paying inside the app. | Diners declare Pago Móvil and staff confirm. |
-| **What does a lapsed trial lose?** | Still nothing. `plan_tier` now drives a real capability table (`src/services/entitlements.js`), but only `fiscalInvoicing` actually refuses; an expiring trial does not downgrade anything by itself. | Clients can warn, and can read `plan.capabilities` to decide what to offer. The obvious answer is still the wrong one: cutting off bills mid-service strands a dining room full of seated diners over an unpaid invoice. Which of the already-shipped capabilities starts refusing, and with how much notice, is the open part. |
+| **What does a lapsed trial lose?** | Nothing automatic. An expired trial is only flagged, in the console and to the restaurant. What refuses is a person's decision: an operator who marks a subscription `SUSPENDED` or `CANCELLED` stops **new** bills from opening (`403 SUBSCRIPTION_SUSPENDED`); bills already open keep working. `plan_tier` also drives a capability table (`src/services/entitlements.js`), where only `fiscalInvoicing` refuses. | Clients read `GET /api/v1/account/subscription` and `plan.capabilities`. Cutting off bills mid-service would strand a dining room full of seated diners over an unpaid invoice, which is why nothing is cut on a timer. |
 | **Should a failing RIF check digit be rejected?** | Nothing. The mod-11 result is recorded in `restaurant_signups.rif_checksum_ok` and shown to the reviewer. | Accepted either way. Turning away a real restaurant at the form is worse than storing one malformed tax id, and the column is the evidence for deciding later. Note `J-00000000-0` passes — the checksum catches transcription slips, not invention. |
 
 Two smaller ones, same character:
 
-- **No admin surface.** Inviting a lead is `npm run onboarding -- invite <id>`,
-  not an endpoint, because every authenticated surface here is scoped to a
-  restaurant the caller belongs to and there is no platform-operator role.
-  Inventing one for a handful of approvals a week is a second authentication
-  model to secure forever. If volume justifies a console, it calls the same
-  functions the CLI does.
-- **Nothing pushes a claim to staff.** The backend now supports a badge —
-  `GET /api/v1/payments/claims/summary`, plus a reconciler line for a queue
-  nobody worked — but a screen showing it, or a real push notification, is still
-  a frontend decision and is not built. See
-  [Declared Pago Móvil](#declared-pago-móvil).
+- **The console cannot create operators.** It exists now — see
+  [`docs/operator-console.md`](docs/operator-console.md) — with its own
+  accounts, sessions and mandatory second factor, and it invites leads through
+  the same functions the CLI uses. Creating a second operator is still
+  `npm run operator`, run inside the service, on purpose: an operator who can
+  mint operators from a browser is the one account worth stealing.
+- **Alerts stop when the screen does.** The panel shows the claims waiting on
+  every screen (`GET /api/v1/payments/claims/summary`) and plays a sound for
+  new orders, with a tablet mode that keeps the screen on. Nothing reaches a
+  locked phone: that needs web push, which is not built.
 
 ### Blocking real use
 
@@ -3642,24 +3691,24 @@ Two smaller ones, same character:
   charge — sending céntimos where bolívares are expected is a debit a hundred
   times too large. Until then, C2P is code-complete but not switched on for real
   money. Declared Pago Móvil remains the money path that works today.
-- **Onboarding is built but not switched on.** A public form records a lead and
-  emails the team, who telephone the restaurant and then run
-  `npm run onboarding -- invite <id>`. It is mounted only under
-  `ONBOARDING_ENABLED`, which is off, because it cannot work without a mail
-  provider — see [Waiting on a decision](#waiting-on-a-decision). The frontend
-  page that consumes the invitation link, `/registro/verificar`, does not exist
-  yet either.
+- **Onboarding depends on mail.** A public form records a lead and emails the
+  team, who telephone the restaurant and then invite it from the console (or
+  `npm run onboarding -- invite <id>`); the restaurant finishes at
+  `/registro/verificar`. It is mounted only under `ONBOARDING_ENABLED`, and that
+  needs a working mail provider on a verified domain — see
+  [How the mail actually leaves](#how-the-mail-actually-leaves).
 - **No card payments.** A diner can declare a Pago Móvil, a signed webhook can
   settle a bill, and C2P (above) is Splite moving money on the diner's
   instruction — but a card, entered and charged in the app, needs an acquirer,
   which is the open decision below. With one there is no reconciliation problem
   at all: the acquirer answers authoritatively.
-- **No automatic bank reconciliation.** Confirming a declared Pago Móvil is a
-  person reading a bank app. Reading the feed and matching movements to tables
-  is real work with a real trap: two tables with identical totals and a payment
-  with no reference must produce an exception for staff, never a guess. Guessing
-  closes the wrong bill *and* makes the other table pay twice, which is worse
-  than not confirming at all.
+- **No direct bank APIs yet.** Automatic confirmation is built — see
+  [`docs/bank-connections.md`](docs/bank-connections.md) — and works with every
+  bank through a statement upload or a signed webhook, including verification
+  services such as Pabilo or PagoFlash. What is missing is a connection that
+  reads each bank's own API, which waits on credentials from the banks. The trap
+  it was built around still holds: two tables with identical totals, or a
+  payment with no reference, become an exception for staff, never a guess.
 
 ### Port still outstanding
 
@@ -3696,10 +3745,11 @@ From the working copy, onto the current model:
   mirror that claimed to solve it has been removed: nothing read it, and nothing
   usefully could, since the access token carries no `jti` and the refresh path
   has to read Postgres anyway in order to rotate.
-- **The app-level rate limiter still cannot key on a user**, being mounted ahead
-  of authentication. It is now only a coarse backstop: the bills router and the
-  guest router each apply their own limiter after authenticating, keyed on the
-  staff subject and the guest session respectively.
+- **The address limiter is only a backstop.** It runs ahead of authentication
+  and so sees nothing but the address, which a whole restaurant shares. The
+  limits that bound real use key on the caller — a staff limiter that verifies
+  the token's signature before counting, and the guest session — see
+  [Rate limiting](#rate-limiting).
 - **`/health/ready` is an unauthenticated database round-trip**, deliberately
   ahead of the rate limiter so probes do not consume client budget. That also
   makes it free load for anyone who finds it. What it is no longer is free
