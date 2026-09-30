@@ -45,14 +45,24 @@ function errorHandler(err, req, res, next) {
   // requestId, restaurantId and userId arrive from the request context, so they
   // do not need repeating here. The stack rides on `err`, which pino serialises
   // and redacts; it is not echoed to the client either way.
+  //
+  // Only when it says something. A deliberate ApiError below 500 -- a wrong
+  // password, a 404, a validation failure -- was raised on purpose at a line
+  // nobody needs to find, and its stack was a dozen frames of Express per
+  // routine request. A 5xx, or anything that is not an ApiError, still logs
+  // the whole error: that is a bug and the stack is how it gets found.
+  //
+  // The path without its query string. Query strings carry filters and dates
+  // today; nothing guarantees they never carry something a log should not keep.
+  const routine = known && statusCode < 500;
   logger[level](
     {
       event: 'REQUEST_FAILED',
       method: req.method,
-      path: req.originalUrl,
+      path: `${req.baseUrl || ''}${req.path || ''}` || String(req.originalUrl || '').split('?')[0],
       status: statusCode,
       code,
-      err
+      ...(routine ? {} : { err })
     },
     err.message
   );

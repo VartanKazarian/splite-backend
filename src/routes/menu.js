@@ -326,7 +326,11 @@ router.get(
 router.get(
   '/public/:restaurantId/products/:productId/image',
   validateParams(productImageParamSchema),
-  rateLimit({ windowSeconds: 60, max: 240, keyPrefix: 'menu:imgpub' }),
+  // Por dirección, y la dirección es el wifi del local: diez comensales que
+  // abren una carta de cuarenta fotos son cuatrocientas peticiones en un
+  // minuto, aunque cada teléfono las guarde después un año. Con 240 se
+  // quedaban platos sin foto justo en la hora punta.
+  rateLimit({ windowSeconds: 60, max: 1200, keyPrefix: 'menu:imgpub' }),
   async (req, res, next) => {
     try {
       const { rows } = await db.query(
@@ -392,7 +396,7 @@ router.get(
 router.get(
   '/public/:restaurantId/branding/:kind',
   validateParams(publicBrandingParamSchema),
-  rateLimit({ windowSeconds: 60, max: 240, keyPrefix: 'menu:brandpub' }),
+  rateLimit({ windowSeconds: 60, max: 1200, keyPrefix: 'menu:brandpub' }),
   async (req, res, next) => {
     try {
       const { rows } = await db.query(

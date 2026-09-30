@@ -387,7 +387,6 @@ and can double-charge. Reusing a key with a *different* body is a `409`.
 - Calling `/auth/refresh` to identify the user.
 - Concurrent refresh calls.
 - Regenerating an idempotency key on retry.
-- A guest payment screen — the endpoint does not exist yet.
 - Re-fetching an exchange rate to re-convert a bill; the rate is frozen per bill.
 
 ---
@@ -396,4 +395,4 @@ and can double-charge. Reusing a key with a *different* body is a `409`.
 
 - `openapi.json` — the contract, committed and CI-checked
 - `GET /openapi.json` — the same document, served live
-- `GET /docs` — Swagger UI, while `DOCS_ENABLED=true`
+- `GET /docs` — Swagger UI, while `DOCS_ENABLED` is on (by default everywhere but production)
