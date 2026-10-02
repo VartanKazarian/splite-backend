@@ -507,6 +507,12 @@ that already references it has to stay readable.
 `GET /api/v1/menu/public/:restaurantId/products` is the one unauthenticated
 endpoint here: a guest scanning a table QR has no staff credentials.
 
+For a menu priced in dollars or euros it also carries `rate` — the BCV rate in
+force — so the diner sees what a dish costs in bolívares, which is what they pay
+in. It is a reference: a bill is charged at the rate snapshotted when it opens.
+`null` for a menu in VES, or when no rate is available; the menu is served
+either way.
+
 ### Sections
 
 A menu is not a list, it is sections in an order, and `menu_categories` holds
@@ -1156,6 +1162,14 @@ walk over or call the kitchen without opening the table to find out what it was.
 `GET /api/v1/orders/summary` is the badge figure, separate for the same reason
 `/payments/claims/summary` is: a number on every screen should not be pulling
 whole orders to render itself.
+
+**A note travels with the order**: "no onion on the burger", "all of it to
+share". One per order, not per line — what a diner writes almost always names
+the dish it is about, and a box under every dish fills the screen with empty
+fields. Trimmed, up to 200 characters, newlines allowed and other control
+characters refused, because it is rendered in the staff tray. It reaches the
+tray and nowhere else: the audit log records *that* there was a note, never its
+text.
 
 `lineCount` and `items` answer different questions and both are reported.
 `lineCount` is what was ordered; `items` is what is still on the bill. A line a

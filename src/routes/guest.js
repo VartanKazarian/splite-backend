@@ -526,7 +526,8 @@ router.post(
         restaurantId: req.guest.restaurantId,
         tableId: req.guest.tableId,
         guestSessionId: req.guest.sessionId ?? null,
-        items: req.body.items
+        items: req.body.items,
+        note: req.body.note || null
       });
 
       await logAudit({
@@ -537,7 +538,9 @@ router.post(
         action: result.opened ? 'BILL_OPENED_BY_GUEST_ORDER' : 'GUEST_ORDER_PLACED',
         resourceType: 'guest_order',
         resourceId: result.orderId,
-        details: { tableId: req.guest.tableId, lines: req.body.items.length },
+        // Si trae nota, pero no la nota: lo que escribe un comensal no va al
+        // registro de auditoría.
+        details: { tableId: req.guest.tableId, lines: req.body.items.length, hasNote: Boolean(req.body.note) },
         ip: req.ip,
         userAgent: req.get('user-agent'),
         requestId: req.id

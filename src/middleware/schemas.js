@@ -302,7 +302,19 @@ const guestOrderSchema = Joi.object({
   items: Joi.array().min(1).max(20).required().items(Joi.object({
     productId: uuid.required(),
     quantity: Joi.number().integer().min(1).max(20).default(1)
-  }))
+  })),
+  // Una nota para la sala. Vacía o en blanco es lo mismo que no mandarla. Los
+  // caracteres de control se rechazan: esto se pinta en la bandeja del
+  // personal, y un salto de línea por línea es lo único que se tolera.
+  note: Joi.string().trim().max(200).allow('', null)
+    .custom((value, helpers) => {
+      for (const ch of value) {
+        const code = ch.codePointAt(0);
+        if ((code < 0x20 && code !== 0x0a) || code === 0x7f) return helpers.error('string.controlChars');
+      }
+      return value;
+    })
+    .messages({ 'string.controlChars': 'note contains control characters' })
 });
 
 const guestOrderIdParamSchema = Joi.object({ id: uuid.required() });

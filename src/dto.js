@@ -893,6 +893,8 @@ function guestOrder(row) {
     // mientras tanto lo decide el cliente, como en `staffMember`.
     servedBy: row.served_by ?? null,
     lineCount: row.line_count,
+    note: row.note ?? null,
+    currency: row.currency ?? null,
     items: (row.items ?? []).map(item => ({
       name: item.name,
       quantity: item.quantity,

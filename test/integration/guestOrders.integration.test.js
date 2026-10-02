@@ -223,6 +223,7 @@ describe('guest ordering', { skip }, () => {
     assert.equal(order.tableName, name, 'el aviso dice de qué mesa es');
     assert.equal(order.lineCount, 1);
     assert.deepEqual(order.items, [{ name: 'Tequeños', quantity: 3, subtotalMinor: '540000' }]);
+    assert.equal(order.currency, 'VES', 'los importes van en la moneda de la cuenta');
     assert.ok(order.ageSeconds !== null && order.ageSeconds >= 0);
 
     const summary = await request('GET', '/api/v1/orders/summary', { token: staffToken });
@@ -295,6 +296,50 @@ describe('guest ordering', { skip }, () => {
     } finally {
       await fixtures.destroyRestaurant(other.id);
     }
+  });
+
+  it('carries the diner\'s note to the tray, and only there', async () => {
+    const table = await tableWithNonce(`O${++seq}`);
+    const session = await scan(table);
+    const placed = await request('POST', '/api/v1/guest/bill/orders', {
+      ...session,
+      body: { items: [{ productId: productA, quantity: 1 }], note: '  La cachapa sin queso\npor favor  ' }
+    });
+    assert.equal(placed.status, 201, JSON.stringify(placed.body));
+
+    const tray = await request('GET', '/api/v1/orders', { token: staffToken });
+    assert.equal(tray.body.data[0].note, 'La cachapa sin queso\npor favor', 'recortada, con su salto de línea');
+
+
+    // Lo que escribe el comensal no va al registro de auditoría: sólo que la hubo.
+    const { rows } = await db.query(
+      'SELECT details FROM audit_logs WHERE resource_id = $1', [placed.body.orderId]
+    );
+    assert.equal(rows[0].details.hasNote, true);
+    assert.ok(!JSON.stringify(rows[0].details).includes('cachapa'));
+  });
+
+  it('treats a blank note as no note', async () => {
+    const table = await tableWithNonce(`O${++seq}`);
+    const session = await scan(table);
+    await request('POST', '/api/v1/guest/bill/orders', {
+      ...session, body: { items: [{ productId: productB, quantity: 1 }], note: '   ' }
+    });
+    const tray = await request('GET', '/api/v1/orders', { token: staffToken });
+    assert.equal(tray.body.data[0].note, null);
+  });
+
+  it('refuses a note that is too long or carries control characters', async () => {
+    const table = await tableWithNonce(`O${++seq}`);
+    const session = await scan(table);
+    for (const note of ['x'.repeat(201), 'hola\u0007', 'tab\taquí']) {
+      const res = await request('POST', '/api/v1/guest/bill/orders', {
+        ...session, body: { items: [{ productId: productA, quantity: 1 }], note }
+      });
+      assert.equal(res.status, 400, `${JSON.stringify(note)} → ${res.status}`);
+    }
+    const { rows } = await db.query('SELECT count(*)::int AS n FROM guest_orders WHERE restaurant_id = $1', [restaurant.id]);
+    assert.equal(rows[0].n, 0, 'nada se escribió');
   });
 
   it('rejects an order bigger than a table can plausibly want', async () => {
