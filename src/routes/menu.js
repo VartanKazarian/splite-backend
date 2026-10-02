@@ -1,6 +1,7 @@
 const crypto = require('node:crypto');
 const express = require('express');
 const db = require('../connectors/base');
+const fxService = require('../services/fx');
 const { authenticateToken, requireRole } = require('../middleware/auth');
 const {
   validateBody,
@@ -293,8 +294,19 @@ router.get(
         [req.params.restaurantId]
       );
 
+      // La tasa en vigor, para que el comensal vea cuánto es en bolívares una
+      // carta en dólares: paga en bolívares, y hacer la cuenta de cabeza a 757
+      // por dólar no lo hace nadie en la mesa. Es una referencia -- la cuenta
+      // se cobra a la tasa de cuando se abre --, y `getRateFor` nunca lanza:
+      // sin tasa, la carta sale igual, sólo que sin el equivalente.
+      const currency = restaurant.rows[0].menu_currency;
+      const quote = currency && currency !== 'VES' ? await fxService.getRateFor(currency) : null;
+
       res.json({
         restaurant: dto.menuSettings(restaurant.rows[0]),
+        rate: quote && quote.rate
+          ? { currency, rate: Number(quote.rate).toFixed(8), valueDate: quote.valueDate ?? null }
+          : null,
         menuPdf: document.rows[0] ? dto.menuDocument(document.rows[0]) : null,
         // Sent alongside rather than nested, so a client can render the section
         // headers in order -- including an empty one -- without inferring the

@@ -539,6 +539,10 @@ const bill = {
                       quantity: { type: 'integer', minimum: 1, maximum: 20, default: 1 }
                     }
                   }
+                },
+                note: {
+                  type: ['string', 'null'], maxLength: 200,
+                  description: 'A note for the floor ("no onion on the burger"). Trimmed; empty is the same as absent. One per order rather than per line. Control characters other than a newline are refused.'
                 }
               }
             }

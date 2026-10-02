@@ -1030,6 +1030,15 @@ const schemas = {
     type: 'object',
     properties: {
       restaurant: ref('MenuSettings'),
+      rate: {
+        type: ['object', 'null'],
+        description: 'The BCV rate in force for the menu currency, so a diner can see the bolívar equivalent of a dollar price. A reference only: a bill is charged at the rate snapshotted when it opens. Null for a menu priced in VES, or when no rate is available — the menu is served either way.',
+        properties: {
+          currency: { type: 'string', enum: ['USD', 'EUR'] },
+          rate: { type: 'string', pattern: '^\\d+\\.\\d{8}$', description: 'Bolívares per unit of `currency`, padded to 8 decimals.' },
+          valueDate: { type: ['string', 'null'], format: 'date' }
+        }
+      },
       menuPdf: {
         allOf: [ref('MenuDocument')],
         nullable: true,
@@ -1489,6 +1498,7 @@ Object.assign(schemas, {
         description: 'Who the bill is attributed to, which for a QR order is usually **nobody**: the diner opened it, so no member of staff did. Carried here so the tray can offer "I am taking this table" only where it is actually missing, and never the email in its place — what to show meanwhile is the client\'s decision.'
       },
       lineCount: { type: 'integer', description: 'How many lines were ordered. Compare with `items`: a line a waiter has since removed is gone from `items` but the order still had it.' },
+      note: { type: ['string', 'null'], description: 'What the diner wrote with the order, or null. Diner text: render it as text, never as markup.' },
       items: {
         type: 'array',
         description: 'What is still on the bill from this order, oldest first.',

@@ -2674,6 +2674,34 @@
           "restaurant": {
             "$ref": "#/components/schemas/MenuSettings"
           },
+          "rate": {
+            "type": [
+              "object",
+              "null"
+            ],
+            "description": "The BCV rate in force for the menu currency, so a diner can see the bolívar equivalent of a dollar price. A reference only: a bill is charged at the rate snapshotted when it opens. Null for a menu priced in VES, or when no rate is available — the menu is served either way.",
+            "properties": {
+              "currency": {
+                "type": "string",
+                "enum": [
+                  "USD",
+                  "EUR"
+                ]
+              },
+              "rate": {
+                "type": "string",
+                "pattern": "^\\d+\\.\\d{8}$",
+                "description": "Bolívares per unit of `currency`, padded to 8 decimals."
+              },
+              "valueDate": {
+                "type": [
+                  "string",
+                  "null"
+                ],
+                "format": "date"
+              }
+            }
+          },
           "menuPdf": {
             "allOf": [
               {
@@ -3554,6 +3582,13 @@
           "lineCount": {
             "type": "integer",
             "description": "How many lines were ordered. Compare with `items`: a line a waiter has since removed is gone from `items` but the order still had it."
+          },
+          "note": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "What the diner wrote with the order, or null. Diner text: render it as text, never as markup."
           },
           "items": {
             "type": "array",
@@ -11585,6 +11620,14 @@
                         }
                       }
                     }
+                  },
+                  "note": {
+                    "type": [
+                      "string",
+                      "null"
+                    ],
+                    "maxLength": 200,
+                    "description": "A note for the floor (\"no onion on the burger\"). Trimmed; empty is the same as absent. One per order rather than per line. Control characters other than a newline are refused."
                   }
                 }
               }

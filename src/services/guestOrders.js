@@ -29,7 +29,7 @@ const { ApiError } = require('../errors');
  * poner ahí un nombre movería propinas hacia quien no tomó esa nota. La
  * corrección existe y es `PATCH /bills/:id/server`.
  */
-async function placeOrder({ restaurantId, tableId, guestSessionId = null, items }) {
+async function placeOrder({ restaurantId, tableId, guestSessionId = null, items, note = null }) {
   // Fuera de la transacción, como en el camino del mesero: `snapshotFx` puede
   // salir a la red a buscar la tasa, y una llamada lenta con la fila de la mesa
   // bloqueada retiene el bloqueo durante toda la espera.
@@ -88,10 +88,10 @@ async function placeOrder({ restaurantId, tableId, guestSessionId = null, items 
     const bill = await billItems.lockOpenBill(client, { restaurantId, billId });
 
     const order = await client.query(
-      `INSERT INTO guest_orders (restaurant_id, table_id, guest_session_id, bill_id, line_count)
-       VALUES ($1, $2, $3, $4, $5)
+      `INSERT INTO guest_orders (restaurant_id, table_id, guest_session_id, bill_id, line_count, note)
+       VALUES ($1, $2, $3, $4, $5, $6)
        RETURNING id, created_at`,
-      [restaurantId, tableId, guestSessionId, billId, items.length]
+      [restaurantId, tableId, guestSessionId, billId, items.length, note || null]
     );
 
     const { added, bill: updated } = await billItems.addItemsInTransaction(client, {
@@ -122,7 +122,7 @@ async function placeOrder({ restaurantId, tableId, guestSessionId = null, items 
  */
 async function listPending({ restaurantId, limit = 50 }) {
   const { rows } = await db.query(
-    `SELECT o.id, o.table_id, o.bill_id, o.line_count, o.created_at,
+    `SELECT o.id, o.table_id, o.bill_id, o.line_count, o.note, o.created_at,
             t.name AS table_name,
             -- Quién tiene atribuida la cuenta, que en un pedido por QR suele
             -- ser nadie: la abrió el comensal. Va aquí para que la bandeja
