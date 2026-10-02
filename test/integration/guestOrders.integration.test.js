@@ -223,6 +223,7 @@ describe('guest ordering', { skip }, () => {
     assert.equal(order.tableName, name, 'el aviso dice de qué mesa es');
     assert.equal(order.lineCount, 1);
     assert.deepEqual(order.items, [{ name: 'Tequeños', quantity: 3, subtotalMinor: '540000' }]);
+    assert.equal(order.currency, 'VES', 'los importes van en la moneda de la cuenta');
     assert.ok(order.ageSeconds !== null && order.ageSeconds >= 0);
 
     const summary = await request('GET', '/api/v1/orders/summary', { token: staffToken });
@@ -308,6 +309,7 @@ describe('guest ordering', { skip }, () => {
 
     const tray = await request('GET', '/api/v1/orders', { token: staffToken });
     assert.equal(tray.body.data[0].note, 'La cachapa sin queso\npor favor', 'recortada, con su salto de línea');
+
 
     // Lo que escribe el comensal no va al registro de auditoría: sólo que la hubo.
     const { rows } = await db.query(

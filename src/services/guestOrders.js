@@ -128,6 +128,10 @@ async function listPending({ restaurantId, limit = 50 }) {
             -- ser nadie: la abrió el comensal. Va aquí para que la bandeja
             -- pueda ofrecer "lo atiendo yo" sólo cuando de verdad falta.
             b.served_by AS served_by,
+            -- La moneda de los importes de las líneas: la de la cuenta. Una carta
+            -- en dólares deja las líneas en dólares, y la bandeja las daba por
+            -- bolívares.
+            b.currency AS currency,
             COALESCE(
               json_agg(
                 json_build_object(
@@ -143,7 +147,7 @@ async function listPending({ restaurantId, limit = 50 }) {
        LEFT JOIN bills b ON b.id = o.bill_id AND b.restaurant_id = o.restaurant_id
        LEFT JOIN bill_items i ON i.guest_order_id = o.id
       WHERE o.restaurant_id = $1 AND o.acknowledged_at IS NULL
-      GROUP BY o.id, t.name, b.served_by
+      GROUP BY o.id, t.name, b.served_by, b.currency
       ORDER BY o.created_at ASC
       LIMIT $2`,
     [restaurantId, limit]

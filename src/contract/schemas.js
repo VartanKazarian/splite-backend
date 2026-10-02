@@ -1499,6 +1499,7 @@ Object.assign(schemas, {
       },
       lineCount: { type: 'integer', description: 'How many lines were ordered. Compare with `items`: a line a waiter has since removed is gone from `items` but the order still had it.' },
       note: { type: ['string', 'null'], description: 'What the diner wrote with the order, or null. Diner text: render it as text, never as markup.' },
+      currency: { type: ['string', 'null'], enum: ['VES', 'USD', 'EUR', null], description: 'The currency of `items[].subtotalMinor`: the bill\'s. A dollar menu leaves its lines in dollars. Null once the bill has been purged.' },
       items: {
         type: 'array',
         description: 'What is still on the bill from this order, oldest first.',
