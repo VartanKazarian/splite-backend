@@ -920,6 +920,14 @@ function bankConnection(row) {
     autoConfirm: row.auto_confirm === true,
     secretVersion: row.secret_version,
     columnMap: row.column_map ?? null,
+    // De Mercantil: el RIF y si hay llave guardada. La llave, nunca.
+    merchantRif: row.merchant_rif ?? null,
+    hasKey: row.has_key === true,
+    // Adónde llegan sus movimientos, para darlo al banco o al sistema que los
+    // manda. Mercantil manda los de todos los comercios a la misma.
+    inboundPath: row.kind === 'MERCANTIL_P2C'
+      ? '/api/v1/bank-inbound/mercantil'
+      : (row.kind === 'WEBHOOK' ? `/api/v1/bank-inbound/${row.id}` : null),
     lastMovementAt: row.last_movement_at ? isoTimestamp(row.last_movement_at) : null,
     lastError: row.last_error ?? null,
     lastErrorAt: row.last_error_at ? isoTimestamp(row.last_error_at) : null,

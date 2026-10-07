@@ -548,7 +548,12 @@ module.exports = {
       // Logs redacted request bodies on a failed call. Off in production: the
       // redaction is thorough, but the safest place for a single-use clave is
       // still a log line that was never written.
-      debug: boolean('MERCANTIL_C2P_DEBUG', false)
+      debug: boolean('MERCANTIL_C2P_DEBUG', false),
+      // Las IPs desde las que Mercantil manda sus notificaciones de pago, si el
+      // banco las da. Vacío, se acepta de cualquiera: lo que autentica un
+      // mensaje es que la llave del comercio lo abra, y esto es una capa más.
+      notifyAllowedIps: (process.env.MERCANTIL_NOTIFY_ALLOWED_IPS || '')
+        .split(',').map(v => v.trim()).filter(Boolean)
     }
   },
   fiscal: {

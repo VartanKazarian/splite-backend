@@ -55,7 +55,8 @@ opens so a diner's total cannot move while they eat.
 **Running the business**
 
 - Automatic confirmation of declared Pago Móvil against the restaurant's own bank
-  movements — a statement upload from any bank, or a signed webhook — matched by
+  movements — a statement upload from any bank, a signed webhook, or Mercantil's
+  real-time payment notifications — matched by
   the same rule a waiter would use, and never guessed. See
   [`docs/bank-connections.md`](docs/bank-connections.md)
 - Ordering from the table, with a tray and an audible alert for staff — see
@@ -3725,11 +3726,15 @@ Two smaller ones, same character:
   instruction — but a card, entered and charged in the app, needs an acquirer,
   which is the open decision below. With one there is no reconciliation problem
   at all: the acquirer answers authoritatively.
-- **No direct bank APIs yet.** Automatic confirmation is built — see
-  [`docs/bank-connections.md`](docs/bank-connections.md) — and works with every
-  bank through a statement upload or a signed webhook, including verification
-  services such as Pabilo or PagoFlash. What is missing is a connection that
-  reads each bank's own API, which waits on credentials from the banks. The trap
+- **One direct bank feed so far, not yet live.** Automatic confirmation is
+  built — see [`docs/bank-connections.md`](docs/bank-connections.md) — and works
+  with every bank through a statement upload or a signed webhook, including
+  verification services such as Pabilo or PagoFlash. Mercantil's payment
+  notifications (`MERCANTIL_P2C`) have a receiver, written to the bank's own
+  spec and tested against it, but no real message has arrived yet: the cipher
+  variant is confirmed by the bank's first test message, and the affiliation
+  waits on Splite's company registration. Other banks' APIs wait on their
+  credentials. The trap
   it was built around still holds: two tables with identical totals, or a
   payment with no reference, become an exception for staff, never a guess.
 

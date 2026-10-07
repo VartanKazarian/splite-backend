@@ -32,6 +32,7 @@ const fiscalRoutes = require('./routes/fiscal');
 const webhookRoutes = require('./routes/webhooks');
 const bankConnectionRoutes = require('./routes/bankConnections');
 const bankInboundRoutes = require('./routes/bankInbound');
+const mercantilInboundRoutes = require('./routes/mercantilInbound');
 const adminRoutes = require('./routes/admin');
 
 // Una vez, al arrancar: un adaptador incompleto tiene que impedir el arranque
@@ -227,6 +228,9 @@ app.use('/api/v1/webhooks', webhookRoutes);
 // movimientos. La entrada va en su propio router y con su propio limitador:
 // quien la llama es una máquina, sin sesión, y la firma es su credencial.
 app.use('/api/v1/bank-connections', bankConnectionRoutes);
+// Las notificaciones de Mercantil van antes que `/:connectionId`, con un límite
+// más alto: llegan las de todos los restaurantes desde las mismas IPs del banco.
+app.use('/api/v1/bank-inbound/mercantil', rateLimit({ windowSeconds: 60, max: 600, keyPrefix: 'bank-inbound-mercantil' }), mercantilInboundRoutes);
 app.use('/api/v1/bank-inbound', rateLimit({ windowSeconds: 60, max: 120, keyPrefix: 'bank-inbound' }), bankInboundRoutes);
 
 // La consola de Splite. Su login pasa por el mismo limitador estricto que el

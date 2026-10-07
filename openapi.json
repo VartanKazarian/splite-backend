@@ -422,6 +422,7 @@
                   "INVITATION_EMAIL_IN_USE",
                   "BANK_MOVEMENT_ALREADY_USED",
                   "BANK_CONNECTION_KIND_MISMATCH",
+                  "BANK_CONNECTION_RIF_TAKEN",
                   "OPERATOR_EMAIL_TAKEN",
                   "SUBSCRIPTION_CHARGE_EXISTS",
                   "SUBSCRIPTION_CHARGE_CLOSED",
@@ -4623,7 +4624,8 @@
             "type": "string",
             "enum": [
               "WEBHOOK",
-              "STATEMENT_IMPORT"
+              "STATEMENT_IMPORT",
+              "MERCANTIL_P2C"
             ]
           },
           "label": {
@@ -4650,6 +4652,24 @@
             ],
             "description": "For STATEMENT_IMPORT: which column of the statement holds each value (0-based), saved so the next upload does not ask again."
           },
+          "merchantRif": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "For MERCANTIL_P2C: the merchant's RIF, without dashes or leading zeros."
+          },
+          "hasKey": {
+            "type": "boolean",
+            "description": "For MERCANTIL_P2C: whether Mercantil's key is stored. The key itself is never returned."
+          },
+          "inboundPath": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Where this connection's movements arrive: the path to give Mercantil, or the signed webhook's path. Null for STATEMENT_IMPORT."
+          },
           "lastMovementAt": {
             "type": [
               "string",
@@ -4673,6 +4693,34 @@
           "createdAt": {
             "type": "string",
             "format": "date-time"
+          }
+        }
+      },
+      "MercantilNotificationReply": {
+        "type": "object",
+        "description": "The envelope Mercantil expects back: its own `infoMsg`, echoed, and a code.",
+        "properties": {
+          "infoMsg": {
+            "type": "object"
+          },
+          "code": {
+            "type": "integer"
+          },
+          "codigo": {
+            "type": "string",
+            "enum": [
+              "0000",
+              "9999"
+            ]
+          },
+          "mensajeCliente": {
+            "type": "string"
+          },
+          "mensajeSistema": {
+            "type": "string"
+          },
+          "idRegistro": {
+            "type": "string"
           }
         }
       },
@@ -15316,7 +15364,7 @@
         ],
         "summary": "Connect a source of bank movements",
         "operationId": "createBankConnection",
-        "description": "OWNER only. `WEBHOOK` accepts signed pushes from any system (a verification service, a bank-email\nforwarder, a script) at `path`; the response carries the signing `secret` **once**. `STATEMENT_IMPORT`\naccepts a bank statement uploaded from the panel and works with every bank. See docs/bank-connections.md.",
+        "description": "OWNER only. `WEBHOOK` accepts signed pushes from any system (a verification service, a bank-email\nforwarder, a script) at `path`; the response carries the signing `secret` **once**. `STATEMENT_IMPORT`\naccepts a bank statement uploaded from the panel and works with every bank. `MERCANTIL_P2C` receives\nMercantil's payment notifications: it needs the merchant's `merchantRif` and the `masterKey` Mercantil\nhanded over, which is stored sealed and never returned; `path` is the one URL to give Mercantil.\nSee docs/bank-connections.md.",
         "security": [
           {
             "staffAuth": []
@@ -15337,7 +15385,8 @@
                     "type": "string",
                     "enum": [
                       "WEBHOOK",
-                      "STATEMENT_IMPORT"
+                      "STATEMENT_IMPORT",
+                      "MERCANTIL_P2C"
                     ]
                   },
                   "label": {
@@ -15350,6 +15399,18 @@
                       "null"
                     ],
                     "pattern": "^\\d{4}$"
+                  },
+                  "merchantRif": {
+                    "type": "string",
+                    "maxLength": 20,
+                    "description": "MERCANTIL_P2C only, and required there. «J-30724328-7», «J307243287» and «J000000307243287» are the same RIF."
+                  },
+                  "masterKey": {
+                    "type": "string",
+                    "minLength": 8,
+                    "maxLength": 512,
+                    "writeOnly": true,
+                    "description": "MERCANTIL_P2C only, and required there. The key Mercantil gave the merchant. Write-only."
                   }
                 }
               }
@@ -15387,6 +15448,9 @@
           "403": {
             "$ref": "#/components/responses/Forbidden"
           },
+          "409": {
+            "$ref": "#/components/responses/Conflict"
+          },
           "429": {
             "$ref": "#/components/responses/TooManyRequests"
           },
@@ -15403,7 +15467,7 @@
         ],
         "summary": "Rename, trust, map columns or remove",
         "operationId": "updateBankConnection",
-        "description": "OWNER only. Turning `autoConfirm` on re-checks the pending claims at once, so what already matched is confirmed. `active: false` removes the connection; its movements stay.",
+        "description": "OWNER only. Turning `autoConfirm` on re-checks the pending claims at once, so what already matched is confirmed. `active: false` removes the connection; its movements stay. On a `MERCANTIL_P2C` connection, `merchantRif` and `masterKey` replace the RIF or the key (the test key for the production one); on any other kind they are a 409.",
         "security": [
           {
             "staffAuth": []
@@ -15442,6 +15506,16 @@
                   },
                   "active": {
                     "type": "boolean"
+                  },
+                  "merchantRif": {
+                    "type": "string",
+                    "maxLength": 20
+                  },
+                  "masterKey": {
+                    "type": "string",
+                    "minLength": 8,
+                    "maxLength": 512,
+                    "writeOnly": true
                   }
                 }
               }
@@ -15475,6 +15549,9 @@
           },
           "404": {
             "$ref": "#/components/responses/NotFound"
+          },
+          "409": {
+            "$ref": "#/components/responses/Conflict"
           },
           "429": {
             "$ref": "#/components/responses/TooManyRequests"
@@ -15698,6 +15775,71 @@
           },
           "404": {
             "$ref": "#/components/responses/NotFound"
+          },
+          "429": {
+            "$ref": "#/components/responses/TooManyRequests"
+          },
+          "500": {
+            "$ref": "#/components/responses/ServerError"
+          }
+        }
+      }
+    },
+    "/api/v1/bank-inbound/mercantil": {
+      "post": {
+        "tags": [
+          "Bank connections"
+        ],
+        "summary": "Mercantil payment notifications (P2C), for every merchant",
+        "operationId": "receiveMercantilNotification",
+        "description": "Called by Mercantil, not by clients. The body is `{\"data\": \"<base64>\"}`, AES-encrypted with a key\nderived by SHA-256 from the merchant's master key; the `CompIdentif` header carries the merchant's\nRIF, which picks the `MERCANTIL_P2C` connection and so the key. A received, approved bolívar payment\nis stored as a movement and matched against pending claims. Answers Mercantil's envelope:\n`codigo` 0000 for stored (or \"Operación duplicada\" when already stored), and also 0000 for a\nnotification that is not an incoming approved payment, which is acknowledged and ignored; 9999\nwith 200 for one that decrypts but cannot be read. An unknown RIF, a key that does not open the\nmessage or, with `MERCANTIL_NOTIFY_ALLOWED_IPS` set, an unlisted IP is the same 401\n(`BANK_INBOUND_UNAUTHORIZED`), so the bank retries and nobody learns which RIFs exist.",
+        "security": [],
+        "parameters": [
+          {
+            "name": "CompIdentif",
+            "in": "header",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "example": "J307243287"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "required": [
+                  "data"
+                ],
+                "properties": {
+                  "data": {
+                    "type": "string",
+                    "format": "byte"
+                  }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Received, duplicate or ignored (`codigo` 0000), or unreadable (`codigo` 9999).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/MercantilNotificationReply"
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
           },
           "429": {
             "$ref": "#/components/responses/TooManyRequests"
