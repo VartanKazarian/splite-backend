@@ -1807,16 +1807,32 @@ Object.assign(schemas, {
     description: 'Where a restaurant\'s bank movements come from. Never carries a secret: none is stored, and a webhook\'s signing secret is returned only when the connection is created or its secret rotated.',
     properties: {
       id: { type: 'string', format: 'uuid' },
-      kind: { type: 'string', enum: ['WEBHOOK', 'STATEMENT_IMPORT'] },
+      kind: { type: 'string', enum: ['WEBHOOK', 'STATEMENT_IMPORT', 'MERCANTIL_P2C'] },
       label: { type: 'string' },
       bankCode: { type: ['string', 'null'], pattern: '^\\d{4}$' },
       autoConfirm: { type: 'boolean', description: 'Whether a MATCHED movement from here confirms a claim with nobody looking. Off by default; OWNER only.' },
       secretVersion: { type: 'integer' },
       columnMap: { type: ['object', 'null'], description: 'For STATEMENT_IMPORT: which column of the statement holds each value (0-based), saved so the next upload does not ask again.' },
+      merchantRif: { type: ['string', 'null'], description: 'For MERCANTIL_P2C: the merchant\'s RIF, without dashes or leading zeros.' },
+      hasKey: { type: 'boolean', description: 'For MERCANTIL_P2C: whether Mercantil\'s key is stored. The key itself is never returned.' },
+      inboundPath: { type: ['string', 'null'], description: 'Where this connection\'s movements arrive: the path to give Mercantil, or the signed webhook\'s path. Null for STATEMENT_IMPORT.' },
       lastMovementAt: { type: ['string', 'null'], format: 'date-time' },
       lastError: { type: ['string', 'null'] },
       lastErrorAt: { type: ['string', 'null'], format: 'date-time' },
       createdAt: { type: 'string', format: 'date-time' }
+    }
+  },
+
+  MercantilNotificationReply: {
+    type: 'object',
+    description: 'The envelope Mercantil expects back: its own `infoMsg`, echoed, and a code.',
+    properties: {
+      infoMsg: { type: 'object' },
+      code: { type: 'integer' },
+      codigo: { type: 'string', enum: ['0000', '9999'] },
+      mensajeCliente: { type: 'string' },
+      mensajeSistema: { type: 'string' },
+      idRegistro: { type: 'string' }
     }
   },
 

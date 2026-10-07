@@ -141,6 +141,7 @@ const CODES = {
   // Un movimiento del banco respalda un aviso como mucho.
   BANK_MOVEMENT_ALREADY_USED: 409,
   BANK_CONNECTION_KIND_MISMATCH: 409,
+  BANK_CONNECTION_RIF_TAKEN: 409,
   OPERATOR_EMAIL_TAKEN: 409,
   // Ese periodo ya tiene un cargo vivo: anúlalo antes de volver a cobrarlo.
   SUBSCRIPTION_CHARGE_EXISTS: 409,

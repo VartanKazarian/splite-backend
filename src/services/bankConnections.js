@@ -7,6 +7,8 @@ const { safeEqual } = require('../utils/tokens');
 const { logAudit } = require('./audit');
 const { normalise } = require('./bankMovementNormalizer');
 const reconciliation = require('./bankReconciliation');
+const credentials = require('../payments/credentials');
+const mercantil = require('../payments/providers/mercantil/notification');
 
 /**
  * Las conexiones de un restaurante con su banco, y la entrada de movimientos.
@@ -24,9 +26,14 @@ const SIGNATURE_WINDOW_SECONDS = 300;
 /** Movimientos por petición. Un estado de cuenta grande se manda en tandas. */
 const MAX_MOVEMENTS_PER_CALL = 500;
 
+// Nunca la llave sellada: sólo si la hay. La lee `mercantilInbound`, aparte.
 const CONNECTION_COLUMNS = `id, restaurant_id, kind, label, bank_code, auto_confirm, secret_version,
                             column_map, active, last_movement_at, last_error, last_error_at,
+                            merchant_rif, (credentials_encrypted IS NOT NULL) AS has_key,
                             created_at, updated_at`;
+
+/** La única URL que se le da a Mercantil, para todos los restaurantes. */
+const MERCANTIL_INBOUND_PATH = '/api/v1/bank-inbound/mercantil';
 
 function secretFor(connection) {
   return crypto
@@ -64,54 +71,110 @@ async function getConnection({ restaurantId, connectionId }) {
 
 /**
  * Crear una conexión. La de tipo WEBHOOK devuelve su secreto **una vez**; para
- * verlo de nuevo, se rota.
+ * verlo de nuevo, se rota. La de Mercantil guarda el RIF y la llave que dio el
+ * banco, sellada, y devuelve la URL que hay que darle al banco.
  */
-async function createConnection({ restaurantId, actor, kind, label, bankCode = null, meta = {} }) {
-  const { rows } = await db.query(
-    `INSERT INTO bank_connections (restaurant_id, kind, label, bank_code, created_by)
-     VALUES ($1, $2, $3, $4, $5) RETURNING ${CONNECTION_COLUMNS}`,
-    [restaurantId, kind, label, bankCode, actor.id]
-  );
+async function createConnection({
+  restaurantId, actor, kind, label, bankCode = null, merchantRif = null, masterKey = null, meta = {}
+}) {
+  let rif = null;
+  let sealed = { blob: null, keyVersion: null };
+  if (kind === 'MERCANTIL_P2C') {
+    rif = requireRif(merchantRif);
+    sealed = sealKey(masterKey);
+  }
+  let rows;
+  try {
+    ({ rows } = await db.query(
+      `INSERT INTO bank_connections
+         (restaurant_id, kind, label, bank_code, merchant_rif, credentials_encrypted, credentials_key_version, created_by)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8) RETURNING ${CONNECTION_COLUMNS}`,
+      [restaurantId, kind, label, kind === 'MERCANTIL_P2C' ? '0105' : bankCode, rif, sealed.blob, sealed.keyVersion, actor.id]
+    ));
+  } catch (err) {
+    throw rifTaken(err) ?? err;
+  }
   const connection = rows[0];
   await logAudit({
     ...meta, restaurantId, actorId: actor.id,
     action: 'BANK_CONNECTION_CREATED', resourceType: 'bank_connection', resourceId: connection.id,
-    details: { kind, label }
+    details: { kind, label, ...(rif ? { merchantRif: rif } : {}) }
   });
-  return {
-    connection,
-    ...(kind === 'WEBHOOK' ? { secret: secretFor(connection), path: inboundPath(connection.id) } : {})
-  };
+  if (kind === 'WEBHOOK') return { connection, secret: secretFor(connection), path: inboundPath(connection.id) };
+  if (kind === 'MERCANTIL_P2C') return { connection, path: MERCANTIL_INBOUND_PATH };
+  return { connection };
+}
+
+function requireRif(raw) {
+  const rif = mercantil.normaliseRif(raw);
+  if (!rif) throw new ApiError('VALIDATION_FAILED', 'merchantRif is not a valid RIF', { fieldPaths: ['merchantRif'] });
+  return rif;
+}
+
+function sealKey(masterKey) {
+  if (typeof masterKey !== 'string' || !masterKey.trim()) {
+    throw new ApiError('VALIDATION_FAILED', 'masterKey is required', { fieldPaths: ['masterKey'] });
+  }
+  return credentials.seal({ masterKey: masterKey.trim() });
+}
+
+/** El índice único del RIF, como un error que el panel sepa explicar. */
+function rifTaken(err) {
+  if (err && err.code === '23505' && err.constraint === 'bank_connections_mercantil_rif_idx') {
+    return new ApiError('BANK_CONNECTION_RIF_TAKEN', 'Another active connection already receives this RIF');
+  }
+  return null;
 }
 
 /**
- * Cambiar nombre, confianza o mapeo de columnas, o dar de baja.
+ * Cambiar nombre, confianza o mapeo de columnas, o dar de baja. En una conexión
+ * de Mercantil, también el RIF o la llave (la de pruebas por la de producción).
  *
  * `autoConfirm` se audita aparte: es la decisión de dejar que un movimiento
- * confirme un cobro sin que lo mire nadie.
+ * confirme un cobro sin que lo mire nadie. Cambiar la llave también, sin la
+ * llave.
  */
 async function updateConnection({ restaurantId, actor, connectionId, changes, meta = {} }) {
   const current = await getConnection({ restaurantId, connectionId });
+  const touchesMercantil = changes.merchantRif !== undefined || changes.masterKey !== undefined;
+  if (touchesMercantil && current.kind !== 'MERCANTIL_P2C') {
+    throw new ApiError('BANK_CONNECTION_KIND_MISMATCH', 'Only a Mercantil connection has a RIF and a key');
+  }
   const next = {
     label: changes.label ?? current.label,
     auto_confirm: changes.autoConfirm ?? current.auto_confirm,
     column_map: changes.columnMap === undefined ? current.column_map : changes.columnMap,
-    active: changes.active ?? current.active
+    active: changes.active ?? current.active,
+    merchant_rif: changes.merchantRif === undefined ? current.merchant_rif : requireRif(changes.merchantRif)
   };
-  const { rows } = await db.query(
-    `UPDATE bank_connections
-        SET label = $3, auto_confirm = $4, column_map = $5, active = $6, updated_at = now()
-      WHERE id = $1 AND restaurant_id = $2
-      RETURNING ${CONNECTION_COLUMNS}`,
-    [connectionId, restaurantId, next.label, next.auto_confirm, next.column_map, next.active]
-  );
+  const sealed = changes.masterKey === undefined ? null : sealKey(changes.masterKey);
+  let rows;
+  try {
+    ({ rows } = await db.query(
+      `UPDATE bank_connections
+          SET label = $3, auto_confirm = $4, column_map = $5, active = $6, merchant_rif = $7,
+              credentials_encrypted = COALESCE($8, credentials_encrypted),
+              credentials_key_version = COALESCE($9, credentials_key_version),
+              updated_at = now()
+        WHERE id = $1 AND restaurant_id = $2
+        RETURNING ${CONNECTION_COLUMNS}`,
+      [connectionId, restaurantId, next.label, next.auto_confirm, next.column_map, next.active,
+        next.merchant_rif, sealed ? sealed.blob : null, sealed ? sealed.keyVersion : null]
+    ));
+  } catch (err) {
+    throw rifTaken(err) ?? err;
+  }
+  let action = next.active ? 'BANK_CONNECTION_UPDATED' : 'BANK_CONNECTION_REMOVED';
+  if (sealed) action = 'BANK_CONNECTION_KEY_CHANGED';
+  if (current.auto_confirm !== next.auto_confirm) action = 'BANK_CONNECTION_AUTO_CONFIRM_CHANGED';
   await logAudit({
     ...meta, restaurantId, actorId: actor.id,
-    action: current.auto_confirm !== next.auto_confirm
-      ? 'BANK_CONNECTION_AUTO_CONFIRM_CHANGED'
-      : (next.active ? 'BANK_CONNECTION_UPDATED' : 'BANK_CONNECTION_REMOVED'),
-    resourceType: 'bank_connection', resourceId: connectionId,
-    details: { autoConfirm: next.auto_confirm, active: next.active }
+    action, resourceType: 'bank_connection', resourceId: connectionId,
+    details: {
+      autoConfirm: next.auto_confirm, active: next.active,
+      ...(next.merchant_rif ? { merchantRif: next.merchant_rif } : {}),
+      ...(sealed ? { keyChanged: true } : {})
+    }
   });
   // Encender la confianza puede confirmar lo que ya estaba casado.
   if (!current.auto_confirm && next.auto_confirm) await reconciliation.reconcile({ restaurantId });
@@ -212,6 +275,67 @@ async function authenticateInbound({ connectionId, timestamp, signature, rawBody
   return connection;
 }
 
+/**
+ * Una notificación de Mercantil → el sobre que espera el banco y el estado HTTP.
+ *
+ * El RIF de la cabecera dice qué conexión, y su llave abre el mensaje. Si no
+ * hay conexión para ese RIF o la llave no lo abre, 401: el banco lo cuenta como
+ * fallido y reintenta, y quien prueba RIFs no sabe cuáles existen. Un mensaje
+ * que se abre pero no es un pago recibido y aprobado se contesta como recibido
+ * y no se guarda; uno que se abre pero no se entiende, 200 con 9999, porque
+ * reintentarlo no lo arreglará y queda anotado en la conexión.
+ *
+ * Nunca se registra el contenido: trae la cédula y el teléfono del pagador.
+ */
+async function mercantilInbound({ rif: rawRif, body }) {
+  const rejected = { status: 401, envelope: null, outcome: 'unauthorized' };
+  const rif = mercantil.normaliseRif(rawRif);
+  if (!rif) return rejected;
+
+  const { rows } = await db.query(
+    `SELECT ${CONNECTION_COLUMNS}, credentials_encrypted FROM bank_connections
+      WHERE merchant_rif = $1 AND active AND kind = 'MERCANTIL_P2C'`,
+    [rif]
+  );
+  const found = rows[0];
+  if (!found) return rejected;
+  const { credentials_encrypted: blob, ...connection } = found;
+
+  let payload;
+  try {
+    const { masterKey } = credentials.open(blob);
+    payload = mercantil.decryptNotification(body && body.data, masterKey);
+  } catch (err) {
+    if (!(err instanceof mercantil.MercantilNotificationError)) throw err;
+    await noteError(connection, 'Llegó un aviso de Mercantil que la llave guardada no abre');
+    return { ...rejected, connection };
+  }
+
+  const infoMsg = payload.infoMsg;
+  const translated = mercantil.toMovementRow(payload);
+  if (!translated.ok) {
+    return { status: 200, envelope: mercantil.envelope(infoMsg, 'received'), outcome: `ignored:${translated.reason}`, connection };
+  }
+
+  const result = await ingest({ connection, rows: [translated.row] });
+  if (result.rejected.length) {
+    return {
+      status: 200, envelope: mercantil.envelope(infoMsg, 'rejected'),
+      outcome: `unreadable:${result.rejected[0].reason}`, connection
+    };
+  }
+  return result.inserted
+    ? { status: 200, envelope: mercantil.envelope(infoMsg, 'received'), outcome: 'stored', connection }
+    : { status: 200, envelope: mercantil.envelope(infoMsg, 'duplicate'), outcome: 'duplicate', connection };
+}
+
+async function noteError(connection, message) {
+  await db.query(
+    'UPDATE bank_connections SET last_error = $2, last_error_at = now() WHERE id = $1',
+    [connection.id, message]
+  );
+}
+
 /** Recordar qué columna del estado de cuenta es cada dato, para la próxima vez. */
 async function saveColumnMap({ connection, columnMap }) {
   await db.query(
@@ -235,7 +359,7 @@ async function recentMovements({ restaurantId, connectionId, limit = 50 }) {
 }
 
 module.exports = {
-  SIGNATURE_WINDOW_SECONDS, MAX_MOVEMENTS_PER_CALL,
+  SIGNATURE_WINDOW_SECONDS, MAX_MOVEMENTS_PER_CALL, MERCANTIL_INBOUND_PATH,
   listConnections, getConnection, createConnection, updateConnection, rotateSecret,
-  ingest, saveColumnMap, authenticateInbound, recentMovements, signatureFor, secretFor, inboundPath
+  ingest, saveColumnMap, authenticateInbound, mercantilInbound, recentMovements, signatureFor, secretFor, inboundPath
 };

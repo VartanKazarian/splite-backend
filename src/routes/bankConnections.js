@@ -40,10 +40,16 @@ router.post('/', owner, validateBody(createBankConnectionSchema), async (req, re
       kind: req.body.kind,
       label: req.body.label,
       bankCode: req.body.bankCode ?? null,
+      merchantRif: req.body.merchantRif ?? null,
+      masterKey: req.body.masterKey ?? null,
       meta: auditContext(req)
     });
     res.set('Cache-Control', 'no-store');
-    res.status(201).json({ connection: dto.bankConnection(connection), ...(secret ? { secret, path } : {}) });
+    res.status(201).json({
+      connection: dto.bankConnection(connection),
+      ...(secret ? { secret } : {}),
+      ...(path ? { path } : {})
+    });
   } catch (err) { next(err); }
 });
 

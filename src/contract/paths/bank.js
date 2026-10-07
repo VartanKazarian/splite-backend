@@ -31,7 +31,10 @@ const core = {
       description: [
         'OWNER only. `WEBHOOK` accepts signed pushes from any system (a verification service, a bank-email',
         'forwarder, a script) at `path`; the response carries the signing `secret` **once**. `STATEMENT_IMPORT`',
-        'accepts a bank statement uploaded from the panel and works with every bank. See docs/bank-connections.md.'
+        'accepts a bank statement uploaded from the panel and works with every bank. `MERCANTIL_P2C` receives',
+        'Mercantil\'s payment notifications: it needs the merchant\'s `merchantRif` and the `masterKey` Mercantil',
+        'handed over, which is stored sealed and never returned; `path` is the one URL to give Mercantil.',
+        'See docs/bank-connections.md.'
       ].join('\n'),
       security: staff,
       requestBody: {
@@ -41,9 +44,11 @@ const core = {
             schema: {
               type: 'object', required: ['kind', 'label'],
               properties: {
-                kind: { type: 'string', enum: ['WEBHOOK', 'STATEMENT_IMPORT'] },
+                kind: { type: 'string', enum: ['WEBHOOK', 'STATEMENT_IMPORT', 'MERCANTIL_P2C'] },
                 label: { type: 'string', maxLength: 80 },
-                bankCode: { type: ['string', 'null'], pattern: '^\\d{4}$' }
+                bankCode: { type: ['string', 'null'], pattern: '^\\d{4}$' },
+                merchantRif: { type: 'string', maxLength: 20, description: 'MERCANTIL_P2C only, and required there. «J-30724328-7», «J307243287» and «J000000307243287» are the same RIF.' },
+                masterKey: { type: 'string', minLength: 8, maxLength: 512, writeOnly: true, description: 'MERCANTIL_P2C only, and required there. The key Mercantil gave the merchant. Write-only.' }
               }
             }
           }
@@ -55,6 +60,7 @@ const core = {
           content: { 'application/json': { schema: { type: 'object', properties: { connection: ref('BankConnection'), secret: { type: 'string' }, path: { type: 'string' } } } } }
         },
         403: response('Forbidden'),
+        409: response('Conflict'),
         ...commonErrors
       }
     }
@@ -65,7 +71,7 @@ const core = {
       tags: ['Bank connections'],
       summary: 'Rename, trust, map columns or remove',
       operationId: 'updateBankConnection',
-      description: 'OWNER only. Turning `autoConfirm` on re-checks the pending claims at once, so what already matched is confirmed. `active: false` removes the connection; its movements stay.',
+      description: 'OWNER only. Turning `autoConfirm` on re-checks the pending claims at once, so what already matched is confirmed. `active: false` removes the connection; its movements stay. On a `MERCANTIL_P2C` connection, `merchantRif` and `masterKey` replace the RIF or the key (the test key for the production one); on any other kind they are a 409.',
       security: staff,
       parameters: [{ name: 'connectionId', in: 'path', required: true, schema: { type: 'string', format: 'uuid' } }],
       requestBody: {
@@ -78,7 +84,9 @@ const core = {
                 label: { type: 'string', maxLength: 80 },
                 autoConfirm: { type: 'boolean' },
                 columnMap: { type: ['object', 'null'] },
-                active: { type: 'boolean' }
+                active: { type: 'boolean' },
+                merchantRif: { type: 'string', maxLength: 20 },
+                masterKey: { type: 'string', minLength: 8, maxLength: 512, writeOnly: true }
               }
             }
           }
@@ -88,6 +96,7 @@ const core = {
         200: { description: 'Updated.', content: { 'application/json': { schema: { type: 'object', properties: { connection: ref('BankConnection') } } } } },
         403: response('Forbidden'),
         404: response('NotFound'),
+        409: response('Conflict'),
         ...commonErrors
       }
     }
@@ -151,6 +160,40 @@ const core = {
         403: response('Forbidden'),
         404: response('NotFound'),
         ...commonErrors
+      }
+    }
+  },
+
+  '/api/v1/bank-inbound/mercantil': {
+    post: {
+      tags: ['Bank connections'],
+      summary: 'Mercantil payment notifications (P2C), for every merchant',
+      operationId: 'receiveMercantilNotification',
+      description: [
+        'Called by Mercantil, not by clients. The body is `{"data": "<base64>"}`, AES-encrypted with a key',
+        'derived by SHA-256 from the merchant\'s master key; the `CompIdentif` header carries the merchant\'s',
+        'RIF, which picks the `MERCANTIL_P2C` connection and so the key. A received, approved bolívar payment',
+        'is stored as a movement and matched against pending claims. Answers Mercantil\'s envelope:',
+        '`codigo` 0000 for stored (or "Operación duplicada" when already stored), and also 0000 for a',
+        'notification that is not an incoming approved payment, which is acknowledged and ignored; 9999',
+        'with 200 for one that decrypts but cannot be read. An unknown RIF, a key that does not open the',
+        'message or, with `MERCANTIL_NOTIFY_ALLOWED_IPS` set, an unlisted IP is the same 401',
+        '(`BANK_INBOUND_UNAUTHORIZED`), so the bank retries and nobody learns which RIFs exist.'
+      ].join('\n'),
+      security: [],
+      parameters: [
+        { name: 'CompIdentif', in: 'header', required: true, schema: { type: 'string', example: 'J307243287' } }
+      ],
+      requestBody: {
+        required: true,
+        content: { 'application/json': { schema: { type: 'object', required: ['data'], properties: { data: { type: 'string', format: 'byte' } } } } }
+      },
+      responses: {
+        200: { description: 'Received, duplicate or ignored (`codigo` 0000), or unreadable (`codigo` 9999).', content: { 'application/json': { schema: ref('MercantilNotificationReply') } } },
+        400: response('BadRequest'),
+        401: response('Unauthorized'),
+        429: response('TooManyRequests'),
+        500: response('ServerError')
       }
     }
   },

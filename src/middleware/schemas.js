@@ -28,10 +28,20 @@ const createStaffSchema = Joi.object({
  * Conexiones con el banco. `kind` elige la fuente; las APIs directas de cada
  * banco entrarán como otro valor.
  */
+/**
+ * La RIF y la llave de Mercantil sólo en una conexión de Mercantil, y ahí son
+ * obligatorias. La llave es la que entregó el banco al comercio; no se devuelve
+ * nunca.
+ */
+const merchantRifSchema = Joi.string().trim().max(20).pattern(/^[VEJGPCvejgpc][-\s.]?[0-9][0-9.\s-]{4,18}$/);
+const masterKeySchema = Joi.string().trim().min(8).max(512);
+
 const createBankConnectionSchema = Joi.object({
-  kind: Joi.string().valid('WEBHOOK', 'STATEMENT_IMPORT').required(),
+  kind: Joi.string().valid('WEBHOOK', 'STATEMENT_IMPORT', 'MERCANTIL_P2C').required(),
   label: Joi.string().trim().min(1).max(80).required(),
-  bankCode: Joi.string().pattern(/^\d{4}$/).allow(null)
+  bankCode: Joi.string().pattern(/^\d{4}$/).allow(null),
+  merchantRif: merchantRifSchema.when('kind', { is: 'MERCANTIL_P2C', then: Joi.required(), otherwise: Joi.forbidden() }),
+  masterKey: masterKeySchema.when('kind', { is: 'MERCANTIL_P2C', then: Joi.required(), otherwise: Joi.forbidden() })
 });
 
 /** Qué columna del estado de cuenta es cada dato (índices desde 0). */
@@ -49,7 +59,9 @@ const updateBankConnectionSchema = Joi.object({
   label: Joi.string().trim().min(1).max(80),
   autoConfirm: Joi.boolean(),
   columnMap: bankColumnMapSchema.allow(null),
-  active: Joi.boolean()
+  active: Joi.boolean(),
+  merchantRif: merchantRifSchema,
+  masterKey: masterKeySchema
 }).min(1);
 
 const bankConnectionIdParamSchema = Joi.object({ connectionId: uuid.required() });
