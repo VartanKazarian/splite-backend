@@ -139,11 +139,11 @@ describe('pending payments are visible and protected', { skip }, () => {
     const { table, bill } = await tableAndBill(10000);
     const session = await scan(table);
 
-    const before = await request('GET', '/api/v1/guest/bill', session);
-    assert.equal(before.status, 200, JSON.stringify(before.body));
-    assert.equal(before.body.pendingVes, '0');
-    assert.equal(before.body.pendingCount, 0);
-    assert.equal(before.body.availableVes, '10000');
+    const initial = await request('GET', '/api/v1/guest/bill', session);
+    assert.equal(initial.status, 200, JSON.stringify(initial.body));
+    assert.equal(initial.body.pendingVes, '0');
+    assert.equal(initial.body.pendingCount, 0);
+    assert.equal(initial.body.availableVes, '10000');
 
     await declare(bill, '4000');
     const during = await request('GET', '/api/v1/guest/bill', session);
