@@ -327,6 +327,7 @@ const DETAILS = {
   BILL_NOT_OPEN: { status: 'string -- the status the bill is actually in' },
   BILL_ALREADY_SERVED: { servedBy: 'uuid -- who the bill is already attributed to' },
   PAYMENT_EXCEEDS_BALANCE: { remainingVes: 'string -- minor units still owed' },
+  BILL_HAS_PAYMENTS: { inFlightPayments: 'integer -- payments still being verified; absent when the bill has settled money' },
   PAYMENT_STATE_INVALID: { from: 'string -- current status', to: 'string -- requested status' },
   MENU_CURRENCY_MISMATCH: { activeProductsInOtherCurrency: 'integer -- how many still disagree' },
   TOTAL_BELOW_AMOUNT_PAID: {

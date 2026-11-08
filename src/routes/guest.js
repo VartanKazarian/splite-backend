@@ -13,6 +13,7 @@ const { createGuestSession, destroyGuestSession, authenticateGuest } = require('
 const rateLimit = require('../middleware/rateLimit');
 const billItems = require('../services/billItems');
 const paymentClaims = require('../services/paymentClaims');
+const inFlight = require('../services/inFlight');
 const guestOrders = require('../services/guestOrders');
 const mercantilC2P = require('../services/mercantilC2P');
 const claveGuide = require('../payments/c2pClaveGuide');
@@ -473,13 +474,17 @@ router.get('/bill', authenticateGuest, perSession, async (req, res, next) => {
     // ofrece «envíame la factura» y sólo debe ofrecerlo donde se puede cumplir.
     // Es el mismo cálculo que el estado del pago, que sigue haciendo falta
     // allí porque la cuenta deja de leerse en cuanto se cierra.
-    const [items, payee, c2pAvailable, canRequestInvoice] = await Promise.all([
+    const [items, payee, c2pAvailable, canRequestInvoice, pending] = await Promise.all([
       billItems.listForBill({ restaurantId: req.guest.restaurantId, billId: bill.id }),
       payeeForGuest(req.guest),
       mercantilC2P.c2pAvailable(req.guest.restaurantId),
-      invoiceOfferedAt(req.guest.restaurantId)
+      invoiceOfferedAt(req.guest.restaurantId),
+      inFlight.forBill({ restaurantId: req.guest.restaurantId, billId: bill.id })
     ]);
-    res.json({ ...dto.guestBill(bill, items), payee, c2pAvailable, canRequestInvoice });
+    res.json({
+      ...dto.guestBill(bill, items, { pendingVes: pending.totalVes, pendingCount: pending.count }),
+      payee, c2pAvailable, canRequestInvoice
+    });
   } catch (err) { next(err); }
 });
 

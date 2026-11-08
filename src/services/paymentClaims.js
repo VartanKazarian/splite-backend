@@ -7,6 +7,7 @@ const bankReconciliation = require('./bankReconciliation');
 const { logAudit } = require('./audit');
 const { logger } = require('../connectors/logger');
 const invoiceIntents = require('./invoiceIntents');
+const inFlight = require('./inFlight');
 
 /**
  * Declared payments: "I paid by Pago Móvil, here is my reference."
@@ -78,6 +79,15 @@ async function declareClaim({
         });
       }
 
+      // Not refused: by the time a diner declares, their bank has already sent
+      // the money, and refusing the claim would leave a real transfer with no
+      // record at all. Instead the claim is accepted and marked when it reaches
+      // past what other in-flight claims leave, so the person verifying knows
+      // two diners may have paid the same balance. Read under the bill lock
+      // taken above, so two simultaneous declarations see each other.
+      const pending = await inFlight.forBill({ restaurantId, billId }, client);
+      const overlapsPending = amount > inFlight.available(remaining, pending.totalVes);
+
       const payment = await recordPayment(client, {
         restaurantId,
         billId,
@@ -99,7 +109,10 @@ async function declareClaim({
           phoneOrigin: phoneOrigin ?? null,
           bankOrigin: bankOrigin ?? null,
           idOrigin: idOrigin ?? null,
-          declaredAt: new Date().toISOString()
+          declaredAt: new Date().toISOString(),
+          // Set when this claim and others still pending add up to more than
+          // the bill owes. Only staff see it (dto.staffPaymentClaim).
+          overlapsPending
         },
         reason: 'Declared by payer, awaiting verification'
       });

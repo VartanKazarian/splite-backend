@@ -23,6 +23,7 @@ const {
   tableIdParamSchema
 } = require('../middleware/schemas');
 const { processSplitPayment } = require('../services/locks');
+const inFlight = require('../services/inFlight');
 const billItems = require('../services/billItems');
 const splitEngine = require('../services/splitEngine');
 const splits = require('../services/splits');
@@ -735,26 +736,45 @@ router.post(
   validateParams(billIdParamSchema),
   async (req, res, next) => {
     try {
-      const { rows } = await db.query(
-        `UPDATE bills
-            SET status = 'VOID'
-          WHERE id = $1 AND restaurant_id = $2 AND status = 'OPEN' AND amount_paid_ves = 0
-        RETURNING ${BILL_COLUMNS}`,
-        [req.params.id, req.user.restaurantId]
-      );
-
-      if (!rows.length) {
-        const existing = await db.query(
-          'SELECT status, amount_paid_ves FROM bills WHERE id = $1 AND restaurant_id = $2',
-          [req.params.id, req.user.restaurantId]
-        );
-        if (!existing.rows.length) throw new ApiError('BILL_NOT_FOUND', 'Bill not found');
-        throw existing.rows[0].amount_paid_ves !== '0'
-          ? new ApiError('BILL_HAS_PAYMENTS', 'A bill with payments applied cannot be voided')
-          : new ApiError('BILL_NOT_OPEN', `A ${existing.rows[0].status} bill cannot be voided`, {
-            status: existing.rows[0].status
+      const restaurantId = req.user.restaurantId;
+      const rows = await db.withTransaction(async client => {
+        // Locked first, then checked: a Pago Móvil declaration takes the same
+        // lock (paymentClaims.declareClaim), so a claim cannot slip in between
+        // the check and the void. Each statement after the lock reads a fresh
+        // snapshot, so a claim committed while we waited is seen.
+        const existing = (await client.query(
+          'SELECT status, amount_paid_ves FROM bills WHERE id = $1 AND restaurant_id = $2 FOR UPDATE',
+          [req.params.id, restaurantId]
+        )).rows[0];
+        if (!existing) throw new ApiError('BILL_NOT_FOUND', 'Bill not found');
+        if (existing.status !== 'OPEN') {
+          throw new ApiError('BILL_NOT_OPEN', `A ${existing.status} bill cannot be voided`, {
+            status: existing.status
           });
-      }
+        }
+        if (existing.amount_paid_ves !== '0') {
+          throw new ApiError('BILL_HAS_PAYMENTS', 'A bill with payments applied cannot be voided');
+        }
+
+        // A diner who declared a transfer has, as far as anyone knows, paid.
+        // Voiding the bill under them would turn their money into a claim
+        // against a bill that no longer exists.
+        const pending = await inFlight.forBill({ restaurantId, billId: req.params.id }, client);
+        if (pending.count > 0) {
+          throw new ApiError(
+            'BILL_HAS_PAYMENTS',
+            'A payment on this bill is still being verified; confirm or reject it before voiding',
+            { inFlightPayments: pending.count }
+          );
+        }
+
+        return (await client.query(
+          `UPDATE bills SET status = 'VOID'
+            WHERE id = $1 AND restaurant_id = $2
+          RETURNING ${BILL_COLUMNS}`,
+          [req.params.id, restaurantId]
+        )).rows;
+      });
 
       await logAudit({
         ...auditContext(req),
