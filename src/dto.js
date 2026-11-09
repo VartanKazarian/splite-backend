@@ -161,14 +161,30 @@ function billWithItems(row, items = []) {
  * provenance for staff. The rate itself stays, because the client needs it to
  * show an approximate figure in the currency the menu quoted.
  */
-function guestBill(row, items = [], { pendingVes = 0n, pendingCount = 0 } = {}) {
+/** Una reserva de pago, tal como la ve el comensal que la tiene. */
+function paymentHold(row) {
+  return {
+    id: row.id,
+    amountVes: String(row.amount_ves),
+    splitParticipantId: row.split_participant_id ?? null,
+    expiresAt: new Date(row.expires_at).toISOString()
+  };
+}
+
+function guestBill(row, items = [], {
+  pendingVes = 0n, pendingCount = 0, heldVes = 0n, heldUntil = null, myHold = null
+} = {}) {
   const remainingVes = (BigInt(row.total_due_ves) - BigInt(row.amount_paid_ves)).toString();
   const rate = row.fx_rate_ves_per_unit ?? null;
   // Declared by someone at the table and not yet verified. `remainingVes` stays
   // what the ledger says is owed; `availableVes` is what a diner should
   // transfer now without paying for money a tablemate already sent.
   const pending = BigInt(pendingVes);
-  const availableVes = (BigInt(remainingVes) > pending ? BigInt(remainingVes) - pending : 0n).toString();
+  // Lo que otros comensales están pagando ahora mismo (payment_holds), sin la
+  // reserva propia: esa es de quien mira y está en `myHold`.
+  const held = BigInt(heldVes);
+  const taken = pending + held;
+  const availableVes = (BigInt(remainingVes) > taken ? BigInt(remainingVes) - taken : 0n).toString();
 
   return {
     id: row.id,
@@ -190,6 +206,9 @@ function guestBill(row, items = [], { pendingVes = 0n, pendingCount = 0 } = {}) 
     remainingVes,
     pendingVes: pending.toString(),
     pendingCount,
+    heldVes: held.toString(),
+    heldUntil: heldUntil ? new Date(heldUntil).toISOString() : null,
+    myHold: myHold ? paymentHold(myHold) : null,
     availableVes,
     fxRateVesPerUnit: rate,
     usdReference: {
@@ -834,8 +853,10 @@ function billSplit({ split, participants, claims = [], fxRate = null }) {
       const amount = BigInt(row.amount_ves);
       const paid = BigInt(row.amount_paid_ves);
       const remaining = amount - paid;
-      // Declared against this share and not yet verified (services/inFlight.js).
+      // Declared against this share and not yet verified (services/inFlight.js),
+      // and what another diner is paying on it right now (payment_holds).
       const pending = BigInt(row.pending_ves ?? 0);
+      const held = BigInt(row.held_ves ?? 0);
       return {
         id: row.id,
         ref: row.ext_ref,
@@ -844,7 +865,8 @@ function billSplit({ split, participants, claims = [], fxRate = null }) {
         amountPaidVes: paid.toString(),
         remainingVes: remaining.toString(),
         pendingVes: pending.toString(),
-        availableVes: (remaining > pending ? remaining - pending : 0n).toString(),
+        heldVes: held.toString(),
+        availableVes: (remaining > pending + held ? remaining - pending - held : 0n).toString(),
         settled: remaining === 0n,
         usdReference: usdReference(amount.toString(), fxRate)
       };
@@ -997,6 +1019,7 @@ function staffMember(row) {
 }
 
 module.exports = {
+  paymentHold,
   isoDate, isoTimestamp, staffMember, guestOrder, billAdjustment,
   bill, billItem, billWithItems, guestBill,
   fiscalInvoice, fiscalInvoiceLine, fiscalInvoiceTax, fiscalRequest,

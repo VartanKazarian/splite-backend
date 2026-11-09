@@ -72,9 +72,14 @@ describe('pending payments are visible and protected', { skip }, () => {
     payer: { type: 'GUEST', id: null }, ...extra
   });
 
-  const clearIpRateLimits = () => redis.del(
-    'api:::ffff:127.0.0.1', 'api:127.0.0.1', 'guest:::ffff:127.0.0.1', 'guest:127.0.0.1'
-  );
+  // Includes the guest limiters (session minting is 60 a minute per IP, shared
+  // by every file in the run), before each test and after the file.
+  const clearIpRateLimits = async () => {
+    const keys = [
+      ...await redis.keys('guest:mint:*'), ...await redis.keys('guest:rl:*'), ...await redis.keys('guest:qrctx:*')
+    ];
+    await redis.del('api:::ffff:127.0.0.1', 'api:127.0.0.1', 'guest:::ffff:127.0.0.1', 'guest:127.0.0.1', ...keys);
+  };
 
   before(async () => {
     await clearIpRateLimits();
@@ -94,6 +99,7 @@ describe('pending payments are visible and protected', { skip }, () => {
   beforeEach(clearIpRateLimits);
 
   after(async () => {
+    await clearIpRateLimits();
     if (server) await new Promise(resolve => server.close(resolve));
     if (restaurant) {
       await db.query('DELETE FROM payment_transitions WHERE restaurant_id = $1', [restaurant.id]);

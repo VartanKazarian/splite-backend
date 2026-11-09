@@ -242,7 +242,11 @@ module.exports = {
     // The ceiling a sliding session cannot pass, however much it is used. Long
     // enough that no real sitting reaches it, short enough that a phone left on
     // a table overnight does not hold a valid credential in the morning.
-    maxSessionAgeSeconds: integer('GUEST_MAX_SESSION_AGE_SECONDS', 60 * 60 * 12)
+    maxSessionAgeSeconds: integer('GUEST_MAX_SESSION_AGE_SECONDS', 60 * 60 * 12),
+    // Cuánto dura «Ana está pagando»: lo que tarda alguien en abrir su app del
+    // banco, hacer el Pago Móvil y volver. Si no vuelve, la parte se libera
+    // sola para el resto de la mesa.
+    paymentHoldSeconds: integer('GUEST_PAYMENT_HOLD_SECONDS', 60 * 10)
   },
   mail: {
     transport: mailTransport,

@@ -171,6 +171,9 @@ const CODES = {
   BILL_HAS_PAYMENTS: 409,
   BILL_ALREADY_SERVED: 409,
   PAYMENT_EXCEEDS_BALANCE: 409,
+  // Otro comensal de la mesa está pagando esa parte (payment_holds) o ya la
+  // avisó. Sólo al reservar: un aviso nunca se rechaza por esto.
+  PAYMENT_HELD: 409,
   PAYMENT_STATE_INVALID: 409,
   IDEMPOTENCY_KEY_REUSED: 409,
   IDEMPOTENCY_IN_FLIGHT: 409,
@@ -327,6 +330,12 @@ const DETAILS = {
   BILL_NOT_OPEN: { status: 'string -- the status the bill is actually in' },
   BILL_ALREADY_SERVED: { servedBy: 'uuid -- who the bill is already attributed to' },
   PAYMENT_EXCEEDS_BALANCE: { remainingVes: 'string -- minor units still owed' },
+  PAYMENT_HELD: {
+    availableVes: 'string -- minor units this diner can still reserve',
+    heldVes: 'string -- minor units other diners are paying right now',
+    pendingVes: 'string -- minor units already declared and awaiting verification',
+    heldUntil: 'string|null -- ISO time the earliest other reservation lapses'
+  },
   BILL_HAS_PAYMENTS: { inFlightPayments: 'integer -- payments still being verified; absent when the bill has settled money' },
   PAYMENT_STATE_INVALID: { from: 'string -- current status', to: 'string -- requested status' },
   MENU_CURRENCY_MISMATCH: { activeProductsInOtherCurrency: 'integer -- how many still disagree' },
