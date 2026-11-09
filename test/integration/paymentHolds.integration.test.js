@@ -59,6 +59,7 @@ describe('payment holds stop a second diner before they transfer', { skip }, () 
     });
     const res = await request('POST', '/api/v1/guest/sessions', { body: { qrToken } });
     assert.equal(res.status, 201, JSON.stringify(res.body));
+    mySessions.push(res.body.sessionId);
     return { session: res.body.sessionId, token: res.body.guestToken };
   };
 
@@ -78,9 +79,13 @@ describe('payment holds stop a second diner before they transfer', { skip }, () 
   // (guest:mint, 60 a minute per IP) is shared with every other file in the
   // run: cleared before each test and after the file, so neither this file nor
   // the next one inherits a full bucket.
+  const mySessions = [];
   const clearRateLimits = async () => {
     const keys = [
-      ...await redis.keys('guest:mint:*'), ...await redis.keys('guest:rl:*'), ...await redis.keys('guest:qrctx:*')
+      ...await redis.keys('guest:mint:*'), ...await redis.keys('guest:qrctx:*'),
+      // Only the per-session buckets of sessions this file opened: other files
+      // run in parallel and fill their own on purpose (guestRateLimit).
+      ...mySessions.map(id => `guest:rl:${id}`)
     ];
     await redis.del('api:::ffff:127.0.0.1', 'api:127.0.0.1', 'guest:::ffff:127.0.0.1', 'guest:127.0.0.1', ...keys);
   };

@@ -58,6 +58,7 @@ describe('a guest session belongs to one bill, not to the table', { skip }, () =
     });
     const res = await request('POST', '/api/v1/guest/sessions', { body: { qrToken } });
     assert.equal(res.status, 201, JSON.stringify(res.body));
+    mySessions.push(res.body.sessionId);
     return { session: res.body.sessionId, token: res.body.guestToken };
   };
   const boundTo = async (diner) => (await db.query(
@@ -74,10 +75,14 @@ describe('a guest session belongs to one bill, not to the table', { skip }, () =
     ...diner, body: { items: [{ productId: await product(), quantity: 1 }] }
   });
 
+  const mySessions = [];
   const clearRateLimits = async () => {
     const keys = [
-      ...await redis.keys('guest:mint:*'), ...await redis.keys('guest:rl:*'),
-      ...await redis.keys('guest:order:*'), ...await redis.keys('guest:qrctx:*')
+      ...await redis.keys('guest:mint:*'),
+      ...await redis.keys('guest:order:*'), ...await redis.keys('guest:qrctx:*'),
+      // Only the per-session buckets of sessions this file opened: other files
+      // run in parallel and fill their own on purpose (guestRateLimit).
+      ...mySessions.map(id => `guest:rl:${id}`)
     ];
     await redis.del('api:::ffff:127.0.0.1', 'api:127.0.0.1', 'guest:::ffff:127.0.0.1', 'guest:127.0.0.1', ...keys);
   };
