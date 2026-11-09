@@ -426,6 +426,13 @@ const venezuelanId = Joi.string().trim().uppercase().pattern(/^[VEJGPC][0-9]{6,9
  * digits only, so `0001234567`, `00012 34567` and `ref 0001234567` are one
  * reference and cannot each claim the bill separately.
  */
+// Lo que el comensal va a transferir, antes de ir a su banco. Sólo la parte
+// de la cuenta: la propina no la puede pagar nadie más.
+const paymentHoldSchema = Joi.object({
+  amountVes: positiveMinorUnits.required(),
+  splitParticipantId: uuid
+});
+
 const declareClaimSchema = Joi.object({
   amountVes: positiveMinorUnits.required(),
   reference: Joi.string().trim().min(4).max(32).pattern(/^[\d\s.-]+$/).required(),
@@ -1212,6 +1219,7 @@ const adminLeadStatusSchema = Joi.object({
 });
 
 module.exports = {
+  paymentHoldSchema,
   operatorBootstrapSchema,
   subscriptionNoticeSchema,
   adminNoticeParamSchema,

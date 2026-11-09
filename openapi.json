@@ -20,6 +20,12 @@
       "PAYMENT_EXCEEDS_BALANCE": {
         "remainingVes": "string -- minor units still owed"
       },
+      "PAYMENT_HELD": {
+        "availableVes": "string -- minor units this diner can still reserve",
+        "heldVes": "string -- minor units other diners are paying right now",
+        "pendingVes": "string -- minor units already declared and awaiting verification",
+        "heldUntil": "string|null -- ISO time the earliest other reservation lapses"
+      },
       "BILL_HAS_PAYMENTS": {
         "inFlightPayments": "integer -- payments still being verified; absent when the bill has settled money"
       },
@@ -447,6 +453,7 @@
                   "BILL_HAS_PAYMENTS",
                   "BILL_ALREADY_SERVED",
                   "PAYMENT_EXCEEDS_BALANCE",
+                  "PAYMENT_HELD",
                   "PAYMENT_STATE_INVALID",
                   "IDEMPOTENCY_KEY_REUSED",
                   "IDEMPOTENCY_IN_FLIGHT",
@@ -1391,10 +1398,18 @@
                     "756710"
                   ]
                 },
+                "heldVes": {
+                  "type": "string",
+                  "pattern": "^[0-9]+$",
+                  "description": "Being paid right now by another diner. Excludes the viewer's own reservation.",
+                  "examples": [
+                    "756710"
+                  ]
+                },
                 "availableVes": {
                   "type": "string",
                   "pattern": "^[0-9]+$",
-                  "description": "remainingVes minus pendingVes, never below zero.",
+                  "description": "remainingVes minus pendingVes minus heldVes, never below zero.",
                   "examples": [
                     "756710"
                   ]
@@ -1951,10 +1966,37 @@
             "type": "integer",
             "description": "How many payments make up pendingVes."
           },
+          "heldVes": {
+            "type": "string",
+            "pattern": "^[0-9]+$",
+            "description": "Being paid right now by other diners at the table (POST /guest/bill/holds). Excludes the viewer's own reservation.",
+            "examples": [
+              "756710"
+            ]
+          },
+          "heldUntil": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "date-time",
+            "description": "When the earliest of those reservations lapses."
+          },
+          "myHold": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/PaymentHold"
+              }
+            ],
+            "description": "The viewer's own live reservation, if any."
+          },
           "availableVes": {
             "type": "string",
             "pattern": "^[0-9]+$",
-            "description": "remainingVes minus pendingVes, never below zero: what a diner should transfer now without paying for money a tablemate already sent.",
+            "description": "remainingVes minus pendingVes minus heldVes, never below zero: what this diner can still pay without paying for money a tablemate already sent or is sending.",
             "examples": [
               "756710"
             ]
@@ -5107,6 +5149,63 @@
             }
           }
         ]
+      },
+      "PaymentHoldRequest": {
+        "type": "object",
+        "required": [
+          "amountVes"
+        ],
+        "properties": {
+          "amountVes": {
+            "type": "string",
+            "pattern": "^[0-9]+$",
+            "description": "The bill part the diner is about to transfer, tip excluded.",
+            "examples": [
+              "756710"
+            ]
+          },
+          "splitParticipantId": {
+            "type": "string",
+            "format": "uuid",
+            "description": "The share being paid, when paying one."
+          }
+        },
+        "additionalProperties": false
+      },
+      "PaymentHold": {
+        "type": "object",
+        "required": [
+          "id",
+          "amountVes",
+          "splitParticipantId",
+          "expiresAt"
+        ],
+        "properties": {
+          "id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "amountVes": {
+            "type": "string",
+            "pattern": "^[0-9]+$",
+            "description": "Integer minor units (céntimos) as a string, so values beyond 2^53 survive JSON.",
+            "examples": [
+              "756710"
+            ]
+          },
+          "splitParticipantId": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "uuid"
+          },
+          "expiresAt": {
+            "type": "string",
+            "format": "date-time",
+            "description": "After this the amount is free for the rest of the table again."
+          }
+        }
       },
       "DeclareClaimRequest": {
         "type": "object",
@@ -11780,6 +11879,91 @@
         }
       }
     },
+    "/api/v1/guest/bill/holds": {
+      "post": {
+        "tags": [
+          "Guest"
+        ],
+        "summary": "Reserve the part of the bill this diner is about to pay",
+        "operationId": "placePaymentHold",
+        "description": "Called when the diner opens the payment step, before they copy the payee details and leave\nfor their banking app. For `GUEST_PAYMENT_HOLD_SECONDS` (default 600) the rest of the table\nsees that amount as being paid (`heldVes` on `GET /guest/bill` and on each split share) and\ncannot reserve it.\n\nA Pago Móvil leaves the diner's bank without passing through Splite, so by the time a bill\ncloses a second transfer has already happened. This is the one point where Splite can stop\na second diner paying the same balance: before they go to their bank.\n\nAdvisory only towards declarations: `POST /guest/bill/payment-claims` never checks holds,\nbecause refusing the word of someone who already sent money would lose track of that money.\nDeclaring consumes the diner's own hold. Placing again replaces the diner's own hold.\n\n409 `PAYMENT_HELD` carries `availableVes`, `heldVes`, `pendingVes` and `heldUntil`.",
+        "security": [
+          {
+            "guestAuth": []
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/PaymentHoldRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "Reserved.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PaymentHold"
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "404": {
+            "$ref": "#/components/responses/NotFound"
+          },
+          "409": {
+            "$ref": "#/components/responses/Conflict"
+          },
+          "429": {
+            "$ref": "#/components/responses/TooManyRequests"
+          },
+          "500": {
+            "$ref": "#/components/responses/ServerError"
+          }
+        }
+      },
+      "delete": {
+        "tags": [
+          "Guest"
+        ],
+        "summary": "Release this diner's reservation",
+        "operationId": "releasePaymentHold",
+        "description": "The diner went back or changed their mind. Idempotent: 204 whether or not a hold existed.",
+        "security": [
+          {
+            "guestAuth": []
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "Released, or there was nothing to release."
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "404": {
+            "$ref": "#/components/responses/NotFound"
+          },
+          "429": {
+            "$ref": "#/components/responses/TooManyRequests"
+          },
+          "500": {
+            "$ref": "#/components/responses/ServerError"
+          }
+        }
+      }
+    },
     "/api/v1/guest/bill/payment-claims": {
       "post": {
         "tags": [
@@ -11787,7 +11971,7 @@
         ],
         "summary": "Declare a Pago Móvil the diner has already sent",
         "operationId": "declarePaymentClaim",
-        "description": "Authenticated with a guest session. **Takes no bill id** — the table comes from the session.\n\nCreates a claim and settles nothing. The money went from the diner's bank to the\nrestaurant's without passing through Splite, so no API of ours can see it arrive; the only\nhonest thing this can do is carry the diner's word to somebody who can check the bank app.\n\n`bills.amountPaidVes` is untouched until a member of staff confirms it through\n`POST /api/v1/payments/claims/{id}/confirm`. A bill that showed itself as paid because\nsomebody typed a number into a form would be worse than one showing nothing, because the\nrestaurant would stop asking.\n\nA claim is not a reservation: two diners may each claim the whole balance, and only the\nfirst confirmation can succeed.",
+        "description": "Authenticated with a guest session. **Takes no bill id** — the table comes from the session.\n\nCreates a claim and settles nothing. The money went from the diner's bank to the\nrestaurant's without passing through Splite, so no API of ours can see it arrive; the only\nhonest thing this can do is carry the diner's word to somebody who can check the bank app.\n\n`bills.amountPaidVes` is untouched until a member of staff confirms it through\n`POST /api/v1/payments/claims/{id}/confirm`. A bill that showed itself as paid because\nsomebody typed a number into a form would be worse than one showing nothing, because the\nrestaurant would stop asking.\n\nA claim is not refused for overlapping: two diners may each claim the whole balance, and only\nthe first confirmation can succeed. The prevention is `POST /guest/bill/holds`, taken before\nthe transfer; this consumes the diner's own hold.",
         "security": [
           {
             "guestAuth": []

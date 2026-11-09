@@ -461,7 +461,8 @@ const schemas = {
             amountPaidVes: { ...minorUnits, description: 'How much of the share has settled.' },
             remainingVes: minorUnits,
             pendingVes: { ...minorUnits, description: 'Declared against this share and not yet verified.' },
-            availableVes: { ...minorUnits, description: 'remainingVes minus pendingVes, never below zero.' },
+            heldVes: { ...minorUnits, description: 'Being paid right now by another diner. Excludes the viewer\'s own reservation.' },
+            availableVes: { ...minorUnits, description: 'remainingVes minus pendingVes minus heldVes, never below zero.' },
             settled: { type: 'boolean' },
             usdReference: { type: ['string', 'null'] }
           }
@@ -686,7 +687,10 @@ const schemas = {
       remainingVes: minorUnits,
       pendingVes: { ...minorUnits, description: 'Declared by diners at this table (Pago Móvil, C2P) and not yet verified. Not yet part of amountPaidVes.' },
       pendingCount: { type: 'integer', description: 'How many payments make up pendingVes.' },
-      availableVes: { ...minorUnits, description: 'remainingVes minus pendingVes, never below zero: what a diner should transfer now without paying for money a tablemate already sent.' },
+      heldVes: { ...minorUnits, description: 'Being paid right now by other diners at the table (POST /guest/bill/holds). Excludes the viewer\'s own reservation.' },
+      heldUntil: { type: ['string', 'null'], format: 'date-time', description: 'When the earliest of those reservations lapses.' },
+      myHold: { oneOf: [{ type: 'null' }, ref('PaymentHold')], description: 'The viewer\'s own live reservation, if any.' },
+      availableVes: { ...minorUnits, description: 'remainingVes minus pendingVes minus heldVes, never below zero: what this diner can still pay without paying for money a tablemate already sent or is sending.' },
       fxRateVesPerUnit: {
         type: ['string', 'null'],
         pattern: '^\\d+\\.\\d{8}$',
@@ -1952,6 +1956,27 @@ Object.assign(schemas, {
         }
       }
     ]
+  },
+
+  PaymentHoldRequest: {
+    type: 'object',
+    required: ['amountVes'],
+    properties: {
+      amountVes: { ...minorUnits, description: 'The bill part the diner is about to transfer, tip excluded.' },
+      splitParticipantId: { type: 'string', format: 'uuid', description: 'The share being paid, when paying one.' }
+    },
+    additionalProperties: false
+  },
+
+  PaymentHold: {
+    type: 'object',
+    required: ['id', 'amountVes', 'splitParticipantId', 'expiresAt'],
+    properties: {
+      id: { type: 'string', format: 'uuid' },
+      amountVes: minorUnits,
+      splitParticipantId: { type: ['string', 'null'], format: 'uuid' },
+      expiresAt: { type: 'string', format: 'date-time', description: 'After this the amount is free for the rest of the table again.' }
+    }
   },
 
   DeclareClaimRequest: {

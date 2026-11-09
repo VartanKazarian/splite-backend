@@ -6,7 +6,7 @@ const { authenticateToken, requireRole } = require('../middleware/auth');
 const {
   validateBody, validateParams, validateQuery, guestSessionSchema, tableIdParamSchema, splitPreviewSchema,
   splitShareNameSchema, splitShareRefParamSchema,
-  declareClaimSchema, c2pChargeSchema, c2pBankGuideQuerySchema, guestOrderSchema,
+  declareClaimSchema, paymentHoldSchema, c2pChargeSchema, c2pBankGuideQuerySchema, guestOrderSchema,
   requestInvoiceSchema, guestContactSchema, guestPaymentParamSchema
 } = require('../middleware/schemas');
 const { createGuestSession, destroyGuestSession, authenticateGuest } = require('../services/guest');
@@ -14,6 +14,7 @@ const rateLimit = require('../middleware/rateLimit');
 const billItems = require('../services/billItems');
 const paymentClaims = require('../services/paymentClaims');
 const inFlight = require('../services/inFlight');
+const paymentHolds = require('../services/paymentHolds');
 const guestOrders = require('../services/guestOrders');
 const mercantilC2P = require('../services/mercantilC2P');
 const claveGuide = require('../payments/c2pClaveGuide');
@@ -474,15 +475,21 @@ router.get('/bill', authenticateGuest, perSession, async (req, res, next) => {
     // ofrece «envíame la factura» y sólo debe ofrecerlo donde se puede cumplir.
     // Es el mismo cálculo que el estado del pago, que sigue haciendo falta
     // allí porque la cuenta deja de leerse en cuanto se cierra.
-    const [items, payee, c2pAvailable, canRequestInvoice, pending] = await Promise.all([
+    const [items, payee, c2pAvailable, canRequestInvoice, pending, holds] = await Promise.all([
       billItems.listForBill({ restaurantId: req.guest.restaurantId, billId: bill.id }),
       payeeForGuest(req.guest),
       mercantilC2P.c2pAvailable(req.guest.restaurantId),
       invoiceOfferedAt(req.guest.restaurantId),
-      inFlight.forBill({ restaurantId: req.guest.restaurantId, billId: bill.id })
+      inFlight.forBill({ restaurantId: req.guest.restaurantId, billId: bill.id }),
+      paymentHolds.liveForBill({
+        restaurantId: req.guest.restaurantId, billId: bill.id, viewerSessionId: req.guest.sessionId
+      })
     ]);
     res.json({
-      ...dto.guestBill(bill, items, { pendingVes: pending.totalVes, pendingCount: pending.count }),
+      ...dto.guestBill(bill, items, {
+        pendingVes: pending.totalVes, pendingCount: pending.count,
+        heldVes: holds.othersVes, heldUntil: holds.othersUntil, myHold: holds.mine
+      }),
       payee, c2pAvailable, canRequestInvoice
     });
   } catch (err) { next(err); }
@@ -562,6 +569,39 @@ router.post(
   }
 );
 
+/**
+ * «Voy a pagar esto»: aparta lo que el comensal está por transferir.
+ *
+ * La pantalla lo pide al abrir el pago, antes de que el comensal copie los
+ * datos y vaya a su banco. Mientras dura, el resto de la mesa ve esa parte
+ * como «alguien está pagando» y no puede reservarla. 409 PAYMENT_HELD con lo
+ * que queda libre si otro llegó antes. Volver a pedirla cambia la propia.
+ */
+router.post('/bill/holds', authenticateGuest, perSession, validateBody(paymentHoldSchema), async (req, res, next) => {
+  try {
+    const bill = await openBillForGuest(req.guest);
+    const hold = await paymentHolds.placeHold({
+      restaurantId: req.guest.restaurantId,
+      billId: bill.id,
+      sessionId: req.guest.sessionId,
+      amountVes: req.body.amountVes,
+      splitParticipantId: req.body.splitParticipantId ?? null
+    });
+    res.status(201).json(dto.paymentHold(hold));
+  } catch (err) { next(err); }
+});
+
+/** El comensal volvió atrás: la parte queda libre para los demás. Idempotente. */
+router.delete('/bill/holds', authenticateGuest, perSession, async (req, res, next) => {
+  try {
+    const bill = await openBillForGuest(req.guest);
+    await paymentHolds.releaseHold({
+      restaurantId: req.guest.restaurantId, billId: bill.id, sessionId: req.guest.sessionId
+    });
+    res.status(204).end();
+  } catch (err) { next(err); }
+});
+
 router.post('/bill/payment-claims', authenticateGuest, perSession, validateBody(declareClaimSchema), async (req, res, next) => {
   try {
     const bill = await openBillForGuest(req.guest);
@@ -574,6 +614,7 @@ router.post('/bill/payment-claims', authenticateGuest, perSession, validateBody(
       bankOrigin: req.body.bankOrigin,
       idOrigin: req.body.idOrigin,
       payer: { type: 'GUEST', id: null },
+      guestSessionId: req.guest.sessionId,
       splitParticipantId: req.body.splitParticipantId ?? null,
       tipVes: req.body.tipVes ?? '0',
       // Se guarda aunque aquí no se pueda facturar: rechazar el aviso de un
@@ -868,7 +909,9 @@ router.post('/bill/splits', authenticateGuest, perSession, validateBody(splitPre
 router.get('/bill/splits/active', authenticateGuest, perSession, async (req, res, next) => {
   try {
     const bill = await openBillForGuest(req.guest);
-    const split = await splits.getActiveSplit({ restaurantId: req.guest.restaurantId, billId: bill.id, bill });
+    const split = await splits.getActiveSplit({
+      restaurantId: req.guest.restaurantId, billId: bill.id, bill, viewerSessionId: req.guest.sessionId
+    });
     if (!split) throw new ApiError('SPLIT_NOT_FOUND', 'This bill has no active split');
     res.json(dto.billSplit(split));
   } catch (err) { next(err); }

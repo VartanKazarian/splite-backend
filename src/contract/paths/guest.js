@@ -571,6 +571,55 @@ const bill = {
     }
   },
 
+  '/api/v1/guest/bill/holds': {
+    post: {
+      tags: ['Guest'],
+      summary: 'Reserve the part of the bill this diner is about to pay',
+      operationId: 'placePaymentHold',
+      description: [
+        'Called when the diner opens the payment step, before they copy the payee details and leave',
+        'for their banking app. For `GUEST_PAYMENT_HOLD_SECONDS` (default 600) the rest of the table',
+        'sees that amount as being paid (`heldVes` on `GET /guest/bill` and on each split share) and',
+        'cannot reserve it.',
+        '',
+        'A Pago Móvil leaves the diner\'s bank without passing through Splite, so by the time a bill',
+        'closes a second transfer has already happened. This is the one point where Splite can stop',
+        'a second diner paying the same balance: before they go to their bank.',
+        '',
+        'Advisory only towards declarations: `POST /guest/bill/payment-claims` never checks holds,',
+        'because refusing the word of someone who already sent money would lose track of that money.',
+        'Declaring consumes the diner\'s own hold. Placing again replaces the diner\'s own hold.',
+        '',
+        '409 `PAYMENT_HELD` carries `availableVes`, `heldVes`, `pendingVes` and `heldUntil`.'
+      ].join('\n'),
+      security: [{ guestAuth: [] }],
+      requestBody: { required: true, content: { 'application/json': { schema: ref('PaymentHoldRequest') } } },
+      responses: {
+        201: { description: 'Reserved.', content: { 'application/json': { schema: ref('PaymentHold') } } },
+        400: response('BadRequest'),
+        401: response('Unauthorized'),
+        404: response('NotFound'),
+        409: response('Conflict'),
+        429: response('TooManyRequests'),
+        500: response('ServerError')
+      }
+    },
+    delete: {
+      tags: ['Guest'],
+      summary: 'Release this diner\'s reservation',
+      operationId: 'releasePaymentHold',
+      description: 'The diner went back or changed their mind. Idempotent: 204 whether or not a hold existed.',
+      security: [{ guestAuth: [] }],
+      responses: {
+        204: { description: 'Released, or there was nothing to release.' },
+        401: response('Unauthorized'),
+        404: response('NotFound'),
+        429: response('TooManyRequests'),
+        500: response('ServerError')
+      }
+    }
+  },
+
   '/api/v1/guest/bill/payment-claims': {
     post: {
       tags: ['Guest'],
@@ -588,8 +637,9 @@ const bill = {
         'somebody typed a number into a form would be worse than one showing nothing, because the',
         'restaurant would stop asking.',
         '',
-        'A claim is not a reservation: two diners may each claim the whole balance, and only the',
-        'first confirmation can succeed.'
+        'A claim is not refused for overlapping: two diners may each claim the whole balance, and only',
+        'the first confirmation can succeed. The prevention is `POST /guest/bill/holds`, taken before',
+        'the transfer; this consumes the diner\'s own hold.'
       ].join('\n'),
       security: [{ guestAuth: [] }],
       requestBody: { required: true, content: { 'application/json': { schema: ref('DeclareClaimRequest') } } },

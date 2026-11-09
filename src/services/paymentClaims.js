@@ -8,6 +8,7 @@ const { logAudit } = require('./audit');
 const { logger } = require('../connectors/logger');
 const invoiceIntents = require('./invoiceIntents');
 const inFlight = require('./inFlight');
+const paymentHolds = require('./paymentHolds');
 
 /**
  * Declared payments: "I paid by Pago Móvil, here is my reference."
@@ -46,7 +47,7 @@ const normaliseReference = value => String(value ?? '').replace(/\D/g, '');
 async function declareClaim({
   restaurantId, billId, amountVes, reference, phoneOrigin, bankOrigin, idOrigin,
   payer = { type: 'GUEST', id: null }, splitParticipantId = null, tipVes = 0, invoice = null,
-  meta = {}
+  meta = {}, guestSessionId = null
 }) {
   const amount = toPaymentAmount(amountVes);
   if (amount === null) throw new ApiError('INVALID_AMOUNT', 'Invalid payment amount');
@@ -115,6 +116,13 @@ async function declareClaim({
           overlapsPending
         },
         reason: 'Declared by payer, awaiting verification'
+      });
+
+      // Lo que este comensal había reservado al pulsar «Pagar» pasa a ser este
+      // aviso: desde aquí cuenta como pago en verificación y no también como
+      // reserva. Bajo el mismo bloqueo de la cuenta.
+      await paymentHolds.consumeForSession(client, {
+        restaurantId, billId, sessionId: guestSessionId, paymentId: payment.id
       });
 
       // En la misma transacción: un aviso que no llegó a guardarse no puede

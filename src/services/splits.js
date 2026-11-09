@@ -2,6 +2,7 @@ const db = require('../connectors/base');
 const config = require('../config');
 const { ApiError } = require('../errors');
 const inFlight = require('./inFlight');
+const paymentHolds = require('./paymentHolds');
 const splitEngine = require('./splitEngine');
 const { logAudit } = require('./audit');
 
@@ -183,7 +184,7 @@ async function createSplit({ restaurantId, bill, items, request, createdBy }) {
 }
 
 /** A split with its participants and, for ITEMS, its claims. */
-async function getSplit({ restaurantId, splitId, bill = null }) {
+async function getSplit({ restaurantId, splitId, bill = null, viewerSessionId = null }) {
   const split = (await db.query(
     `SELECT id, bill_id, mode, basis_ves, status, created_by_type, created_at, updated_at
        FROM bill_splits WHERE id = $1 AND restaurant_id = $2`,
@@ -207,10 +208,16 @@ async function getSplit({ restaurantId, splitId, bill = null }) {
 
   // What each share has in flight, so a diner choosing "pagar mi parte" sees a
   // share a tablemate already declared instead of paying it a second time.
+  // Y lo que otro comensal está pagando ahora mismo (payment_holds): sin
+  // contar la reserva de quien mira, que es suya.
   if (participants.length) {
-    const pending = await inFlight.forBill({ restaurantId, billId: split.bill_id });
+    const [pending, holds] = await Promise.all([
+      inFlight.forBill({ restaurantId, billId: split.bill_id }),
+      paymentHolds.liveForBill({ restaurantId, billId: split.bill_id, viewerSessionId })
+    ]);
     for (const row of participants) {
       row.pending_ves = (pending.byShare.get(row.id) ?? 0n).toString();
+      row.held_ves = (holds.othersByShare.get(row.id) ?? 0n).toString();
     }
   }
 
@@ -239,7 +246,7 @@ async function getSplit({ restaurantId, splitId, bill = null }) {
  * a diner. VOID splits are excluded: those were discarded deliberately and
  * nothing was ever paid into them.
  */
-async function getActiveSplit({ restaurantId, billId, bill = null }) {
+async function getActiveSplit({ restaurantId, billId, bill = null, viewerSessionId = null }) {
   const row = (await db.query(
     `SELECT id FROM bill_splits
       WHERE restaurant_id = $1 AND bill_id = $2 AND status <> 'VOID'
@@ -248,7 +255,7 @@ async function getActiveSplit({ restaurantId, billId, bill = null }) {
     [restaurantId, billId]
   )).rows[0];
   if (!row) return null;
-  return getSplit({ restaurantId, splitId: row.id, bill });
+  return getSplit({ restaurantId, splitId: row.id, bill, viewerSessionId });
 }
 
 /**
