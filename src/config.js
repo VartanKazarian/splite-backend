@@ -196,12 +196,18 @@ module.exports = {
     get accessSecret() { return secretValue('jwtAccessSecret'); },
     get refreshSecret() { return secretValue('jwtRefreshSecret'); },
     accessTtl: process.env.JWT_ACCESS_TTL || '15m',
-    // Catorce días sin usarse, no catorce días en total: cada renovación emite
-    // un token nuevo con el plazo entero, así que un aparato que se usa a
-    // diario no vuelve a pedir la contraseña. Eran treinta. El token vive en el
-    // almacenamiento del navegador, y lo que se acorta es cuánto le sirve a
-    // quien se lo lleve de un teléfono olvidado o de un fallo de script.
-    refreshTtlSeconds: integer('JWT_REFRESH_TTL_SECONDS', 60 * 60 * 24 * 14),
+    // Doce horas sin usarse (eran catorce días, y antes treinta). Cada
+    // renovación emite un token nuevo con el plazo entero, así que mientras se
+    // use la sesión sigue viva: lo que se acorta es cuánto le sirve a quien se
+    // lleve el token de un teléfono olvidado o de un fallo de script. El token
+    // vive en el almacenamiento del navegador porque la web y la API están en
+    // dominios sin relación y una cookie de terceros no llega desde Safari;
+    // pasará a cookie cuando las dos compartan dominio.
+    refreshTtlSeconds: integer('JWT_REFRESH_TTL_SECONDS', 60 * 60 * 12),
+    // Y como mucho dieciséis horas desde que se inició sesión, se use o no: un
+    // turno largo con margen. Sin este tope, un token robado y renovado a
+    // tiempo -- o una tablet de caja que nunca se apaga -- no caducaba nunca.
+    sessionMaxSeconds: integer('JWT_SESSION_MAX_SECONDS', 60 * 60 * 16),
     issuer: 'splite-api',
     audience: 'splite'
   },

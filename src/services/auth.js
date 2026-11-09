@@ -32,17 +32,29 @@ function hashPassword(password) {
   return argon2.hash(password, ARGON2_OPTIONS);
 }
 
-/** Issues an access token plus a fresh, persisted refresh session. */
-async function issueSession(user, meta = {}, client = db) {
+/**
+ * Issues an access token plus a fresh, persisted refresh session.
+ *
+ * `startedAt` is when the person logged in. A rotation passes it through, so
+ * the session's absolute cap (config.jwt.sessionMaxSeconds) counts from the
+ * login, not from the last refresh: the new token expires at whichever comes
+ * first, the idle window or the cap. A login leaves it out and starts now.
+ */
+async function issueSession(user, meta = {}, client = db, { startedAt = null } = {}) {
   const info = { id: user.id, restaurantId: user.restaurant_id, role: user.role };
   const jti = crypto.randomUUID();
-  const refreshToken = signRefreshToken(info, jti);
-  const ttl = config.jwt.refreshTtlSeconds;
+  const idle = config.jwt.refreshTtlSeconds;
+  const started = startedAt ? new Date(startedAt) : new Date();
+  const capLeft = (started.getTime() + config.jwt.sessionMaxSeconds * 1000 - Date.now()) / 1000;
+  const ttl = Math.max(1, Math.floor(Math.min(idle, capLeft)));
+  const refreshToken = signRefreshToken(info, jti, ttl);
 
   await client.query(
-    `INSERT INTO refresh_sessions (id, user_id, restaurant_id, token_hash, expires_at, user_agent, ip)
-     VALUES ($1,$2,$3,$4, NOW() + ($5 * INTERVAL '1 second'), $6, $7)`,
-    [jti, user.id, user.restaurant_id, hashToken(refreshToken), ttl, meta.userAgent || null, meta.ip || null]
+    `INSERT INTO refresh_sessions
+       (id, user_id, restaurant_id, token_hash, expires_at, user_agent, ip, session_started_at)
+     VALUES ($1,$2,$3,$4, NOW() + ($5 * INTERVAL '1 second'), $6, $7, $8)`,
+    [jti, user.id, user.restaurant_id, hashToken(refreshToken), ttl, meta.userAgent || null, meta.ip || null,
+      started.toISOString()]
   );
 
   // There was a Redis mirror here, `refresh:<jti>`, written on login and
@@ -316,7 +328,7 @@ async function refresh(refreshToken, meta = {}) {
 
   const tokenHash = hashToken(refreshToken);
 
-  return db.withTransaction(async client => {
+  const result = await db.withTransaction(async client => {
     const claimed = await client.query(
       `UPDATE refresh_sessions
           SET revoked_at = NOW()
@@ -324,7 +336,7 @@ async function refresh(refreshToken, meta = {}) {
           AND token_hash = $2
           AND revoked_at IS NULL
           AND expires_at > NOW()
-      RETURNING user_id, restaurant_id`,
+      RETURNING user_id, restaurant_id, session_started_at`,
       [claims.jti, tokenHash]
     );
 
@@ -359,8 +371,18 @@ async function refresh(refreshToken, meta = {}) {
     const user = rows[0];
     if (!user || !user.active) throw unauthorized('User inactive');
 
-    return issueSession(user, meta, client);
+    // The cap counts from the login. Past it, the session ends however often
+    // it has been used: one login per shift. Returned rather than thrown, so
+    // the transaction commits the revocation above and this token cannot be
+    // tried again; thrown after the commit.
+    const startedAt = claimed.rows[0].session_started_at;
+    if (Date.now() >= new Date(startedAt).getTime() + config.jwt.sessionMaxSeconds * 1000) {
+      return { capped: true };
+    }
+    return issueSession(user, meta, client, { startedAt });
   });
+  if (result.capped) throw unauthorized('Session reached its maximum length; log in again');
+  return result;
 }
 
 /**

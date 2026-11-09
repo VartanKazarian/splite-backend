@@ -27,11 +27,12 @@ function signAccessToken(user) {
   );
 }
 
-function signRefreshToken(user, jti) {
+/** `ttlSeconds` lets a rotation stop at the session's absolute cap. */
+function signRefreshToken(user, jti, ttlSeconds = config.jwt.refreshTtlSeconds) {
   return jwt.sign(
     { sub: user.id, restaurantId: user.restaurantId, role: user.role, type: 'refresh', jti },
     config.jwt.refreshSecret,
-    { ...JWT_COMMON, expiresIn: config.jwt.refreshTtlSeconds, algorithm: 'HS256' }
+    { ...JWT_COMMON, expiresIn: Math.max(1, Math.floor(ttlSeconds)), algorithm: 'HS256' }
   );
 }
 
