@@ -6,6 +6,7 @@ const db = require('../../src/connectors/base');
 const { redis, closeRedis } = require('../../src/connectors/redis');
 const fixtures = require('./helpers/fixtures');
 const bcv = require('../../src/connectors/bcv');
+const config = require('../../src/config');
 const fx = require('../../src/services/fx');
 const { hashPassword } = require('../../src/services/auth');
 const { signAccessToken } = require('../../src/utils/tokens');
@@ -31,6 +32,7 @@ describe('bill routes over HTTP', { skip }, () => {
   let token;
   let tableSeq = 0;
   const realFetchRates = bcv.fetchRates;
+  const realMaxDeviation = config.fx.maxDeviationPct;
 
   const request = async (method, path, { body, auth = true, token: override } = {}) => {
     const bearer = override ?? token;
@@ -99,6 +101,13 @@ describe('bill routes over HTTP', { skip }, () => {
       rates: { USD: USD_RATE, EUR: EUR_RATE },
       valueDate: caracasToday()
     });
+    // The deviation guard compares a fetched rate with the last one saved in
+    // fx_rates. Integration files run in parallel against one database, and in
+    // CI -- which can reach BCV -- another file may already have saved today's
+    // real rate; a fixed 757.54 then looks like an implausible jump, is
+    // rejected, and the real rate is used instead. This file fixes its rate on
+    // purpose, so the guard (which has its own tests) is not what it measures.
+    config.fx.maxDeviationPct = Infinity;
     fx.__reset();
 
     // This is the only suite that drives HTTP, and every request in it comes
@@ -136,6 +145,7 @@ describe('bill routes over HTTP', { skip }, () => {
 
   after(async () => {
     bcv.fetchRates = realFetchRates;
+    config.fx.maxDeviationPct = realMaxDeviation;
     fx.__reset();
     if (server) await new Promise(resolve => server.close(resolve));
     for (const id of extraTenants) {

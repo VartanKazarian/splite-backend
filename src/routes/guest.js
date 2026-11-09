@@ -15,6 +15,7 @@ const billItems = require('../services/billItems');
 const paymentClaims = require('../services/paymentClaims');
 const inFlight = require('../services/inFlight');
 const paymentHolds = require('../services/paymentHolds');
+const guestBillBinding = require('../services/guestBillBinding');
 const guestOrders = require('../services/guestOrders');
 const mercantilC2P = require('../services/mercantilC2P');
 const claveGuide = require('../payments/c2pClaveGuide');
@@ -263,6 +264,15 @@ router.post(
  * below is built the same way.
  */
 async function openBillForGuest(guest) {
+  // La cuenta de esta sesión, no «la abierta de la mesa»: ver
+  // services/guestBillBinding.js. `reason` dice a la pantalla si hay que
+  // volver a escanear (la cuenta de esta sesión ya terminó).
+  const { billId, reason } = await guestBillBinding.billForSession({
+    restaurantId: guest.restaurantId, tableId: guest.tableId, sessionId: guest.sessionId
+  });
+  if (!billId) {
+    throw new ApiError('OPEN_BILL_NOT_FOUND', 'No open bill for this session', { reason });
+  }
   const { rows } = await db.query(
     `SELECT id, table_id, status, currency, total_due,
             subtotal_minor, vat_bps, vat_minor,
@@ -270,10 +280,14 @@ async function openBillForGuest(guest) {
             total_due_ves, amount_paid_ves,
             fx_rate_ves_per_unit, updated_at
        FROM bills
-      WHERE restaurant_id = $1 AND table_id = $2 AND status = 'OPEN'`,
-    [guest.restaurantId, guest.tableId]
+      WHERE id = $1 AND restaurant_id = $2 AND status = 'OPEN'`,
+    [billId, guest.restaurantId]
   );
-  if (!rows.length) throw new ApiError('OPEN_BILL_NOT_FOUND', 'No open bill for this table');
+  // Se cerró entre las dos lecturas.
+  if (!rows.length) {
+    throw new ApiError('OPEN_BILL_NOT_FOUND', 'No open bill for this session',
+      { reason: guestBillBinding.REASONS.SESSION_BILL_ENDED });
+  }
   return rows[0];
 }
 
@@ -327,8 +341,15 @@ async function billForGuestPayment(guest, paymentId) {
        JOIN restaurants r ON r.id = p.restaurant_id
        LEFT JOIN fiscal_series fs ON fs.restaurant_id = r.id
        LEFT JOIN fiscal_invoice_intents fii ON fii.payment_id = p.id
-      WHERE p.id = $1 AND p.restaurant_id = $2 AND b.table_id = $3`,
-    [paymentId, guest.restaurantId, guest.tableId]
+      WHERE p.id = $1 AND p.restaurant_id = $2 AND b.table_id = $3
+        -- Una sesión atada sólo ve pagos de su cuenta, abierta o cerrada: el
+        -- recibo y la factura siguen al alcance cuando la cuenta se cierra,
+        -- los de la siguiente cuenta de la mesa no.
+        AND NOT EXISTS (
+          SELECT 1 FROM guest_sessions s
+           WHERE s.id = $4 AND s.bill_id IS NOT NULL AND s.bill_id <> b.id
+        )`,
+    [paymentId, guest.restaurantId, guest.tableId, guest.sessionId]
   );
   if (!rows.length) throw new ApiError('PAYMENT_NOT_FOUND', 'Payment not found');
   return rows[0];

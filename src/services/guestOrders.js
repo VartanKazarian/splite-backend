@@ -1,4 +1,5 @@
 const db = require('../connectors/base');
+const guestBillBinding = require('./guestBillBinding');
 const config = require('../config');
 const billItems = require('./billItems');
 const { snapshotFx } = require('./billOpen');
@@ -61,9 +62,32 @@ async function placeOrder({ restaurantId, tableId, guestSessionId = null, items,
     if (!table.rows.length) throw new ApiError('TABLE_NOT_FOUND', 'Table not found');
 
     let opened = false;
-    let billId = existing.rows[0]?.id;
+    let billId = null;
+
+    // Qué cuenta es la de esta sesión, bajo el bloqueo de la mesa. Una sesión
+    // atada a una cuenta que ya se cerró no pide sobre la de los siguientes ni
+    // abre otra: tiene que volver a escanear. Ver services/guestBillBinding.js.
+    if (guestSessionId) {
+      const found = await guestBillBinding.billForSession(
+        { restaurantId, tableId, sessionId: guestSessionId }, client);
+      if (found.billId) {
+        billId = found.billId;
+      } else if (found.reason !== guestBillBinding.REASONS.NO_OPEN_BILL) {
+        throw new ApiError('OPEN_BILL_NOT_FOUND', 'This session\'s bill has ended; scan the table again',
+          { reason: found.reason });
+      }
+    } else {
+      const open = await client.query(
+        "SELECT id FROM bills WHERE restaurant_id = $1 AND table_id = $2 AND status = 'OPEN'",
+        [restaurantId, tableId]
+      );
+      billId = open.rows[0]?.id ?? null;
+    }
 
     if (!billId) {
+      // Se leyó fuera de la transacción que había una cuenta, y ya no: sin la
+      // tasa preparada no se puede abrir una. Que lo reintente el comensal.
+      if (!fx) throw new ApiError('OPEN_BILL_NOT_FOUND', 'The table\'s bill just closed; try again');
       // Suspendido desde la consola: el pedido no abre una cuenta nueva. Una
       // mesa que ya tenía cuenta sigue pidiendo y pagando.
       await assertMayOpenBills(client, restaurantId);
@@ -79,6 +103,10 @@ async function placeOrder({ restaurantId, tableId, guestSessionId = null, items,
       );
       billId = created.rows[0].id;
       opened = true;
+      // El comensal que abre la cuenta con su pedido queda atado a ella.
+      if (guestSessionId) {
+        await guestBillBinding.bindSession({ restaurantId, sessionId: guestSessionId, billId }, client);
+      }
     }
 
     // El pedido se graba antes que las líneas porque las líneas lo apuntan. Y

@@ -325,6 +325,9 @@ const CODES = {
  * `test/errors.test.js` fails if a key here is not a real code.
  */
 const DETAILS = {
+  OPEN_BILL_NOT_FOUND: {
+    reason: 'string -- guest only: NO_OPEN_BILL, SESSION_BILL_ENDED (this session\'s bill closed; scan again for the table\'s current bill) or SESSION_PREDATES_BILL (the open bill started long after this session; scan again)'
+  },
   VALIDATION_FAILED: { fields: 'string[] -- one entry per failed field' },
   OPEN_BILL_EXISTS: { billId: 'uuid -- the bill already open on that table' },
   BILL_NOT_OPEN: { status: 'string -- the status the bill is actually in' },

@@ -56,6 +56,11 @@ function fakeDb() {
       if (row) row.revoked_at = new Date();
       return { rows: [], rowCount: row ? 1 : 0 };
     }
+    // Creating a session looks for the table's open bill to attach to
+    // (services/guestBillBinding.js). These tests are about the credential, so
+    // the table is empty; binding is exercised end to end in the integration
+    // suite.
+    if (text.includes('FROM bills')) return { rows: [], rowCount: 0 };
     throw new Error(`unexpected query in the guest stub: ${text}`);
   };
   return rows;
