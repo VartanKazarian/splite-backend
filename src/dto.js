@@ -161,9 +161,14 @@ function billWithItems(row, items = []) {
  * provenance for staff. The rate itself stays, because the client needs it to
  * show an approximate figure in the currency the menu quoted.
  */
-function guestBill(row, items = []) {
+function guestBill(row, items = [], { pendingVes = 0n, pendingCount = 0 } = {}) {
   const remainingVes = (BigInt(row.total_due_ves) - BigInt(row.amount_paid_ves)).toString();
   const rate = row.fx_rate_ves_per_unit ?? null;
+  // Declared by someone at the table and not yet verified. `remainingVes` stays
+  // what the ledger says is owed; `availableVes` is what a diner should
+  // transfer now without paying for money a tablemate already sent.
+  const pending = BigInt(pendingVes);
+  const availableVes = (BigInt(remainingVes) > pending ? BigInt(remainingVes) - pending : 0n).toString();
 
   return {
     id: row.id,
@@ -183,6 +188,9 @@ function guestBill(row, items = []) {
     totalDueVes: row.total_due_ves,
     amountPaidVes: row.amount_paid_ves,
     remainingVes,
+    pendingVes: pending.toString(),
+    pendingCount,
+    availableVes,
     fxRateVesPerUnit: rate,
     usdReference: {
       totalDue: usdReference(row.total_due_ves, rate),
@@ -248,6 +256,10 @@ function staffPaymentClaim(row) {
     bankOriginName: banks.lookup(bankOrigin)?.name ?? null,
     idOrigin: metadata.idOrigin ?? null,
     declaredAt: metadata.declaredAt ?? null,
+    // True when, at the moment it was declared, this claim plus the others then
+    // pending came to more than the bill owed: two diners may have paid the
+    // same balance, and one of the transfers will need returning.
+    overlapsPending: metadata.overlapsPending === true,
     // Sólo los trae la cola (`listClaims`); confirmar o rechazar devuelve la
     // fila sin ellos, y entonces son null en vez de faltar.
     tableName: row.table_name ?? null,
@@ -822,6 +834,8 @@ function billSplit({ split, participants, claims = [], fxRate = null }) {
       const amount = BigInt(row.amount_ves);
       const paid = BigInt(row.amount_paid_ves);
       const remaining = amount - paid;
+      // Declared against this share and not yet verified (services/inFlight.js).
+      const pending = BigInt(row.pending_ves ?? 0);
       return {
         id: row.id,
         ref: row.ext_ref,
@@ -829,6 +843,8 @@ function billSplit({ split, participants, claims = [], fxRate = null }) {
         amountVes: amount.toString(),
         amountPaidVes: paid.toString(),
         remainingVes: remaining.toString(),
+        pendingVes: pending.toString(),
+        availableVes: (remaining > pending ? remaining - pending : 0n).toString(),
         settled: remaining === 0n,
         usdReference: usdReference(amount.toString(), fxRate)
       };

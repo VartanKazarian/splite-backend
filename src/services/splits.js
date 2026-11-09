@@ -1,6 +1,7 @@
 const db = require('../connectors/base');
 const config = require('../config');
 const { ApiError } = require('../errors');
+const inFlight = require('./inFlight');
 const splitEngine = require('./splitEngine');
 const { logAudit } = require('./audit');
 
@@ -204,6 +205,15 @@ async function getSplit({ restaurantId, splitId, bill = null }) {
     [splitId]
   )).rows;
 
+  // What each share has in flight, so a diner choosing "pagar mi parte" sees a
+  // share a tablemate already declared instead of paying it a second time.
+  if (participants.length) {
+    const pending = await inFlight.forBill({ restaurantId, billId: split.bill_id });
+    for (const row of participants) {
+      row.pending_ves = (pending.byShare.get(row.id) ?? 0n).toString();
+    }
+  }
+
   const claims = split.mode === 'ITEMS'
     ? (await db.query(
       `SELECT bill_item_id, participant_id FROM bill_split_items WHERE split_id = $1`,
@@ -275,19 +285,19 @@ async function discardUnpaidSplit(client, { restaurantId, billId, splitId }) {
   }
 
   if (shares.length) {
-    const inFlight = (await client.query(
+    const shareInFlight = (await client.query(
       `SELECT count(*)::int AS count FROM payments
         WHERE restaurant_id = $1
           AND split_participant_id = ANY($2::uuid[])
-          AND status IN ('PENDING', 'IN_DOUBT', 'AMBIGUOUS')`,
-      [restaurantId, shares.map(share => share.id)]
+          AND status = ANY($3::text[])`,
+      [restaurantId, shares.map(share => share.id), inFlight.IN_FLIGHT_STATUSES]
     )).rows[0];
 
-    if (inFlight.count > 0) {
+    if (shareInFlight.count > 0) {
       throw new ApiError(
         'SPLIT_HAS_PAYMENTS',
         'A payment against one of these shares is still being resolved; settle or reject it before voiding',
-        { inFlightPayments: inFlight.count }
+        { inFlightPayments: shareInFlight.count }
       );
     }
   }

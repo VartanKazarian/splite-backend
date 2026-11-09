@@ -460,6 +460,8 @@ const schemas = {
             amountVes: { ...minorUnits, description: 'The assigned share.' },
             amountPaidVes: { ...minorUnits, description: 'How much of the share has settled.' },
             remainingVes: minorUnits,
+            pendingVes: { ...minorUnits, description: 'Declared against this share and not yet verified.' },
+            availableVes: { ...minorUnits, description: 'remainingVes minus pendingVes, never below zero.' },
             settled: { type: 'boolean' },
             usdReference: { type: ['string', 'null'] }
           }
@@ -682,6 +684,9 @@ const schemas = {
       totalDueVes: { ...minorUnits, description: 'Authoritative amount to settle.' },
       amountPaidVes: minorUnits,
       remainingVes: minorUnits,
+      pendingVes: { ...minorUnits, description: 'Declared by diners at this table (Pago Móvil, C2P) and not yet verified. Not yet part of amountPaidVes.' },
+      pendingCount: { type: 'integer', description: 'How many payments make up pendingVes.' },
+      availableVes: { ...minorUnits, description: 'remainingVes minus pendingVes, never below zero: what a diner should transfer now without paying for money a tablemate already sent.' },
       fxRateVesPerUnit: {
         type: ['string', 'null'],
         pattern: '^\\d+\\.\\d{8}$',
@@ -1930,6 +1935,7 @@ Object.assign(schemas, {
           bankOriginName: { type: ['string', 'null'], description: 'Resolved from `bankOrigin`, or null when it is not a code we know.' },
           idOrigin: { type: ['string', 'null'], description: "The payer's cédula or RIF, as the receiving bank prints it beside the movement." },
           declaredAt: { type: ['string', 'null'], format: 'date-time' },
+          overlapsPending: { type: 'boolean', description: 'True when, as declared, this claim plus the others then pending came to more than the bill owed: two diners may have paid the same balance and one transfer may need returning.' },
           tableName: { type: ['string', 'null'], description: 'The table the bill is on. Filled in the queue (`GET /payments/claims`); null elsewhere.' },
           payerName: { type: ['string', 'null'], description: "The payer's name from their split share or their invoice request, or null when they gave none. Filled in the queue only." },
           bankMatch: {

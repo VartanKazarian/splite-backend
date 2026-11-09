@@ -20,6 +20,9 @@
       "PAYMENT_EXCEEDS_BALANCE": {
         "remainingVes": "string -- minor units still owed"
       },
+      "BILL_HAS_PAYMENTS": {
+        "inFlightPayments": "integer -- payments still being verified; absent when the bill has settled money"
+      },
       "PAYMENT_STATE_INVALID": {
         "from": "string -- current status",
         "to": "string -- requested status"
@@ -1380,6 +1383,22 @@
                     "756710"
                   ]
                 },
+                "pendingVes": {
+                  "type": "string",
+                  "pattern": "^[0-9]+$",
+                  "description": "Declared against this share and not yet verified.",
+                  "examples": [
+                    "756710"
+                  ]
+                },
+                "availableVes": {
+                  "type": "string",
+                  "pattern": "^[0-9]+$",
+                  "description": "remainingVes minus pendingVes, never below zero.",
+                  "examples": [
+                    "756710"
+                  ]
+                },
                 "settled": {
                   "type": "boolean"
                 },
@@ -1916,6 +1935,26 @@
             "type": "string",
             "pattern": "^[0-9]+$",
             "description": "Integer minor units (céntimos) as a string, so values beyond 2^53 survive JSON.",
+            "examples": [
+              "756710"
+            ]
+          },
+          "pendingVes": {
+            "type": "string",
+            "pattern": "^[0-9]+$",
+            "description": "Declared by diners at this table (Pago Móvil, C2P) and not yet verified. Not yet part of amountPaidVes.",
+            "examples": [
+              "756710"
+            ]
+          },
+          "pendingCount": {
+            "type": "integer",
+            "description": "How many payments make up pendingVes."
+          },
+          "availableVes": {
+            "type": "string",
+            "pattern": "^[0-9]+$",
+            "description": "remainingVes minus pendingVes, never below zero: what a diner should transfer now without paying for money a tablemate already sent.",
             "examples": [
               "756710"
             ]
@@ -5000,6 +5039,10 @@
                   "null"
                 ],
                 "format": "date-time"
+              },
+              "overlapsPending": {
+                "type": "boolean",
+                "description": "True when, as declared, this claim plus the others then pending came to more than the bill owed: two diners may have paid the same balance and one transfer may need returning."
               },
               "tableName": {
                 "type": [
