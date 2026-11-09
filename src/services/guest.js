@@ -5,6 +5,7 @@ const { redis } = require('../connectors/redis');
 const config = require('../config');
 const { hashToken, safeEqual } = require('../utils/tokens');
 const { logger } = require('../connectors/logger');
+const guestBillBinding = require('./guestBillBinding');
 
 const KEY_PREFIX = 'guest:session:';
 
@@ -61,6 +62,11 @@ async function createGuestSession({ restaurantId, tableId, ip = null, userAgent 
      VALUES ($1, $2, $3, $4, NOW() + ($5 * INTERVAL '1 second'), $6, $7)`,
     [sessionId, restaurantId, tableId, tokenHash, maxAge, agent, ip || null]
   );
+
+  // Atada ya a la cuenta abierta de la mesa, si la hay: la de quien escanea
+  // ahora. Sin esperar al primer acceso, que podría llegar cuando esa cuenta
+  // ya se cerró y la de la mesa es de otros.
+  await guestBillBinding.billForSession({ restaurantId, tableId, sessionId });
 
   // El tope absoluto viaja **en la entrada de caché**, no sólo en la fila.
   // Sin él, el camino caliente no tiene forma de saber que ya venció: devuelve

@@ -246,7 +246,12 @@ module.exports = {
     // Cuánto dura «Ana está pagando»: lo que tarda alguien en abrir su app del
     // banco, hacer el Pago Móvil y volver. Si no vuelve, la parte se libera
     // sola para el resto de la mesa.
-    paymentHoldSeconds: integer('GUEST_PAYMENT_HOLD_SECONDS', 60 * 10)
+    paymentHoldSeconds: integer('GUEST_PAYMENT_HOLD_SECONDS', 60 * 10),
+    // Una sesión abierta en una mesa vacía se ata a la primera cuenta que se
+    // abra en ella, pero sólo si se abre dentro de esta ventana. Pasado ese
+    // rato, quien escaneó probablemente ya se fue, y la cuenta nueva es de
+    // otros: tendrá que volver a escanear.
+    billBindWindowSeconds: integer('GUEST_BILL_BIND_WINDOW_SECONDS', 60 * 30)
   },
   mail: {
     transport: mailTransport,
