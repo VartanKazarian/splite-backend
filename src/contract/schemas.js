@@ -1508,6 +1508,10 @@ Object.assign(schemas, {
       },
       lineCount: { type: 'integer', description: 'How many lines were ordered. Compare with `items`: a line a waiter has since removed is gone from `items` but the order still had it.' },
       note: { type: ['string', 'null'], description: 'What the diner wrote with the order, or null. Diner text: render it as text, never as markup.' },
+      status: {
+        type: 'string', enum: ['PLACED', 'HELD'],
+        description: 'PLACED: on the bill. HELD: the first order from a new phone, waiting for approval — its `items` are what was ordered, not yet on any bill, and `billId` is null.'
+      },
       currency: { type: ['string', 'null'], enum: ['VES', 'USD', 'EUR', null], description: 'The currency of `items[].subtotalMinor`: the bill\'s. A dollar menu leaves its lines in dollars. Null once the bill has been purged.' },
       items: {
         type: 'array',
@@ -1533,7 +1537,8 @@ Object.assign(schemas, {
     type: 'object',
     description: 'The queue as numbers, for a badge. Same contract shape and same polling advice as `ClaimsSummary`.',
     properties: {
-      pending: { type: 'integer', description: 'Orders nobody on the floor has marked as seen.' },
+      pending: { type: 'integer', description: 'Orders nobody on the floor has marked as seen, held ones included.' },
+      awaitingApproval: { type: 'integer', description: 'Of those, how many are held for approval: a diner is waiting on them.' },
       oldestPendingAt: { type: ['string', 'null'], format: 'date-time' },
       oldestPendingAgeSeconds: { type: ['integer', 'null'] }
     }

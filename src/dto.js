@@ -932,8 +932,13 @@ function guestOrder(row) {
     servedBy: row.served_by ?? null,
     lineCount: row.line_count,
     note: row.note ?? null,
-    currency: row.currency ?? null,
-    items: (row.items ?? []).map(item => ({
+    // HELD: espera a que la sala lo apruebe; sus líneas todavía no están en
+    // ninguna cuenta y salen de la foto que se tomó al pedir.
+    status: row.status ?? 'PLACED',
+    currency: row.status === 'HELD'
+      ? (row.held_items?.[0]?.currency ?? null)
+      : (row.currency ?? null),
+    items: (row.status === 'HELD' ? (row.held_items ?? []) : (row.items ?? [])).map(item => ({
       name: item.name,
       quantity: item.quantity,
       subtotalMinor: String(item.subtotalMinor)

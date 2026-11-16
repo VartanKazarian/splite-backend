@@ -7,7 +7,7 @@ const {
   validateBody, validateParams, validateQuery, guestSessionSchema, tableIdParamSchema, splitPreviewSchema,
   splitShareNameSchema, splitShareRefParamSchema,
   declareClaimSchema, paymentHoldSchema, c2pChargeSchema, c2pBankGuideQuerySchema, guestOrderSchema,
-  requestInvoiceSchema, guestContactSchema, guestPaymentParamSchema
+  requestInvoiceSchema, guestContactSchema, guestPaymentParamSchema, guestOrderIdParamSchema
 } = require('../middleware/schemas');
 const { createGuestSession, destroyGuestSession, authenticateGuest } = require('../services/guest');
 const rateLimit = require('../middleware/rateLimit');
@@ -568,7 +568,8 @@ router.post(
         // Sin actor: no lo hizo nadie de la casa. La sesión que lo hizo queda
         // en `guest_orders.guest_session_id`, que es donde se puede seguir.
         actorId: null,
-        action: result.opened ? 'BILL_OPENED_BY_GUEST_ORDER' : 'GUEST_ORDER_PLACED',
+        action: result.status === 'HELD' ? 'GUEST_ORDER_HELD'
+          : (result.opened ? 'BILL_OPENED_BY_GUEST_ORDER' : 'GUEST_ORDER_PLACED'),
         resourceType: 'guest_order',
         resourceId: result.orderId,
         // Si trae nota, pero no la nota: lo que escribe un comensal no va al
@@ -579,16 +580,35 @@ router.post(
         requestId: req.id
       });
 
-      // Sólo "recibido". El comensal no sigue estados porque no hay estados que
-      // seguir: lo que pidió ya está en su cuenta, y ahí lo ve.
+      // PLACED: ya está en su cuenta, y ahí lo ve. HELD: es el primero de este
+      // teléfono y el restaurante pide aprobarlo; lo sigue con
+      // GET /bill/orders/:id.
       res.status(201).json({
         orderId: result.orderId,
         createdAt: result.createdAt,
-        lineCount: req.body.items.length
+        lineCount: req.body.items.length,
+        status: result.status
       });
     } catch (err) { next(err); }
   }
 );
+
+/** En qué quedó un pedido de este teléfono: el que espera aprobación lo consulta. */
+router.get('/bill/orders/:id', authenticateGuest, perSession, validateParams(guestOrderIdParamSchema), async (req, res, next) => {
+  try {
+    const row = await guestOrders.statusForSession({
+      restaurantId: req.guest.restaurantId,
+      sessionId: req.guest.sessionId,
+      orderId: req.params.id
+    });
+    res.json({
+      orderId: row.id,
+      status: row.status,
+      createdAt: new Date(row.created_at).toISOString(),
+      decidedAt: row.decided_at ? new Date(row.decided_at).toISOString() : null
+    });
+  } catch (err) { next(err); }
+});
 
 /**
  * «Voy a pagar esto»: aparta lo que el comensal está por transferir.
