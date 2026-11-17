@@ -102,9 +102,9 @@ test('every environment variable the config reads is written down somewhere', ()
   // is the rail the product is built around -- because each was added beside its
   // code and nothing checked the other side.
   //
-  // Deliberately loose about *where*: the README explains the ones that need an
-  // argument, and .env.example carries the rest with their defaults. Either
-  // counts. What must not happen is neither.
+  // Deliberately loose about *where*: the README and docs/ARCHITECTURE.md
+  // explain the ones that need an argument, and .env.example carries the rest
+  // with their defaults. Any counts. What must not happen is none.
   const fs = require('node:fs');
   const root = path.join(__dirname, '..');
   const source = fs.readFileSync(CONFIG, 'utf8');
@@ -115,7 +115,7 @@ test('every environment variable the config reads is written down somewhere', ()
       .concat([...source.matchAll(/\b(?:integer|boolean|secret)\('([A-Z][A-Z_0-9]*)'/g)].map(m => m[1]))
   );
 
-  const docs = ['README.md', '.env.example', '.env.production.example']
+  const docs = ['README.md', 'docs/ARCHITECTURE.md', '.env.example', '.env.production.example']
     .map(name => fs.readFileSync(path.join(root, name), 'utf8'))
     .join('\n');
 
