@@ -386,10 +386,17 @@ const login = {
     post: {
       tags: ['Auth'],
       summary: 'Rotate a refresh token',
-      description:
+      description: [
         'Rotation is atomic. Presenting an already-revoked token is treated as theft and revokes every session for that user.',
+        '',
+        '**Cookie mode.** Send `X-Refresh-Mode: cookie` (and `credentials: include`) on login, MFA, signup,',
+        'invitation acceptance, password change, refresh and logout. The refresh token is then set as an',
+        'HttpOnly `__Host-splite_rt` cookie (Secure, SameSite=Strict) instead of being returned, so page',
+        'scripts never see it, and refresh/logout read it from there. Only works when the site and API are',
+        'the same site (splite.lat / api.splite.lat).'
+      ].join('\n'),
       security: [],
-      requestBody: { required: true, content: { 'application/json': { schema: ref('RefreshRequest') } } },
+      requestBody: { required: false, content: { 'application/json': { schema: ref('RefreshRequest') } } },
       responses: {
         200: { description: 'New session issued.', content: { 'application/json': { schema: ref('Session') } } },
         400: response('BadRequest'),
@@ -404,9 +411,9 @@ const login = {
     post: {
       tags: ['Auth'],
       summary: 'Revoke a refresh session',
-      description: 'Always 204, so it never reveals whether the token was valid.',
+      description: 'Always 204, so it never reveals whether the token was valid. Also clears the refresh cookie.',
       security: [],
-      requestBody: { required: true, content: { 'application/json': { schema: ref('RefreshRequest') } } },
+      requestBody: { required: false, content: { 'application/json': { schema: ref('RefreshRequest') } } },
       responses: {
         204: { description: 'Revoked, or the token was already invalid.' },
         400: response('BadRequest'),

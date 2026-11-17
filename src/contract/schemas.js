@@ -1192,7 +1192,7 @@ const schemas = {
 
   RefreshRequest: {
     type: 'object',
-    required: ['refreshToken'],
+    description: 'In cookie mode (`X-Refresh-Mode: cookie`) the token comes from the `__Host-splite_rt` cookie and the body may be empty.',
     properties: { refreshToken: { type: 'string', minLength: 20, maxLength: 4096 } }
   },
 
@@ -1200,7 +1200,8 @@ const schemas = {
     type: 'object',
     properties: {
       accessToken: { type: 'string' },
-      refreshToken: { type: 'string' },
+      refreshToken: { type: 'string', description: 'Absent in cookie mode: it is in the HttpOnly cookie instead.' },
+      refreshDelivery: { type: 'string', enum: ['cookie'], description: 'Present, as `cookie`, when the refresh token was set as a cookie instead of returned.' },
       expiresIn: { type: 'string' },
       user: ref('SessionUser')
     }

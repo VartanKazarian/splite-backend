@@ -174,8 +174,9 @@ const mfaChallengeSchema = Joi.object({
 
 const mfaCodeSchema = Joi.object({ code: mfaCode });
 
+// Opcional: en modo cookie (X-Refresh-Mode: cookie) viene en la cookie HttpOnly.
 const refreshSchema = Joi.object({
-  refreshToken: Joi.string().min(20).max(4096).required()
+  refreshToken: Joi.string().min(20).max(4096)
 });
 
 const guestSessionSchema = Joi.object({
