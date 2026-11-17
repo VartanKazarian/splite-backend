@@ -98,11 +98,11 @@ describe('a diner follows the payment they declared', { skip }, () => {
   it('once the staff confirm it, it says so and when', async () => {
     const ana = await dinerAtNewTable();
     const claim = await declare(ana);
-    const before = Date.now();
+    const askedAt = Date.now();
     await paymentClaims.confirmClaim({ restaurantId: restaurant.id, claimId: claim.body.id, actor: null });
     const status = await statusOf(ana, claim.body.id);
     assert.equal(status.body.status, 'SUCCEEDED');
-    assert.ok(Date.parse(status.body.decidedAt) >= before - 2000, status.body.decidedAt);
+    assert.ok(Date.parse(status.body.decidedAt) >= askedAt - 2000, status.body.decidedAt);
   });
 
   it('once the staff reject it, it says so and when, without the internal reason', async () => {
