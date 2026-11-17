@@ -323,7 +323,7 @@ async function invoiceOfferedAt(restaurantId) {
 
 async function billForGuestPayment(guest, paymentId) {
   const { rows } = await db.query(
-    `SELECT p.id AS payment_id, p.status AS payment_status, p.amount_ves,
+    `SELECT p.id AS payment_id, p.status AS payment_status, p.amount_ves, p.updated_at AS payment_updated_at,
             b.id AS bill_id, b.status AS bill_status,
             (SELECT i.id FROM fiscal_invoices i WHERE i.payment_id = p.id LIMIT 1) AS invoice_id,
             (SELECT i.control_number FROM fiscal_invoices i WHERE i.payment_id = p.id LIMIT 1)
@@ -379,6 +379,12 @@ router.get(
         id: row.payment_id,
         status: row.payment_status,
         amountVes: row.amount_ves,
+        // Cuándo lo confirmó o rechazó el personal, para que el teléfono diga
+        // «confirmado a las 21:14». Null mientras sigue por verificar. El motivo
+        // de un rechazo no viaja: es una nota interna que escribe el personal.
+        decidedAt: ['SUCCEEDED', 'FAILED', 'CANCELLED'].includes(row.payment_status)
+          ? new Date(row.payment_updated_at).toISOString()
+          : null,
         // Que la cuenta esté cerrada no impide pedir la factura: es más, suele
         // ser la señal de que ya se puede.
         billClosed: row.bill_status !== 'OPEN',
