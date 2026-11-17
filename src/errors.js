@@ -333,7 +333,7 @@ const CODES = {
  * `test/errors.test.js` fails if a key here is not a real code.
  */
 const DETAILS = {
-  GUEST_ORDER_ALREADY_DECIDED: { status: 'string -- PLACED or REJECTED: how it was already decided' },
+  GUEST_ORDER_ALREADY_DECIDED: { status: 'string -- PLACED, REJECTED or EXPIRED: how it was already decided' },
   OPEN_BILL_NOT_FOUND: {
     reason: 'string -- guest only: NO_OPEN_BILL, SESSION_BILL_ENDED (this session\'s bill closed; scan again for the table\'s current bill) or SESSION_PREDATES_BILL (the open bill started long after this session; scan again)'
   },

@@ -257,7 +257,11 @@ module.exports = {
     // abra en ella, pero sólo si se abre dentro de esta ventana. Pasado ese
     // rato, quien escaneó probablemente ya se fue, y la cuenta nueva es de
     // otros: tendrá que volver a escanear.
-    billBindWindowSeconds: integer('GUEST_BILL_BIND_WINDOW_SECONDS', 60 * 30)
+    billBindWindowSeconds: integer('GUEST_BILL_BIND_WINDOW_SECONDS', 60 * 30),
+    // Cuánto espera el primer pedido de un teléfono nuevo a que la sala lo
+    // apruebe. Pasado ese rato caduca solo: nadie lo vio, el comensal no se
+    // queda mirando «esperando» para siempre y la bandeja no acumula restos.
+    heldOrderTimeoutSeconds: integer('GUEST_HELD_ORDER_TIMEOUT_SECONDS', 60 * 15)
   },
   mail: {
     transport: mailTransport,
