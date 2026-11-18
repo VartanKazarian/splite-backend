@@ -11,6 +11,8 @@ const mfa = require('../services/mfa');
 const invitations = require('../services/staffInvitations');
 const { authenticateToken } = require('../middleware/auth');
 const { verifyRefreshToken } = require('../utils/tokens');
+const { deliverSession, refreshTokenFrom, clearCookie } = require('../utils/refreshCookie');
+const { ApiError } = require('../errors');
 
 const router = express.Router();
 
@@ -33,18 +35,18 @@ router.post('/invitations/preview', validateBody(invitationTokenSchema), async (
 router.post('/invitations/accept', validateBody(acceptInvitationSchema), async (req, res, next) => {
   try {
     res.set('Cache-Control', 'no-store');
-    res.status(201).json(await invitations.acceptInvitation({
+    res.status(201).json(deliverSession(req, res, await invitations.acceptInvitation({
       token: req.body.token,
       password: req.body.password,
       displayName: req.body.displayName ?? null,
       meta: meta(req)
-    }));
+    })));
   } catch (err) { next(err); }
 });
 
 router.post('/login', validateBody(loginSchema), async (req, res, next) => {
   try {
-    res.json(await login(req.body.email, req.body.password, meta(req)));
+    res.json(deliverSession(req, res, await login(req.body.email, req.body.password, meta(req))));
   } catch (err) { next(err); }
 });
 
@@ -57,7 +59,7 @@ router.post('/login', validateBody(loginSchema), async (req, res, next) => {
  */
 router.post('/login/mfa', validateBody(mfaChallengeSchema), async (req, res, next) => {
   try {
-    res.json(await completeMfaLogin(req.body.challenge, req.body.code, meta(req)));
+    res.json(deliverSession(req, res, await completeMfaLogin(req.body.challenge, req.body.code, meta(req))));
   } catch (err) { next(err); }
 });
 
@@ -126,7 +128,7 @@ router.post('/password', authenticateToken, validateBody(changePasswordSchema), 
     const result = await changeOwnPassword(
       req.user.sub, req.body.currentPassword, req.body.newPassword, meta(req)
     );
-    res.json(result);
+    res.json(deliverSession(req, res, result));
   } catch (err) { next(err); }
 });
 
@@ -153,18 +155,33 @@ router.patch('/me', authenticateToken, validateBody(displayNameSchema), async (r
   } catch (err) { next(err); }
 });
 
+/**
+ * Un access token nuevo. El refresh token llega en el cuerpo o, en modo cookie
+ * (`X-Refresh-Mode: cookie`), en la cookie HttpOnly -- y el nuevo vuelve por
+ * el mismo camino.
+ */
 router.post('/refresh', validateBody(refreshSchema), async (req, res, next) => {
   try {
-    res.json(await refresh(req.body.refreshToken, meta(req)));
-  } catch (err) { next(err); }
+    const token = refreshTokenFrom(req);
+    if (!token) throw new ApiError('INVALID_CREDENTIALS', 'No refresh token');
+    res.json(deliverSession(req, res, await refresh(token, meta(req))));
+  } catch (err) {
+    // Una cookie que ya no vale no se deja puesta para el siguiente intento.
+    if (err instanceof ApiError && err.code === 'INVALID_CREDENTIALS' && req.body?.refreshToken === undefined) {
+      clearCookie(res);
+    }
+    next(err);
+  }
 });
 
 // Always 204: logout must not reveal whether a token was valid.
 router.post('/logout', validateBody(refreshSchema), async (req, res) => {
   try {
-    const claims = verifyRefreshToken(req.body.refreshToken);
+    const claims = verifyRefreshToken(refreshTokenFrom(req));
     if (claims.jti) await revokeSession(claims.jti);
   } catch { /* intentionally ignored */ }
+  // Se borra siempre: cerrar sesión no depende de que el token fuera válido.
+  clearCookie(res);
   res.status(204).end();
 });
 

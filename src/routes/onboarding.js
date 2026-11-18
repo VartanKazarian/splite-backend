@@ -7,6 +7,8 @@ const {
   validateBody, onboardingSignupSchema, onboardingVerifySchema
 } = require('../middleware/schemas');
 
+const { deliverSession } = require('../utils/refreshCookie');
+
 const router = express.Router();
 
 /**
@@ -101,7 +103,7 @@ router.post(
         req.body.token, req.body.password, requestMeta(req)
       );
 
-      res.status(201).json({
+      res.status(201).json(deliverSession(req, res, {
         restaurant: {
           id: restaurant.id,
           name: restaurant.name,
@@ -111,7 +113,7 @@ router.post(
           serviceChargeBps: restaurant.service_charge_bps
         },
         ...session
-      });
+      }));
     } catch (err) { next(err); }
   }
 );

@@ -3056,9 +3056,7 @@
       },
       "RefreshRequest": {
         "type": "object",
-        "required": [
-          "refreshToken"
-        ],
+        "description": "In cookie mode (`X-Refresh-Mode: cookie`) the token comes from the `__Host-splite_rt` cookie and the body may be empty.",
         "properties": {
           "refreshToken": {
             "type": "string",
@@ -3074,7 +3072,15 @@
             "type": "string"
           },
           "refreshToken": {
-            "type": "string"
+            "type": "string",
+            "description": "Absent in cookie mode: it is in the HttpOnly cookie instead."
+          },
+          "refreshDelivery": {
+            "type": "string",
+            "enum": [
+              "cookie"
+            ],
+            "description": "Present, as `cookie`, when the refresh token was set as a cookie instead of returned."
           },
           "expiresIn": {
             "type": "string"
@@ -7488,10 +7494,10 @@
           "Auth"
         ],
         "summary": "Rotate a refresh token",
-        "description": "Rotation is atomic. Presenting an already-revoked token is treated as theft and revokes every session for that user.",
+        "description": "Rotation is atomic. Presenting an already-revoked token is treated as theft and revokes every session for that user.\n\n**Cookie mode.** Send `X-Refresh-Mode: cookie` (and `credentials: include`) on login, MFA, signup,\ninvitation acceptance, password change, refresh and logout. The refresh token is then set as an\nHttpOnly `__Host-splite_rt` cookie (Secure, SameSite=Strict) instead of being returned, so page\nscripts never see it, and refresh/logout read it from there. Only works when the site and API are\nthe same site (splite.lat / api.splite.lat).",
         "security": [],
         "requestBody": {
-          "required": true,
+          "required": false,
           "content": {
             "application/json": {
               "schema": {
@@ -7532,10 +7538,10 @@
           "Auth"
         ],
         "summary": "Revoke a refresh session",
-        "description": "Always 204, so it never reveals whether the token was valid.",
+        "description": "Always 204, so it never reveals whether the token was valid. Also clears the refresh cookie.",
         "security": [],
         "requestBody": {
-          "required": true,
+          "required": false,
           "content": {
             "application/json": {
               "schema": {
