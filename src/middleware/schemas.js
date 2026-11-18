@@ -331,6 +331,11 @@ const guestOrderSchema = Joi.object({
 
 const guestOrderIdParamSchema = Joi.object({ id: uuid.required() });
 
+// Si el primer pedido de cada teléfono nuevo espera a que la sala lo apruebe.
+const orderSettingsSchema = Joi.object({
+  approveNewPhones: Joi.boolean().strict().required()
+});
+
 const billItemIdParamSchema = Joi.object({
   id: uuid.required(),
   itemId: uuid.required()
@@ -1319,6 +1324,7 @@ module.exports = {
   productIdParamSchema,
   guestOrderSchema,
   guestOrderIdParamSchema,
+  orderSettingsSchema,
   createCategorySchema,
   updateCategorySchema,
   reorderCategoriesSchema,

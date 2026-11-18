@@ -5,6 +5,9 @@
     "version": "2.0.0-contract",
     "description": "Bill splitting for Venezuelan restaurants.\n\nSettlement is always VES in céntimos. USD and EUR are display references, never payment currencies.\n\n## Wire format conventions\n\nEvery endpoint follows these rules. A frontend that trusts them never needs to guess.\n\n| Kind | JSON type | Format | Example |\n|------|-----------|--------|---------|\n| **Money** (minor units) | `string` | Digit string — no leading zeros except `\"0\"` | `\"9007199254740993\"` |\n| **FX rates** | `string` | Decimal, padded to 8 fractional digits | `\"757.54060000\"` |\n| **IDs** | `string` | UUID v4 | `\"d290f1ee-6c54-4b01-90e6-d701748f0851\"` |\n| **Timestamps** | `string` | ISO 8601 `date-time` | `\"2025-03-05T16:30:00.000Z\"` |\n| **Value dates** | `string` | ISO 8601 `date` | `\"2025-03-06\"` |\n\nAmounts are strings so values beyond 2^53 survive JSON (JavaScript `Number` loses\nprecision past `Number.MAX_SAFE_INTEGER`). Rates are strings so every endpoint returns\nthe same representation — no `757.5406` from one route and `\"757.54060000\"` from another.\n\nEvery query is scoped to the caller's restaurant. A resource belonging to another tenant\nis reported as 404 rather than 403, so an endpoint never confirms that it exists.\n\n## Features that are off until configured\n\nSeveral capabilities cost money per call or reach a third party, so they are **opt-in per\ndeployment**. A server without the setting refuses with a distinct 503 rather than failing\noddly — but a 503 normally means \"try later\", and these do not. **`NOT_CONFIGURED` and\n`KEY_MISSING` mean stop offering the feature on this server**, not retry it. Nothing the\ncaller does will change the answer.\n\n| Capability | Setting the server needs | Without it | Ask first |\n|---|---|---|---|\n| Read a menu from a photo or PDF | `MENU_OCR_API_KEY` | 503 `MENU_OCR_NOT_CONFIGURED` | `menuOcrAvailable` on `GET /api/v1/menu/settings` |\n| Enrol a second factor | `MFA_SECRET_KEYS` | 503 `MFA_KEY_MISSING`. Existing accounts keep signing in on passwords | `GET /api/v1/auth/mfa` |\n| Store bank API credentials | `PAYMENT_CREDENTIALS_KEYS` | 503 `PAYMENT_CREDENTIALS_KEY_MISSING` | — |\n| Charge a diner through Mercantil C2P | `MERCANTIL_C2P_URL`, **plus** credentials stored and proven per restaurant | 503 `PAYMENT_PROVIDER_MISCONFIGURED` | `chargeable` on `GET /api/v1/account/banks` |\n| Self-service restaurant signup | `ONBOARDING_ENABLED` and a mail provider | The routes are **not mounted at all**, so 404 | — |\n| Foreign-currency menu prices | `FX_ENABLED` (on by default) and a reachable BCV | 503 `FX_UNAVAILABLE`, after the stored-rate fallback is exhausted | `GET /api/v1/exchange-rate` |\n| Prometheus metrics at `/metrics` | `METRICS_TOKEN` | The route is **not mounted** — 404, not 401 | — |\n\nDeclared Pago Móvil needs none of this and is the rail that works on a bare deployment: a\ndiner declares a transfer, a member of staff confirms it against the bank app.\n\nWhere a column above names something to ask, ask it — those endpoints answer from\nconfiguration and the answer does not change between requests. It is the difference between\nhiding a button and offering one that fails after the user has done the work.",
     "x-error-details": {
+      "GUEST_ORDER_ALREADY_DECIDED": {
+        "status": "string -- PLACED or REJECTED: how it was already decided"
+      },
       "OPEN_BILL_NOT_FOUND": {
         "reason": "string -- guest only: NO_OPEN_BILL, SESSION_BILL_ENDED (this session's bill closed; scan again for the table's current bill) or SESSION_PREDATES_BILL (the open bill started long after this session; scan again)"
       },
@@ -418,6 +421,10 @@
                   "FISCAL_REQUEST_NOT_FOUND",
                   "TABLE_NOT_FOUND",
                   "GUEST_ORDER_NOT_FOUND",
+                  "GUEST_ORDERS_BLOCKED",
+                  "GUEST_ORDER_AWAITING_APPROVAL",
+                  "GUEST_ORDER_ALREADY_DECIDED",
+                  "GUEST_ORDER_NEEDS_APPROVAL",
                   "PRODUCT_NOT_FOUND",
                   "CATEGORY_NOT_FOUND",
                   "MENU_PDF_NOT_FOUND",
@@ -3675,6 +3682,14 @@
             ],
             "description": "What the diner wrote with the order, or null. Diner text: render it as text, never as markup."
           },
+          "status": {
+            "type": "string",
+            "enum": [
+              "PLACED",
+              "HELD"
+            ],
+            "description": "PLACED: on the bill. HELD: the first order from a new phone, waiting for approval — its `items` are what was ordered, not yet on any bill, and `billId` is null."
+          },
           "currency": {
             "type": [
               "string",
@@ -3731,7 +3746,11 @@
         "properties": {
           "pending": {
             "type": "integer",
-            "description": "Orders nobody on the floor has marked as seen."
+            "description": "Orders nobody on the floor has marked as seen, held ones included."
+          },
+          "awaitingApproval": {
+            "type": "integer",
+            "description": "Of those, how many are held for approval: a diner is waiting on them."
           },
           "oldestPendingAt": {
             "type": [
@@ -11788,7 +11807,7 @@
         ],
         "summary": "Order from the table",
         "operationId": "placeGuestOrder",
-        "description": "The lines go straight onto the table's bill — nobody approves them first — and the floor is\ntold by the notice the order leaves behind (`GET /api/v1/orders`). A diner who orders from\ntheir seat should not wait on a waiter tapping accept on another screen.\n\nNeither the table nor the restaurant is in the body: both come from the guest session, which was\ncreated by verifying the QR signature. There is no field in which to name somebody else's table.\n\nIf the table has no open bill, the first order opens one, exactly as a waiter taking the first\norder does. `served_by` stays null: nobody from the house took this order, and putting a name\nthere would move tips toward someone who did not.\n\nBounded harder than the staff order endpoint — 20 lines of up to 20 units, against 50 of 999.\nThe QR is stuck to the table and anyone who photographs it can open a session, so the room worth\nleaving is a table's order, not four hundred portions. Rate limited to 10 per minute per session.\n\n`403 SUBSCRIPTION_SUSPENDED` when the order would open a new bill and Splite suspended the\nrestaurant's subscription. A table that already has a bill keeps ordering and paying.",
+        "description": "The lines go straight onto the table's bill and the floor is told by the notice the order\nleaves behind (`GET /api/v1/orders`) — unless the restaurant turned on approval of new phones\n(`PATCH /api/v1/orders/settings`). Then the **first** order from a session is held\n(`status: HELD`): nothing reaches a bill and no bill is opened until someone on the floor\napproves it. Once one is approved, that session orders without waiting. Follow a held order with\n`GET /api/v1/guest/bill/orders/{id}`.\n\n`409 GUEST_ORDER_AWAITING_APPROVAL` while the session already has one held. `403\nGUEST_ORDERS_BLOCKED` after the floor rejected one: the diner has to scan again.\n\nNeither the table nor the restaurant is in the body: both come from the guest session, which was\ncreated by verifying the QR signature. There is no field in which to name somebody else's table.\n\nIf the table has no open bill, the first order opens one, exactly as a waiter taking the first\norder does. `served_by` stays null: nobody from the house took this order, and putting a name\nthere would move tips toward someone who did not.\n\nBounded harder than the staff order endpoint — 20 lines of up to 20 units, against 50 of 999.\nThe QR is stuck to the table and anyone who photographs it can open a session, so the room worth\nleaving is a table's order, not four hundred portions. Rate limited to 10 per minute per session.\n\n`403 SUBSCRIPTION_SUSPENDED` when the order would open a new bill and Splite suspended the\nrestaurant's subscription. A table that already has a bill keeps ordering and paying.",
         "security": [
           {
             "guestAuth": []
@@ -11858,6 +11877,14 @@
                     },
                     "lineCount": {
                       "type": "integer"
+                    },
+                    "status": {
+                      "type": "string",
+                      "enum": [
+                        "PLACED",
+                        "HELD"
+                      ],
+                      "description": "PLACED: on the bill now. HELD: the first order from this phone, waiting for the floor to approve it."
                     }
                   }
                 }
@@ -11872,6 +11899,87 @@
           },
           "403": {
             "$ref": "#/components/responses/Forbidden"
+          },
+          "409": {
+            "$ref": "#/components/responses/Conflict"
+          },
+          "429": {
+            "$ref": "#/components/responses/TooManyRequests"
+          },
+          "500": {
+            "$ref": "#/components/responses/ServerError"
+          }
+        }
+      }
+    },
+    "/api/v1/guest/bill/orders/{id}": {
+      "get": {
+        "tags": [
+          "Guest"
+        ],
+        "summary": "What became of an order this phone sent",
+        "operationId": "getGuestOrderStatus",
+        "description": "For a held order: poll until it is `PLACED` (approved, now on the bill) or `REJECTED`.\nOnly the session that sent the order can see it; anyone else gets 404.",
+        "security": [
+          {
+            "guestAuth": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The order's state.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "orderId": {
+                      "type": "string",
+                      "format": "uuid"
+                    },
+                    "status": {
+                      "type": "string",
+                      "enum": [
+                        "PLACED",
+                        "HELD",
+                        "REJECTED"
+                      ]
+                    },
+                    "createdAt": {
+                      "type": "string",
+                      "format": "date-time"
+                    },
+                    "decidedAt": {
+                      "type": [
+                        "string",
+                        "null"
+                      ],
+                      "format": "date-time"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "404": {
+            "$ref": "#/components/responses/NotFound"
           },
           "429": {
             "$ref": "#/components/responses/TooManyRequests"
@@ -12199,7 +12307,7 @@
         ],
         "summary": "Orders diners sent that the floor has not seen",
         "operationId": "listGuestOrders",
-        "description": "Any authenticated staff role, including WAITER — a waiter is exactly who needs this.\n\nA guest order writes its lines straight onto the bill; nothing here approves anything. This is\nthe tray of \"table 4 just ordered\" notices, with what was ordered, so somebody can walk over or\nsend it to the kitchen without opening the table to find out what it was.",
+        "description": "Any authenticated staff role, including WAITER — a waiter is exactly who needs this.\n\nA guest order writes its lines straight onto the bill. This is the tray of \"table 4 just ordered\"\nnotices, with what was ordered, so somebody can walk over or send it to the kitchen without\nopening the table to find out what it was.\n\nWith approval of new phones on, it also holds the first order from each phone (`status: HELD`,\nlisted first). Those are not on any bill yet: approve or reject them, `ack` refuses them.",
         "security": [
           {
             "staffAuth": []
@@ -12278,6 +12386,259 @@
         }
       }
     },
+    "/api/v1/orders/settings": {
+      "get": {
+        "tags": [
+          "Orders"
+        ],
+        "summary": "Whether new phones need their first order approved",
+        "operationId": "getGuestOrderSettings",
+        "description": "Any staff role. Off by default.",
+        "security": [
+          {
+            "staffAuth": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The setting.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "approveNewPhones": {
+                      "type": "boolean",
+                      "description": "Whether the first order from each new phone waits for the floor to approve it."
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "429": {
+            "$ref": "#/components/responses/TooManyRequests"
+          },
+          "500": {
+            "$ref": "#/components/responses/ServerError"
+          }
+        }
+      },
+      "patch": {
+        "tags": [
+          "Orders"
+        ],
+        "summary": "Turn approval of new phones on or off",
+        "operationId": "updateGuestOrderSettings",
+        "description": "OWNER or MANAGER. The QR is stuck to the table, so anyone who photographs it can order from\noutside — or open a bill on an empty table — as a prank. With this on, the first order from each\nphone waits for the floor; later ones from that phone go straight through.\n\nTurning it off leaves orders already held waiting: approve or reject them.",
+        "security": [
+          {
+            "staffAuth": []
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "required": [
+                  "approveNewPhones"
+                ],
+                "properties": {
+                  "approveNewPhones": {
+                    "type": "boolean"
+                  }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "The setting, saved.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "approveNewPhones": {
+                      "type": "boolean",
+                      "description": "Whether the first order from each new phone waits for the floor to approve it."
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "429": {
+            "$ref": "#/components/responses/TooManyRequests"
+          },
+          "500": {
+            "$ref": "#/components/responses/ServerError"
+          }
+        }
+      }
+    },
+    "/api/v1/orders/{id}/approve": {
+      "post": {
+        "tags": [
+          "Orders"
+        ],
+        "summary": "Approve a held order",
+        "operationId": "approveGuestOrder",
+        "description": "Any staff role. The lines go onto the table's bill — opening one if the table is free — with the\nsame checks as any order, and the phone that sent it orders without waiting from then on.\n\n`409 GUEST_ORDER_ALREADY_DECIDED` (with `status`) if it is no longer held. A product taken off\nthe menu meanwhile fails the approval like any order would (`PRODUCT_INACTIVE`).",
+        "security": [
+          {
+            "staffAuth": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Approved and on the bill.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "id": {
+                      "type": "string",
+                      "format": "uuid"
+                    },
+                    "status": {
+                      "type": "string",
+                      "enum": [
+                        "PLACED"
+                      ]
+                    },
+                    "billId": {
+                      "type": [
+                        "string",
+                        "null"
+                      ],
+                      "format": "uuid"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "404": {
+            "$ref": "#/components/responses/NotFound"
+          },
+          "409": {
+            "$ref": "#/components/responses/Conflict"
+          },
+          "429": {
+            "$ref": "#/components/responses/TooManyRequests"
+          },
+          "500": {
+            "$ref": "#/components/responses/ServerError"
+          }
+        }
+      }
+    },
+    "/api/v1/orders/{id}/reject": {
+      "post": {
+        "tags": [
+          "Orders"
+        ],
+        "summary": "Reject a held order",
+        "operationId": "rejectGuestOrder",
+        "description": "Any staff role. Nothing reaches a bill, and that phone cannot order again without scanning the\ntable again. Idempotent: rejecting twice returns 200 both times.",
+        "security": [
+          {
+            "staffAuth": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Rejected.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "id": {
+                      "type": "string",
+                      "format": "uuid"
+                    },
+                    "status": {
+                      "type": "string",
+                      "enum": [
+                        "REJECTED"
+                      ]
+                    },
+                    "decidedAt": {
+                      "type": "string",
+                      "format": "date-time"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "404": {
+            "$ref": "#/components/responses/NotFound"
+          },
+          "409": {
+            "$ref": "#/components/responses/Conflict"
+          },
+          "429": {
+            "$ref": "#/components/responses/TooManyRequests"
+          },
+          "500": {
+            "$ref": "#/components/responses/ServerError"
+          }
+        }
+      }
+    },
     "/api/v1/orders/{id}/ack": {
       "post": {
         "tags": [
@@ -12331,6 +12692,9 @@
           },
           "404": {
             "$ref": "#/components/responses/NotFound"
+          },
+          "409": {
+            "$ref": "#/components/responses/Conflict"
           },
           "429": {
             "$ref": "#/components/responses/TooManyRequests"

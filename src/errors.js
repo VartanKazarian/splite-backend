@@ -118,6 +118,14 @@ const CODES = {
   FISCAL_REQUEST_NOT_FOUND: 404,
   TABLE_NOT_FOUND: 404,
   GUEST_ORDER_NOT_FOUND: 404,
+  // La sala rechazó un pedido de este teléfono: no pide más sin volver a escanear.
+  GUEST_ORDERS_BLOCKED: 403,
+  // Ya tiene uno esperando aprobación; no se apila otro.
+  GUEST_ORDER_AWAITING_APPROVAL: 409,
+  // Aprobar o rechazar uno que ya no espera.
+  GUEST_ORDER_ALREADY_DECIDED: 409,
+  // «Visto» no vale para uno retenido: hay que aprobarlo o rechazarlo.
+  GUEST_ORDER_NEEDS_APPROVAL: 409,
   PRODUCT_NOT_FOUND: 404,
   CATEGORY_NOT_FOUND: 404,
   MENU_PDF_NOT_FOUND: 404,
@@ -325,6 +333,7 @@ const CODES = {
  * `test/errors.test.js` fails if a key here is not a real code.
  */
 const DETAILS = {
+  GUEST_ORDER_ALREADY_DECIDED: { status: 'string -- PLACED or REJECTED: how it was already decided' },
   OPEN_BILL_NOT_FOUND: {
     reason: 'string -- guest only: NO_OPEN_BILL, SESSION_BILL_ENDED (this session\'s bill closed; scan again for the table\'s current bill) or SESSION_PREDATES_BILL (the open bill started long after this session; scan again)'
   },

@@ -502,9 +502,15 @@ const bill = {
       summary: 'Order from the table',
       operationId: 'placeGuestOrder',
       description: [
-        'The lines go straight onto the table\'s bill — nobody approves them first — and the floor is',
-        'told by the notice the order leaves behind (`GET /api/v1/orders`). A diner who orders from',
-        'their seat should not wait on a waiter tapping accept on another screen.',
+        'The lines go straight onto the table\'s bill and the floor is told by the notice the order',
+        'leaves behind (`GET /api/v1/orders`) — unless the restaurant turned on approval of new phones',
+        '(`PATCH /api/v1/orders/settings`). Then the **first** order from a session is held',
+        '(`status: HELD`): nothing reaches a bill and no bill is opened until someone on the floor',
+        'approves it. Once one is approved, that session orders without waiting. Follow a held order with',
+        '`GET /api/v1/guest/bill/orders/{id}`.',
+        '',
+        '`409 GUEST_ORDER_AWAITING_APPROVAL` while the session already has one held. `403',
+        'GUEST_ORDERS_BLOCKED` after the floor rejected one: the diner has to scan again.',
         '',
         'Neither the table nor the restaurant is in the body: both come from the guest session, which was',
         'created by verifying the QR signature. There is no field in which to name somebody else\'s table.',
@@ -559,13 +565,52 @@ const bill = {
                 properties: {
                   orderId: { type: 'string', format: 'uuid' },
                   createdAt: { type: 'string', format: 'date-time' },
-                  lineCount: { type: 'integer' }
+                  lineCount: { type: 'integer' },
+                  status: {
+                    type: 'string', enum: ['PLACED', 'HELD'],
+                    description: 'PLACED: on the bill now. HELD: the first order from this phone, waiting for the floor to approve it.'
+                  }
                 }
               }
             }
           }
         },
         403: response('Forbidden'),
+        409: response('Conflict'),
+        ...commonErrors
+      }
+    }
+  },
+
+  '/api/v1/guest/bill/orders/{id}': {
+    get: {
+      tags: ['Guest'],
+      summary: 'What became of an order this phone sent',
+      operationId: 'getGuestOrderStatus',
+      description: [
+        'For a held order: poll until it is `PLACED` (approved, now on the bill) or `REJECTED`.',
+        'Only the session that sent the order can see it; anyone else gets 404.'
+      ].join('\n'),
+      security: [{ guestAuth: [] }],
+      parameters: [{ name: 'id', in: 'path', required: true, schema: { type: 'string', format: 'uuid' } }],
+      responses: {
+        200: {
+          description: 'The order\'s state.',
+          content: {
+            'application/json': {
+              schema: {
+                type: 'object',
+                properties: {
+                  orderId: { type: 'string', format: 'uuid' },
+                  status: { type: 'string', enum: ['PLACED', 'HELD', 'REJECTED'] },
+                  createdAt: { type: 'string', format: 'date-time' },
+                  decidedAt: { type: ['string', 'null'], format: 'date-time' }
+                }
+              }
+            }
+          }
+        },
+        404: response('NotFound'),
         ...commonErrors
       }
     }
