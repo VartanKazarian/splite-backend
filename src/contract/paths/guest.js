@@ -307,6 +307,10 @@ const payments = {
                   id: { type: 'string', format: 'uuid' },
                   status: { type: 'string', enum: ['PENDING', 'IN_DOUBT', 'AMBIGUOUS', 'SUCCEEDED', 'FAILED', 'CANCELLED', 'REFUNDED', 'PARTIALLY_REFUNDED'] },
                   amountVes: minorUnits,
+                  decidedAt: {
+                    type: ['string', 'null'], format: 'date-time',
+                    description: 'When the staff confirmed (SUCCEEDED) or rejected (FAILED) it, or it was cancelled. Null while still to be checked. The rejection reason is internal and is not returned.'
+                  },
                   billClosed: { type: 'boolean' },
                   invoiced: { type: 'boolean', description: 'True once a fiscal document exists for it, so the offer is not made twice.' },
                   invoice: {
