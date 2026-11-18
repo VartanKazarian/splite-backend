@@ -736,6 +736,15 @@ a shift, not a fortnight. Near the cap a renewed token stops at the cap; past
 it, refresh is refused and the token revoked. The start of the session is
 `refresh_sessions.session_started_at` and survives rotation.
 
+**Forgotten passwords.** `POST /auth/password/forgot` emails a one-time link
+(`/restablecer#<token>`, token in the fragment, only its hash stored) and
+always answers 202, so it cannot be used to find out which addresses have an
+account; the email is sent outside the request so response times do not tell
+either. The link expires in 30 minutes, asking again cancels the previous one,
+and at most three go out per account per hour. `POST /auth/password/reset`
+sets the new password and revokes every session; it does not sign in, and it
+never bypasses a second factor.
+
 **Where the refresh token lives.** By default it travels in the body. A client
 that sends `X-Refresh-Mode: cookie` (with `credentials: include`) gets it as an
 HttpOnly `__Host-splite_rt` cookie instead — Secure, SameSite=Strict,

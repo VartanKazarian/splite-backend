@@ -1,6 +1,6 @@
 const express = require('express');
 const {
-  validateBody, loginSchema, refreshSchema, mfaChallengeSchema, mfaCodeSchema, changePasswordSchema,
+  validateBody, loginSchema, refreshSchema, mfaChallengeSchema, mfaCodeSchema, changePasswordSchema, forgotPasswordSchema, resetPasswordSchema,
   displayNameSchema, invitationTokenSchema, acceptInvitationSchema
 } = require('../middleware/schemas');
 const {
@@ -11,6 +11,7 @@ const mfa = require('../services/mfa');
 const invitations = require('../services/staffInvitations');
 const { authenticateToken } = require('../middleware/auth');
 const { verifyRefreshToken } = require('../utils/tokens');
+const passwordReset = require('../services/passwordReset');
 const { deliverSession, refreshTokenFrom, clearCookie } = require('../utils/refreshCookie');
 const { ApiError } = require('../errors');
 
@@ -123,6 +124,30 @@ router.post('/mfa/recovery-codes', authenticateToken, validateBody(mfaCodeSchema
  * says how many other devices were signed out, which is the fact somebody
  * changing a password they think is known to somebody else actually wants.
  */
+/**
+ * «¿Olvidaste tu contraseña?»: pedir el enlace. Siempre 202, exista la cuenta o
+ * no -- la respuesta no sirve para averiguar qué direcciones están dadas de
+ * alta. Con el limitador de /auth por IP, y como mucho tres por cuenta y hora.
+ */
+router.post('/password/forgot', validateBody(forgotPasswordSchema), async (req, res, next) => {
+  try {
+    await passwordReset.requestReset({ email: req.body.email, meta: meta(req) });
+    res.status(202).json({ accepted: true });
+  } catch (err) { next(err); }
+});
+
+/**
+ * Usar el enlace: contraseña nueva, y todas las sesiones de la cuenta cerradas.
+ * No abre sesión: se entra después con la contraseña nueva (y el segundo
+ * factor, si lo hay). El token va en el cuerpo, nunca en la ruta.
+ */
+router.post('/password/reset', validateBody(resetPasswordSchema), async (req, res, next) => {
+  try {
+    await passwordReset.completeReset({ token: req.body.token, password: req.body.password, meta: meta(req) });
+    res.status(204).end();
+  } catch (err) { next(err); }
+});
+
 router.post('/password', authenticateToken, validateBody(changePasswordSchema), async (req, res, next) => {
   try {
     const result = await changeOwnPassword(

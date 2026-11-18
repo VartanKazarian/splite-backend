@@ -128,6 +128,16 @@ const updateStaffSchema = Joi.object({
  * whatever rule was in force when it was chosen, and refusing to *read* a short
  * legacy password would leave its owner unable to replace it.
  */
+// «¿Olvidaste tu contraseña?». Las mismas reglas que el resto: el correo como
+// en /login, el token como en las invitaciones, la contraseña como al cambiarla.
+const forgotPasswordSchema = Joi.object({
+  email: Joi.string().email({ minDomainSegments: 2 }).max(254).lowercase().required()
+});
+const resetPasswordSchema = Joi.object({
+  token: Joi.string().pattern(/^[A-Za-z0-9_-]{43}$/).required(),
+  password: Joi.string().min(12).max(128).required()
+});
+
 const changePasswordSchema = Joi.object({
   currentPassword: Joi.string().min(1).max(128).required(),
   newPassword: Joi.string().min(12).max(128).required()
@@ -1255,6 +1265,8 @@ module.exports = {
   updateStaffSchema,
   resetStaffPasswordSchema,
   changePasswordSchema,
+  forgotPasswordSchema,
+  resetPasswordSchema,
   displayNameSchema,
   userIdParamSchema,
   mfaChallengeSchema,
