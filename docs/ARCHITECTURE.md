@@ -1,0 +1,3649 @@
+# Splite backend — architecture and design notes
+
+The long-form companion to the [README](../README.md): how each part works and,
+mostly, **why** it works that way. Sections are self-contained; read the one you
+are about to change.
+
+## API
+
+The API is described by an **OpenAPI 3.1 document**, which is the contract:
+
+| | |
+| --- | --- |
+| `openapi.json` | committed at the repository root, so a client can be generated without the API running |
+| `GET /openapi.json` | the same document, served live |
+| `GET /docs` | Swagger UI |
+
+`test/openapi.test.js` fails the build if a mounted route is missing from the
+document, or the document promises a route the app does not serve. It also
+enforces that every operation declares its authentication, names its roles in
+`x-required-roles`, and documents the error responses a client must handle
+(`400/401/403/404/409/429/500`, as applicable).
+
+The endpoint table that used to live here has been removed rather than kept
+alongside the spec. It had already drifted: three `/api/v1/tables` endpoints were
+documented for several commits while the router was not mounted at all, and
+`GET /api/v1/tables` returned 404. Two hand-maintained lists disagree eventually;
+one generated contract with a test behind it does not.
+
+The document is written by hand, split by area: `src/contract/schemas.js` for
+the shapes, `src/contract/paths/<area>.js` for the routes (auth, guest, bills,
+menu, payments, account, admin, bank…), and `src/contract/common.js` for what
+they share. `src/openapi.js` puts them back together **in a fixed order** — each
+area file exports its routes in named pieces, because the output is compared
+text for text with `openapi.json` and moving a piece changes the document even
+when no route changed. Add a route to the piece where its neighbours live.
+
+`npm run openapi:check` fails if the committed `openapi.json` has drifted from
+the code, so the artifact a frontend generates from cannot fall behind the API
+it describes. Regenerate it with `npm run openapi:dump`.
+
+Both served endpoints are **off in production by default** — a live Swagger UI
+of a payments API is a map of every route and role for anyone who finds it —
+and on everywhere else. `DOCS_ENABLED` overrides either way; the committed file
+is unaffected.
+
+Monetary amounts cross the wire as **strings**, because a JSON number has
+already lost precision past 2^53 by the time it arrives. Payments accept an
+`Idempotency-Key` header (or `idempotencyKey` in the body); replaying a
+completed key returns the stored response instead of charging twice.
+
+A claim is only ever granted with a row behind it. If the key's row is deleted
+between the conflicting insert and the read that follows — a failing request's
+`abort()` racing a client's retry does exactly that — the claim is re-attempted
+rather than granted on trust. Granting it left the caller holding a claim with
+nothing to store a response in, so the next retry found no row either and
+charged again. Storing that response is loud but never fatal: it runs after the
+money has moved, and throwing would reach the route's abort and free the client
+to retry a request that already succeeded.
+
+## When BCV cannot be reached
+
+A foreign-currency bill needs a rate to have a settleable total, so the rate is
+fetched and frozen when the bill opens. The question is what to do when
+bcv.org.ve does not answer, which in Venezuela is not rare.
+
+It used to refuse outright, on the reasoning that serving an old rate as if it
+were current is the failure this service exists to prevent. That is right for a
+rate that moves continuously and wrong for this one: **BCV publishes at most
+once per business day**, so between publications the figure in `fx_rates` is not
+a stale copy of the current rate, it *is* the current rate. Refusing it meant a
+third-party website being down stopped a restaurant opening any USD bill — the
+product unavailable while the correct number sat in our own database.
+
+So the fetch failing falls back to the newest stored rate whose value date has
+already arrived, and the same happens when the deviation guard rejects a fetched
+rate: having decided not to trust the new number, the last one we did trust
+beats none.
+
+Bounded at `FX_MAX_FALLBACK_AGE_DAYS` (5), because the reasoning stops holding
+once an outage outlives a publication cycle. Past that the figure really has
+stopped being true, and in an economy that devalues, quietly pricing bills on it
+is worse than declining to open one: a restaurant told "no rate available" calls
+somebody, a restaurant undercharging by a third for a fortnight does not notice
+until it counts the money.
+
+The bill records how the rate was obtained — `fxRateSource` reads
+`BCV_LAST_IN_FORCE` rather than `BCV` — because "where did this number come
+from" is exactly the question asked afterwards.
+
+### Reading from a host we do not run
+
+Every external read is bounded on three axes, not two. A **timeout** stops an
+upstream that has gone quiet and a **retry budget** stops us hammering one that
+is failing — but neither does anything about a host that keeps talking, and
+reading a response into memory with no ceiling is how a broken or hostile one
+takes the process down with a body. So there is a **size ceiling** too, 2 MB,
+about ten times the page actually parsed.
+
+It is counted in bytes rather than characters, which is not academic on a
+Spanish-language page: every accented character is one character and two bytes,
+so a character count would admit a body at roughly twice the ceiling. Chunks are
+collected as buffers and decoded once at the end, which also means a multi-byte
+character split across two chunks survives.
+
+Overflow is **fatal** — not retried. A body too large once will be too large
+again, and three attempts is three times the memory for the same answer. Where
+the server sends a `content-length` over the ceiling, it is refused before
+anything is streamed.
+
+The same ceiling applies to the bank. `MercantilC2PClient` reads its response
+through the same helper, and an unreadable body classifies as
+**`BANK_INDETERMINATE`** — the same answer a timeout gets, for the same reason:
+we asked a bank to move money and do not know what happened. Calling it FAILED
+would tell a diner their payment did not happen on the strength of a body nobody
+read.
+
+## Guest sessions
+
+Scanning the QR exchanges it for an opaque bearer token. Only the SHA-256 of it
+is ever written, so neither a database dump nor a Redis dump yields a usable
+credential.
+
+The TTL is an **idle timeout, not a total lifetime**: every authenticated
+request pushes it back. It was previously set once at creation and never
+touched, so a session died two hours after the scan regardless of what the diner
+was doing — which is sitting at the table, for longer than two hours, with the
+expiry landing at the one moment it had to work: opening the phone to pay. And
+it was unrecoverable in practice, because the client strips the QR token out of
+the URL after exchanging it and so has nothing left to mint a new session with.
+The diner had to get up and scan the sticker again.
+
+`GUEST_MAX_SESSION_AGE_SECONDS` (12h) is the ceiling sliding cannot pass.
+Without it, "renew on every use" means a session something keeps touching — a
+tab open on a phone in a drawer, a client polling on a timer — never expires at
+all.
+
+### Two stores, holding different facts
+
+Sessions used to live **only** in Redis, which made a cache the sole authority
+on who may pay a bill. A restart, a `FLUSHALL`, or `maxmemory` evicting under
+pressure signed out every diner in every restaurant at once — and, exactly as
+above, they could not recover on their own, because the client has already
+stripped the QR token out of the URL. Somebody had to get up and rescan the
+sticker in the middle of paying.
+
+So the two stores now hold different things, and the split is what keeps a
+sliding session from costing a database write per request:
+
+| | holds | if it is lost |
+| --- | --- | --- |
+| **Postgres** | who the session is, the absolute expiry, whether it was revoked | nothing works anyway |
+| **Redis** | the idle timer, slid on every request, and a copy of the absolute expiry | the next request re-reads the row and warms the cache |
+
+`guest_sessions.expires_at` is the **absolute cap**, set once at creation and
+never moved — the sliding TTL never touches Postgres. During a Redis outage the
+fallback therefore enforces the more generous of the two windows, the cap rather
+than the idle timeout, which is the right way round: a diner mid-meal keeps
+paying, and a session left open in a drawer still dies on schedule.
+
+Writes go to **Postgres first**, then the cache. If the cache write fails the
+session still works; the reverse order would hand back a token that
+authenticates only until Redis blinks. Revocation stamps `revoked_at` rather
+than deleting the row, so a flush cannot resurrect a session somebody
+deliberately ended by re-reading a row that never said so.
+
+### The cap, and where it used to not be enforced
+
+The cap was checked only when the cache missed. A cache **hit** read the entry,
+slid the idle timer and returned — so a session past its twelve hours kept
+authenticating for as long as something kept touching it, and something touching
+it is precisely what slides the timer. The idle timeout bounded nothing here:
+every request reset it.
+
+So the cached entry now carries `absoluteExpiresAt` beside the session, and the
+hit path checks it. Past the cap, the entry is dropped and the session refused,
+without a database round-trip. The Redis TTL is capped at whatever is left of
+the twelve hours instead of being set to the full idle window, so an entry
+cannot outlive the cap even if nothing ever reads it again. Entries written
+before this change carry no such field and are dropped on sight, which sends the
+request down the Postgres path where `expires_at` decides.
+
+The assertion that matters is in
+`test/integration/guestSessionTtl.integration.test.js`: an expired cap forged
+into the cache, while the row in Postgres is healthy and hours from expiring,
+must refuse the session **and** must do it without querying the database. The
+test counts the queries and expects zero.
+
+## Bill lifecycle and the one-open-bill rule
+
+A restaurant table has **at most one `OPEN` bill**, enforced at two levels:
+
+1. `POST /api/v1/bills` locks the table row with `FOR UPDATE`, checks for an
+   existing open bill, and only then inserts.
+2. A partial unique index on `(restaurant_id, table_id) WHERE status = 'OPEN'`
+   catches the race the application cannot see.
+
+A duplicate attempt returns `409` with `code: OPEN_BILL_EXISTS` and the existing
+bill id. `GET /api/v1/bills/tables/:tableId/open` resolves a table to its
+current bill, which is what makes a permanent physical table QR usable.
+
+Closing or voiding a bill releases the table for the next one; the partial index
+only covers `OPEN`, so history is retained. Migration 004 also adds a composite
+foreign key so a bill's table must belong to the same restaurant as the bill.
+
+### Closing a bill for less than it owed
+
+A bill used to reach `CLOSED` on its own, and only when what had been collected
+equalled **exactly** what was due; voiding it required that not a cent had come
+in. Between those two paths was a hole half a dining room falls through: the
+table that pays 2,000 of 2,330 and leaves, the courtesy granted on a bill that
+already carries payments, the dish sent back after it was paid for, the extra
+zero somebody typed. In every one of those the bill could never be closed —
+voiding is refused because money moved, and deleting lines to make it balance is
+refused with `TOTAL_BELOW_AMOUNT_PAID` — and the table stayed occupied forever.
+
+`POST /api/v1/bills/{id}/settle` closes it and **writes the difference down with
+its reason and its author**:
+
+| | |
+| --- | --- |
+| Who | `OWNER` and `MANAGER` only. It is forgiving money |
+| Body | `reason`, required, one of `DISCOUNT`, `COMP`, `WRITE_OFF`; `note`, optional, 280 characters |
+| Writes | one row in `bill_adjustments` (migration 037) for the shortfall, then `status = 'CLOSED'` |
+| Audit | `BILL_SETTLED`, carrying the reason and the amount forgiven |
+| Refuses | `BILL_NOT_OPEN` on anything that is not `OPEN`, `BILL_NOT_FOUND` across tenants |
+
+**The reason has no default on purpose.** It is the only thing separating a
+negotiated reduction from the house's own courtesy from money that will not be
+collected, and those are three different questions for whoever reads the shift
+at the end: a night full of `WRITE_OFF` is a problem, a night full of `COMP` is
+a policy. A default would collapse all three into one.
+
+It deliberately does **not** touch `amount_paid_ves`. What was collected comes
+from the payment ledger and is what gets compared against the bank and against
+the till, so adding a payment nobody made here would balance the bill and
+unbalance the count. A bill that already owes nothing gets no adjustment row at
+all: closing something that owes nothing is closing it, not forgiving zero.
+
+The counterpart is on the dashboard rather than in a report nobody opens.
+`GET /api/v1/payments/dashboard` returns an `adjustments` block — total, number
+of bills, and a breakdown by reason — next to `taken`, and never summed into it,
+because it is not money that came in. Without it, fifty thousand bolívares
+forgiven in one shift appears on no screen, and the only trace is the audit log.
+
+### Deleting a table, and creating it again
+
+There is no `DELETE /api/v1/tables/{id}`. Deleting a table in the panel is
+`PATCH { active: false }`, because the table carries bills, payments and audit
+history that a button in a form has no business destroying.
+
+That soft delete had a trap in it. The row survives holding its name under
+`UNIQUE (restaurant_id, name)`, while dropping off the panel entirely — it
+renders from `GET /api/v1/tables/floor`, which is active-only. Creating
+*Mesa 5* again was then refused as already taken, by a table nobody could see
+and nothing in the panel could bring back. A dead end reachable in two clicks.
+(`GET /api/v1/tables?active=false` does list them, so the fact was reachable
+over the API — just not from anything a restaurant looks at.)
+
+So `POST /api/v1/tables` reactivates a deactivated row with that name instead
+of refusing it, and answers `200` with the original table rather than `201`:
+same id, same `created_at`, its bills still attached. Reviving the row is also
+what keeps the **printed QR** working — a guest lookup requires `active = true`
+(`src/routes/guest.js`), so the sticker on that table went dead when it was
+deactivated and comes back with it. Minting a new row would leave that sticker
+pointing at a table that no longer exists, with nothing on screen to explain
+why the code stopped working. `POST /api/v1/tables/bulk` does the same for
+names inside the range it was asked for, reported as `reactivated`; a
+deactivated table outside the range is left alone.
+
+A name an **active** table holds is still refused, which is a conflict the
+panel can actually see. Renaming onto a deactivated name stays refused too —
+reviving there would leave two tables wanting one name — but the error names
+the table in the way and says it is deactivated, since that is the one case
+where the blocker is invisible.
+
+The audit log separates the two events: `TABLE_CREATED` for a table opened for
+the first time, `TABLE_REACTIVATED` for one that came back.
+
+## Menu and menu currency
+
+A restaurant prices its menu in `VES`, `USD` or `EUR`. This says only what the
+printed prices are denominated in — **Splite settlement is always VES** either
+way, and nothing here changes how a bill settles.
+
+A product's currency is copied from the restaurant at creation and is not
+accepted from the request, so a product can never disagree with the menu it
+belongs to. Changing the menu currency is refused with `409
+MENU_CURRENCY_MISMATCH` while any active product still uses the old one:
+converting prices automatically would mean guessing a rate on the restaurant's
+behalf, and leaving them would mean a menu quoting two currencies at once.
+
+Deleting a product deactivates it rather than removing the row, because a bill
+that already references it has to stay readable.
+
+`GET /api/v1/menu/public/:restaurantId/products` is the one unauthenticated
+endpoint here: a guest scanning a table QR has no staff credentials.
+
+For a menu priced in dollars or euros it also carries `rate` — the BCV rate in
+force — so the diner sees what a dish costs in bolívares, which is what they pay
+in. It is a reference: a bill is charged at the rate snapshotted when it opens.
+`null` for a menu in VES, or when no rate is available; the menu is served
+either way.
+
+### Sections
+
+A menu is not a list, it is sections in an order, and `menu_categories` holds
+them. A section rather than a `category` column on the product for one reason:
+**order**. A text column can only sort alphabetically — Bebidas, Entradas,
+Postres, Principales — which is wrong everywhere and cannot be corrected.
+`position` is the point, and it belongs to the section rather than being
+repeated on every product in it.
+
+`GET /api/v1/menu/categories` lists them with a count each, plus
+`uncategorisedCount`. Its own endpoint rather than a shape nested inside the
+product list, because the two are paginated differently: a client renders every
+header at once and pages through the food underneath, and headers derived from
+one page of products would hide any section whose items fell past the limit.
+
+Both product listings — staff and public — order by section position, then the
+product's position within it, then name. Name is the tie-break rather than the
+sort: everything imported at once shares a position, and
+alphabetical-within-a-section is a reasonable default until somebody reorders.
+
+**`category_id` is nullable and stays that way.** Products created before
+sections existed have none, and a menu photo with no printed headings yields
+none either. Both are *uncategorised*, which is a real state rather than a
+missing value to be backfilled with a guess — so it sorts last and is reachable
+as `?categoryId=none`. Without that filter the bucket has no id and would be the
+one group a section-by-section client could not show.
+
+Two constraint decisions worth knowing:
+
+- The foreign key is **composite**, `(category_id, restaurant_id)` against
+  `menu_categories (id, restaurant_id)`. A plain `REFERENCES menu_categories(id)`
+  would let one restaurant file its food under another's section: the id exists,
+  and nothing in the constraint says whose it is. Same correction
+  `016_payment_tenant_integrity` made to payments.
+- `ON DELETE SET NULL (category_id)` **names its column**, and must. On a
+  composite key the unqualified form nulls every referencing column, which here
+  would blank `menu_products.restaurant_id` — the tenant off the product —
+  whenever a section was deleted. `030_bill_served_by` hit exactly that. Deleting
+  a section leaves its food uncategorised and still sellable.
+
+Deactivating a section hides its products from the public menu without touching
+each one: the kitchen ran out of fish, and the whole block goes off for the
+evening.
+
+Sections are reordered and renamed through the endpoints under
+[Menu sections](#menu-sections), and the dishes inside a section through
+`PUT /api/v1/menu/products/order`. A product created, or moved into a section,
+goes to the end of it rather than to its alphabetical slot among dishes somebody
+has already ordered by hand.
+
+## Wire format
+
+The public API is **camelCase**; PostgreSQL is snake_case. `src/dto.js` is the
+only place allowed to cross between them, and `test/openapi.test.js` fails on
+any documented field containing an underscore.
+
+| Kind | JSON type | Format | Example |
+|------|-----------|--------|---------|
+| Money (minor units) | `string` | digits only | `"9007199254740993"` |
+| FX rates | `string` | padded to 8 decimals | `"757.54060000"` |
+| IDs | `string` | UUID v4 | `"d290f1ee-..."` |
+| Timestamps | `string` | ISO 8601 date-time | `"2025-03-05T16:30:00.000Z"` |
+| Value dates | `string` | ISO 8601 **date** | `"2025-03-06"` |
+
+Amounts are strings because a JSON number past 2^53 has already lost precision
+by the time it is parsed. Rates are strings so one representation is returned
+everywhere — `GET /exchange-rate` used to answer `757.5406` while a bill
+reported `"757.54060000"` for the same rate.
+
+Value dates are date-only for a sharper reason. node-pg parses a `DATE` column
+into a JS `Date` at *local* midnight, so serialising it directly produced
+`"2025-03-06T04:00:00.000Z"` on a Caracas host and `"...T00:00:00.000Z"` on a
+UTC one: one row, two strings, depending on where the process ran. A client
+formatting that in its own zone can land a day early — and for a BCV value date
+that selects a different published rate.
+
+The mappers are written out field by field rather than generated by a
+snake-to-camel transform. A generic transform would make the wire contract a
+derived function of column names, so a rename would silently rename a public
+field, and `{ ...row }` publishes whatever the `SELECT` happened to fetch —
+`qr_nonce` and `password_hash` are one careless `SELECT *` away.
+
+## Errors
+
+Every failure is the same object. `src/middleware/errorHandler.js` is the only
+place that renders one, and every error reaches it by being thrown or passed to
+`next()`, so the shape is guaranteed by construction rather than by each route
+remembering it.
+
+```json
+{
+  "error": {
+    "code": "OPEN_BILL_EXISTS",
+    "message": "This table already has an open bill",
+    "details": { "billId": "0f3c..." },
+    "requestId": "9a1e..."
+  }
+}
+```
+
+**Branch on `code`, never on `message`.** Messages are written for humans and
+get reworded; codes are the contract. `src/errors.js` is the registry, a code
+always carries the same HTTP status, and constructing an unregistered one
+throws rather than reaching a client as an unmatchable string.
+
+```js
+if (error.code === "OPEN_BILL_EXISTS") navigate(`/bills/${error.details.billId}`);
+```
+
+`details` is always an object and often empty, so `error.details.billId` reads
+as undefined instead of throwing. `requestId` is always present and matches the
+`REQUEST_FAILED` log line. What each code carries is published in the OpenAPI
+document as `x-error-details`, generated from the registry rather than written
+by hand.
+
+5xx messages are always the literal `"Internal Server Error"` — unexpected
+errors carry driver, query and file-path detail, so only the code and the
+requestId cross the wire. The real message stays in the logs.
+
+This replaced four shapes that were live at once: a bare string, `{ message,
+requestId }`, an array of validation strings, and a string with `code` and
+`billId` as *siblings* of `error` — so a client could not destructure a failure
+without first knowing which route produced it.
+
+## Registering a restaurant
+
+A reviewed lead, not self-service. Behind `ONBOARDING_ENABLED`; while the flag
+is off the routes are not mounted at all.
+
+```
+POST /api/v1/onboarding/restaurants   -> 202   records a lead, emails the team
+   (a person reads it and telephones the restaurant)
+npm run onboarding -- invite <id>              mails the single-use link
+POST /api/v1/onboarding/verify        -> 201   creates everything, signs them in
+```
+
+**The form creates nothing.** No tenant, no account, no token. It records the
+submission and emails the onboarding team the name, RIF, address, phone and the
+qualifying answers, so somebody can read it and pick up the phone. The applicant
+gets an acknowledgement saying a person will call, and no link.
+
+### How the mail actually leaves
+
+Three transports, chosen by `MAIL_TRANSPORT`, behind one `mailer.send`:
+
+| Transport | What it does | When |
+| --- | --- | --- |
+| `log` | Writes the message, verification link included, to the logger and sends nothing. | Development. Refused at boot in production once onboarding is on — a flow whose link goes to a log file is one nobody ever finishes. |
+| `smtp` | Signs in to an ordinary mailbox and sends as it. | Where outbound SMTP is permitted. It needs no domain, no DNS records and no provider account — **but see the host constraint below.** |
+| `resend` | One POST to api.resend.com. | **What this deployment uses.** HTTPS on 443, so it works where SMTP ports are blocked. |
+
+The split matters because of a constraint that is easy to meet late and painful
+to discover late: **an API sender will only send from a domain you have verified
+by DNS.** Resend, SES and Postmark all sign the `From` domain with DKIM records
+you publish yourself, and nobody can publish records for `gmail.com`. Setting
+`MAIL_FROM` to a Gmail address with `MAIL_TRANSPORT=resend` therefore fails at
+the provider on every single send — and `mailer.send` never throws, by design,
+so the symptom is a registration that returns `202`, a log filling with
+`MAIL_SEND_FAILED`, and no verification link ever arriving. `config.js` refuses
+to start on that combination instead, and the error names the remedy.
+
+SMTP has the opposite property. Mail genuinely relayed through Google carries
+Google's SPF and DKIM, so it is not a forgery and it reaches inboxes. What it
+does not carry is our own domain, and a free account is capped at roughly 500
+messages a day.
+
+#### The host gets a say, and Railway says no
+
+That reasoning is sound and it was still the wrong plan, because it is about the
+*provider* and the binding constraint turned out to be the *host*.
+
+**Railway disables outbound SMTP below the Pro plan.** Not port 25 — all of it.
+Their own documentation is explicit: "Free, Trial, and Hobby plans must use
+transactional email services with HTTPS APIs. SMTP is disabled on these plans to
+prevent spam and abuse." So `MAIL_TRANSPORT=smtp` cannot work here at any port,
+with any mailbox, however correct the credentials.
+
+It cost an afternoon because of how it fails. Port 587 over IPv4 is dropped
+rather than refused, so it surfaces as `ETIMEDOUT` after a full connect timeout
+— indistinguishable from a slow relay. nodemailer then falls back to IPv6 and
+gets `ENETUNREACH`, because Railway also leaves outbound IPv6 off by default.
+Two unrelated-looking network errors, neither of which says "your plan forbids
+this". The credentials were never reached, let alone wrong.
+
+Both are documented Railway behaviours, and the second one names itself:
+"While this setting is disabled, IPv6 connection attempts fail with 'Network is
+unreachable' or `ENETUNREACH`."
+
+**So this deployment sends over `resend`, from `splite.lat`.** That reverses the
+advice this section used to give. It is also where the product was heading
+anyway — a `gmail.com` sender is visibly not a company on the one email that
+asks a restaurant to trust us with its till — so the host constraint only
+brought the domain decision forward. Railway recommends the same thing even on
+Pro: "we recommend transactional email services with HTTPS APIs for all plans."
+
+The `smtp` transport stays. It is the right answer on a host that permits it,
+and the point of three transports behind one `mailer.send` is that the host is a
+`MAIL_*` change rather than a rewrite. **Check whether your host allows outbound
+SMTP before choosing it** — Railway's own probe, run over `railway ssh`, is:
+
+```bash
+SMTP_HOST="smtp.gmail.com" bash -c '
+for port in 25 465 587 2525; do
+  timeout 1 bash -c "</dev/tcp/$SMTP_HOST/$port" 2>/dev/null \
+    && echo "$SMTP_HOST port $port reachable" \
+    || echo "$SMTP_HOST port $port unreachable"
+done'
+```
+
+All four unreachable means the plan forbids it, and no port or credential change
+will help.
+
+#### Sending over Resend
+
+```bash
+MAIL_TRANSPORT=resend
+MAIL_FROM='Splite <noreply@splite.lat>'
+MAIL_API_KEY=re_…                       # sending access only, scoped to the domain
+ONBOARDING_TEAM_EMAIL=splite.ve@gmail.com
+```
+
+The domain is verified once in the provider by publishing three records — a DKIM
+`TXT`, an SPF `TXT`, and an `MX` on a `send.` subdomain. `ONBOARDING_TEAM_EMAIL`
+stays a Gmail address: the restriction is on the *sender*, and receiving has
+none of the constraints sending does.
+
+Nothing in `src/` changed to move hosts. `TRANSPORTS.resend` was written before
+any of this and is a single `fetch`.
+
+#### Sending through a Gmail mailbox
+
+Still supported, on a host that permits SMTP:
+
+```bash
+MAIL_TRANSPORT=smtp
+MAIL_FROM='Splite <splite.ve@gmail.com>'
+MAIL_SMTP_HOST=smtp.gmail.com
+MAIL_SMTP_PORT=465          # implicit TLS; 587 flips MAIL_SMTP_SECURE off for STARTTLS
+MAIL_SMTP_USER=splite.ve@gmail.com
+MAIL_SMTP_PASSWORD=…        # a 16-character app password, NOT the account password
+ONBOARDING_TEAM_EMAIL=splite.ve@gmail.com
+```
+
+The password is the one thing that trips people up: Google rejects the account
+password over SMTP outright. An **app password** is generated per application at
+myaccount.google.com, and the option only appears once 2-Step Verification is on
+for the account. It is a credential that can send mail as that address, so it
+belongs in the Railway variables beside the signing secrets and nowhere else —
+never in `.env`, which is not committed for exactly this reason.
+
+`ONBOARDING_TEAM_EMAIL` can be the same mailbox: it is where lead notifications
+are *read*, and receiving has none of the constraints sending does.
+
+The connection is built lazily and pooled, so a process that never sends mail —
+every CLI script, and the API itself while onboarding is off — never opens a
+socket or even loads the library. `src/server.js` closes it during shutdown,
+because a pooled socket left open holds the event loop past the last request and
+turns a graceful shutdown into a forced one.
+
+The team invites from the operator console (**Altas**, `POST
+/api/v1/admin/leads/{leadId}/invite`), which calls the same functions as the
+command line — see [`docs/operator-console.md`](operator-console.md). The
+console is a separate authentication model with its own accounts and a
+mandatory second factor, never a restaurant role with extra rights. From the
+command line:
+
+```bash
+npm run onboarding -- list NEW
+```
+
+then `show <id>`, `contacted <id> [notas]`, `invite <id>`, `reject <id> [notas]`.
+
+There is one more, and it is the one to run first:
+
+```bash
+npm run onboarding -- test-mail            # to ONBOARDING_TEAM_EMAIL
+npm run onboarding -- test-mail otra@x.com # or wherever
+```
+
+`mailer.send` never throws, by design — a provider outage must not fail the
+request that triggered it. The cost of that is a failure with no symptom where
+it happens: a wrong app password produces a lead that is recorded, a `202` that
+looks correct, and a notification nobody receives. `test-mail` exists to give
+that failure a symptom. It reports the transport, the sender and the recipient,
+prints the provider's actual complaint when a send fails — `535 Username and
+Password not accepted` is the usual one, and it means the account password was
+used instead of an app password — and exits non-zero, so it can gate a deploy.
+
+Note that the lead itself is never at risk: it is committed to
+`restaurant_signups` before any mail is attempted, and `npm run onboarding --
+list NEW` reads it whatever the mail did. What a failed send loses is the
+*notification*, not the restaurant.
+
+**`restaurants` and `users` are still only created inside the transaction that
+spends the token**, even though a human has already vouched for the lead. Being
+vouched for is not the same as controlling the inbox, and migration 002 made
+staff email globally unique:
+
+```sql
+CREATE UNIQUE INDEX users_email_unique_idx ON users (lower(email))
+```
+
+so an insert before the address is proven would let anyone permanently claim an
+address they cannot read, and nothing in the codebase releases one afterwards.
+
+Consequences worth knowing before changing any of it:
+
+| Decision | Why |
+| --- | --- |
+| Phone is required | The next thing that happens to a lead is a phone call. Validated loosely — `+58 412 1234567`, `0412-1234567` and `04121234567` are one line written three ways, and rejecting two of them loses the restaurant rather than teaching it ours. |
+| No password until the link | A credential stored against an unproven address, and Argon2id at 19 MiB per call on an endpoint anyone can reach. The invitation token *is* the set-password token. |
+| Identical 202 either way | An endpoint that says "that email is taken" is an account-enumeration oracle. `/auth/login` pays for a decoy Argon2 hash to close exactly this. Duplicates are flagged to the reviewer instead, which is where a human should be looking at them. |
+| One error code for the token | `ONBOARDING_TOKEN_INVALID` covers absent, spent and expired. A caller has no use for the difference and separating them reveals which links exist. |
+| Two rate limiters | Per source address bounds submissions. It does nothing about the other abuse — this endpoint mails an address the *caller* chooses, so a distributed caller stays inside any per-IP budget while filling one person's inbox. The per-recipient limiter stops that. Both fail closed. |
+| RIF checksum recorded, not enforced | The mod-11 rule is implemented here for the first time and unproven against real data. Turning away a real restaurant at the form is worse than storing one malformed tax id; the reviewer is shown the mismatch and decides. Note `J-00000000-0` passes — it catches transcription slips, not invention. |
+| Trial reported, never enforced | `GET /api/v1/account` returns `plan.trialEndsAt` and `trialDaysRemaining` so a client can warn. Nothing refuses service when it lapses: which action a lapsed restaurant loses is a pricing decision, and the obvious candidate is wrong — cutting off bills mid-service strands a dining room full of seated diners over an unpaid invoice. |
+
+A restaurant is created with IVA at 1600 bps and servicio at 1000 bps. Migration
+011 defaults both to zero so that running it could not reprice an existing
+restaurant's open bills; one created today has no such history. Both are
+changeable through `PATCH /api/v1/menu/settings/charges`.
+
+### What a plan includes, and what actually refuses
+
+`restaurants.plan_tier` has existed since migration 012 and for a long time
+nothing read it. `src/services/entitlements.js` is where it now means
+something, and it keeps two sets apart on purpose:
+
+**`INCLUDED`** is what each tier is sold as including. `GET /api/v1/account`
+publishes it as `plan.capabilities`, one boolean per capability, so a client
+asks before it acts instead of offering a button that answers 403 — and so the
+pricing table is not maintained a second time on the frontend.
+
+**`ENFORCED`** is the much shorter list the API actually refuses without. Today
+it holds one entry: `fiscalInvoicing`.
+
+Those differ because every other capability in the table already shipped and is
+already in use by restaurants on whatever tier they happen to sit on. Switching
+on enforcement for those has a dining room attached: a TRIAL restaurant taking
+C2P payments tonight would start getting refusals mid-service. That is the same
+reasoning the trial row above states — the decision is a pricing one, made
+deliberately and with notice, not a side effect of wiring up a permission
+layer. `test/entitlements.test.js` asserts the exact contents of `ENFORCED`, so
+growing it is a visible act rather than a quiet one.
+
+Refusals are `403 PLAN_UPGRADE_REQUIRED`, and carry `details.requiredTiers` so
+a client is not left guessing which upgrade is the one that helps. 403 rather
+than 402: the request is refused on what was bought, and nothing about it
+becomes payable by retrying.
+
+`requirePlan(capability)` in `src/middleware/plan.js` reads the tier from the
+row on each gated request rather than from the access token. A token lives
+fifteen minutes and this gate stands in front of issuing fiscal documents: a
+restaurant that upgrades should be able to invoice now, and one whose plan
+ended should stop now. An unknown capability name throws when the route is
+mounted rather than when the first request arrives, so a typo stops the process
+instead of silently refusing everyone and looking like a pricing rule.
+
+**Gate the writes, never the reads.** A downgrade stops a restaurant issuing
+new fiscal documents; the legal duty to keep the ones it already issued
+outlives the subscription. An invoice that becomes unreadable because an
+invoice went unpaid is a problem Splite would have created.
+
+### Changing an existing restaurant's plan
+
+`npm run plan`. Until it existed, `plan_tier` was written **once**, at signup,
+always as `TRIAL` (`src/services/onboarding.js`), and nothing ever wrote it
+again — so selling a plan meant an `UPDATE` by hand against the production
+database. That is what this replaces, and each of its four problems is a
+feature here:
+
+```
+npm run plan -- show <id|RIF|email>
+npm run plan -- list [TRIAL|STARTER|PRO|ENTERPRISE]
+npm run plan -- set  <id|RIF|email> <TIER> [--trial-days N] [--force] [note...]
+```
+
+A restaurant is found by id, by RIF, or by **the owner's email** — which is the
+one somebody selling a plan actually has. Without it the first step was a query
+by hand against the database, which is what this exists to remove. No flag says
+which is which: none of the three can be mistaken for another. The email is
+unambiguous because `users_email_unique_idx` (migration 002) makes it unique
+across the platform rather than within a restaurant — login would not know
+which tenant to enter otherwise.
+
+**It clears `trial_ends_at` on the way out of TRIAL.** The panel shows a trial
+banner while there is a date, so leaving it behind tells a restaurant that just
+paid when its trial expires. Going back to TRIAL, `--trial-days` sets a new one.
+
+**It always leaves a record, or it does not change the plan.** The audit row is
+written in the same transaction as the `UPDATE`, and deliberately *not* through
+`logAudit`, which swallows its own failures — right for an audit hanging off a
+request, wrong here, where the row is the only record that a plan changed at
+all. Moving that write outside the transaction does not merely weaken the
+guarantee, it hangs: `audit_logs.restaurant_id` references `restaurants(id)`, so
+the insert wants a `FOR KEY SHARE` on the row the transaction already holds
+`FOR UPDATE`, and a second connection waits on it until `statement_timeout`.
+Measured, not assumed.
+
+**It refuses a downgrade that takes away something in use.** Only `ENFORCED`
+capabilities can do that, so today it means one thing: dropping below
+ENTERPRISE for a restaurant that has already issued fiscal invoices, which
+would stop it issuing the next one mid-service while its existing documents
+stay out there. That answers `PLAN_DOWNGRADE_BLOCKED` with the count, and
+`--force` is how you say you meant it — recorded as `forced` in the audit row.
+A capability the restaurant has never used is not blocked: asking for
+confirmation there only teaches people to pass `--force` every time.
+
+**It prints what the change actually did** — gained and lost capabilities by
+name, marking which ones the API enforces and which are only descriptive.
+"ENTERPRISE" on its own does not tell you what you just sold.
+
+The operator console changes plans too, through the same
+`src/services/plans.js`, so the rules live in one place and a change made from
+the console lands in `operator_audit` beside the rest of that client's history.
+See [`docs/operator-console.md`](operator-console.md).
+
+Mail goes through `src/services/mailer.js`, a port with two adapters. `log`
+writes the message and its link to the logger and sends nothing; it is refused
+in production once onboarding is on. `resend` posts to api.resend.com over
+`fetch`. Adding SES or Postmark means adding a function to `TRANSPORTS` and
+nothing else. Picking a provider also means a domain with SPF and DKIM — without
+it the mail goes to spam and the team never learns a restaurant applied.
+
+## Sessions
+
+`POST /api/v1/auth/login` returns an access token, a refresh token and the user.
+
+**How long a staff session lasts.** The refresh token is valid for **12 hours
+idle** (`JWT_REFRESH_TTL_SECONDS`) and the session as a whole for at most **16
+hours from login** (`JWT_SESSION_MAX_SECONDS`), however often it is renewed —
+a shift, not a fortnight. Near the cap a renewed token stops at the cap; past
+it, refresh is refused and the token revoked. The start of the session is
+`refresh_sessions.session_started_at` and survives rotation.
+
+**Where the refresh token lives.** By default it travels in the body. A client
+that sends `X-Refresh-Mode: cookie` (with `credentials: include`) gets it as an
+HttpOnly `__Host-splite_rt` cookie instead — Secure, SameSite=Strict,
+host-only — and `/refresh` and `/logout` read it from there, so no page script
+can reach it. It only works when the site and the API are the same site
+(`splite.lat` / `api.splite.lat`); from `splite.lovable.app` it would be a
+third-party cookie, so that client keeps the body token. The cookie alone is
+not enough: without the header a refresh is refused, which together with
+SameSite=Strict and the CORS preflight the header forces is the CSRF defence.
+A client restoring a session on boot calls **`GET /api/v1/auth/me`**, not
+`/auth/refresh`.
+
+That distinction matters more than it looks. Refresh *rotates*: it atomically
+claims the presented token and issues a new one, and a token presented after it
+has already been claimed is treated as theft, which revokes **every** session for
+that user. Two browser tabs starting at once both present the same stored token
+— one claims it, the other is read as theft, and the user is logged out
+everywhere. So refresh is for renewing an expired access token, and nothing else.
+
+`/auth/me` reads the user from the database rather than the token, so an account
+deactivated mid-session stops working inside the access token's fifteen minutes
+rather than at the end of them. It returns the same `user` shape as login and
+refresh, so a client stores one type.
+
+## Second factor
+
+Passwords are the only thing between a stolen laptop and a restaurant's
+takings: an OWNER token reads every bill, confirms any declared payment, and
+changes where the money is paid out. Login throttling makes *guessing* slow; it
+does nothing about a password that has already leaked somewhere else, which is
+the ordinary way accounts are lost.
+
+**TOTP**, and that is not really a choice. Email codes need the mail provider
+this deployment does not have yet, and SMS in Venezuela is both a cost per login
+and a dependency on a network that is not always there. A TOTP secret works
+offline, on a phone the staff member already carries. It is implemented in
+`src/services/totp.js` rather than pulled in — forty lines of a standard that
+has not moved since 2011, and a dependency in the authentication path is a
+supply chain in the authentication path. `test/totp.test.js` runs RFC 6238's own
+published vectors, which is the only real proof that every authenticator app
+will agree with us.
+
+With a factor enabled, **a correct password is not a session.** It returns
+`{ mfaRequired: true, challenge }`, and the challenge is spent at
+`POST /api/v1/auth/login/mfa` with a code. Branch on `mfaRequired`, not on the
+absence of a token. The challenge names the account and nothing else — no role,
+no restaurant — and cannot be presented as an access token: it carries
+`type: 'mfa_challenge'`, and `authenticateToken` accepts only `type: 'access'`.
+That check is what lets it share the access secret instead of introducing a
+fifth one, and it is verified in both directions.
+
+Enrolment is two steps on purpose. `POST /auth/mfa/enrol` mints a secret and
+enables nothing; the account still signs in on its password alone until
+`POST /auth/mfa/confirm` proves the authenticator holds the same secret. A
+factor switched on by generation alone would lock out anybody whose phone failed
+to scan the QR. Disabling costs a code too — a borrowed unlocked laptop would
+otherwise strip the factor and leave the account on a password its borrower may
+already have. Nothing here touches *another* user's factor, including for an
+OWNER: a manager who can remove a colleague's second factor is a manager who can
+take over their account.
+
+**A code is spent once.** It stays valid for the whole of its thirty seconds, so
+`users.mfa_last_step` records the last step accepted and anything at or below it
+is refused — including the code that switched the factor on. One consequence
+worth knowing: enrolling and then immediately signing in on a second device
+inside the same thirty seconds will refuse the code showing on screen. It
+resolves itself at the next step, and the alternative is a replayable code.
+
+**Recovery codes are not a nicety.** Nobody at Splite can switch off a
+restaurant owner's second factor — the operator console manages plans and
+billing, not restaurant accounts — so an owner who loses their phone with no
+code is locked out of their own business with nobody able to let them back
+in. Ten are issued when the factor is confirmed, readable exactly once, and each
+is spendable in place of a TOTP code. The response never says which kind
+completed a login: distinguishing them would tell somebody holding a stolen
+password whether they were guessing against six digits or eighty bits.
+
+The secret is sealed at rest with AES-256-GCM under its own key ring
+(`MFA_SECRET_KEYS`), deliberately not the payment one — a deployment with no
+bank credentials must still be able to offer MFA, and a leaked payment key must
+not also be a leaked authentication key. Both stores share one implementation in
+`src/utils/sealedBox.js`. Without a ring configured, enrolment returns 503
+rather than storing anything.
+
+It is **optional per user**, and there is no enforcement point that requires it
+of a role. That is deliberate for now rather than finished: a mandatory rollout
+with no mail is a way to lock people out of their own accounts. Requiring it of
+OWNER is a decision to take once there is a way to help somebody who gets stuck
+— an administrator can now reset a password, which is most of that way.
+
+## Staff
+
+```
+GET    /api/v1/account/users                    who works here
+POST   /api/v1/account/users                    add somebody
+PATCH  /api/v1/account/users/:userId            change a role, a standing, or both
+POST   /api/v1/account/users/:userId/password   set somebody else's password
+```
+
+This existed only as SQL until recently. A restaurant was created with one owner
+and could never gain a second account, and firing a cashier meant somebody with
+database access running an `UPDATE` — on a system where **CASHIER and above
+decide that money arrived**. That is not an access-control model; it is an
+access-control model plus a promise.
+
+OWNER and MANAGER reach these routes. Three rules decide what each may actually
+do, and they live in `src/services/staff.js` rather than in the router, because
+a rule enforced in a router is a rule enforced on the paths somebody remembered:
+
+1. **Rank.** An owner may act on anybody but themselves. Everyone else may act
+   only on a strictly lower role — and may only *grant* a strictly lower role.
+   Without that second half, "may manage staff" silently means "may become an
+   owner". A manager cannot touch a peer either: otherwise the first argument
+   between two managers settles itself.
+2. **Never yourself**, neither role nor standing. It stops an owner demoting
+   themselves out of the only account that could undo it, and costs nothing —
+   another owner can still do it for them.
+3. **The last active owner stays.** Worth being precise about what this guards:
+   serially it is unreachable, because once a restaurant is down to one active
+   owner, only an owner may act on an owner, the only one left is themselves,
+   and rule 2 refuses that. Rules 1 and 2 *are* the serial guard. The check
+   exists for the race — both of the last two owners removing each other at the
+   same instant, each reading the other as remaining.
+
+   The target row being locked is **not** enough for that, and it used to be all
+   there was. When the last two owners remove each other the two targets are
+   different rows: neither transaction waits for the other, both count against a
+   state that does not yet include the other's uncommitted change, and both
+   proceed. Measured against that code, the restaurant was left with no active
+   owner in 39 of 40 attempts — locked out of its own panel with nobody able to
+   reopen it. The count is now preceded by `SELECT 1 FROM restaurants WHERE
+   id = $1 FOR UPDATE`, the one row both transactions have in common, so the
+   second waits there and then finds nobody left. Both take their target first
+   and the restaurant second, never the reverse, so no deadlock cycle can form.
+
+**Deactivating is not instant, and the response says so.** It revokes every
+refresh session the person holds, so they cannot mint a new access token, and
+returns `sessionsRevoked` as proof. The access token already in their hands
+keeps working until it expires — at most `JWT_ACCESS_TTL`, fifteen minutes by
+default. That is the standing cost of stateless tokens, and somebody removing a
+person after an argument needs to know the door is not shut this second rather
+than discovering it later.
+
+A password reset revokes sessions for the same reason: a reset that leaves the
+old sessions running has not locked anybody out. It is how a **forgotten**
+password is recovered — an administrator sets a new one and tells the person.
+
+A password somebody still knows is changed by them, at
+`POST /api/v1/auth/password`, without going through anybody senior. There is no
+user id in that path: the only account it changes is the one you are signed in
+as. The current password is required, and that is the guard — an access token in
+somebody else's hands should not be enough to take an account permanently.
+
+It is deliberately **not** counted against the login throttle. That throttle
+locks an *account* after enough failures, so wiring this into it would hand
+anyone holding a stolen token a way to lock the real owner out — turning a
+containable compromise into a denial of service against the person best placed
+to fix it. The auth router's rate limit bounds the attempts instead.
+
+It **answers like a login**, because that is what the caller now holds: every
+refresh session is revoked and the returned pair are the replacements. The
+device doing the changing stays signed in and every other one is signed out,
+with `sessionsRevoked` counting them. Forcing somebody to sign in again on the
+phone they just used is how a security action gets postponed.
+
+What is still missing here is a **forgotten-password flow that does not need
+another person** — that needs mail, which is optional in this deployment, so it
+waits on the same decision self-service onboarding does.
+
+## Bill line items
+
+A line's price is **snapshotted when it is added** and never read from the menu
+again, so re-pricing, renaming or deactivating a product cannot change a bill
+that has already been served. `product_id` is kept for reporting and is
+nullable: the line outlives the product.
+
+Its **tax** is snapshotted the same way and for the same reason. `tax_category`
+and `vat_bps` are copied onto the line at the moment it is added — see
+[Charges](#charges-iva-and-servicio) — so declaring a dish exempt tomorrow does
+not move the IVA on a dinner served tonight. A bill open across such a change
+ends up with lines at different rates, each taxed as it was sold, which is the
+correct answer rather than an awkward one.
+
+`subtotal_minor` is `GENERATED ALWAYS AS (unit_price_minor * quantity) STORED`
+— the database computes it or nothing does. A subtotal the application keeps in
+step with its inputs is the same drift the payment ledger exists to remove.
+
+Every mutation recomputes the bill total from its lines and re-converts at the
+rate **frozen when the bill opened**, never at today's rate: otherwise adding a
+coffee silently reprices the meal. Removing a line that would drop the total
+below what has already been settled is refused with `TOTAL_BELOW_AMOUNT_PAID`,
+because reversing money that has moved is a refund, not an edit. Deleting lines
+is not how a bill that will never be paid in full gets closed — see
+[Closing a bill for less than it owed](#closing-a-bill-for-less-than-it-owed).
+
+Items are optional. A bill opened with a fixed non-zero total refuses
+itemisation (`BILL_NOT_ITEMISED`) rather than silently discarding that figure or
+counting the bill twice — open it with a total of `0` to itemise it. A composite
+foreign key on `(bill_id, restaurant_id, currency)` ties every line to its bill,
+its tenant and its currency at once, so a EUR line cannot sit on a USD bill.
+
+## Ordering from the table
+
+A diner scans the table's QR, reads the menu, and sends "two tequeños and a
+cachapa" from their own phone. `POST /api/v1/guest/bill/orders`.
+
+**The lines go straight onto the bill** — unless the restaurant has turned on
+approval of new phones (below). Otherwise there is no approval queue: they are
+inserted by the same `addItemsInTransaction` a waiter's order goes through, with
+the same checks — the product exists in *this* restaurant, is still on the menu,
+and is priced in the bill's currency — and the same total recalculation inside
+the same transaction. If a check fails, nothing is written: no order row, no
+lines, no half-placed order.
+
+That is a product decision, not an oversight. A diner who orders from their seat
+should not wait on a waiter tapping *accept* on another screen.
+
+**So what is `guest_orders` for, if the lines are already on the bill?**
+
+For the floor to be told. An order is an event — three tequeños and two
+cachapas, at 21:14, from table 4 — and loose lines are not: six new lines on a
+bill are indistinguishable from six a waiter typed half an hour ago, so there is
+nothing to announce and nothing to mark as dealt with. `acknowledged_at` is that
+half. While it is NULL the order is sitting in a tray; `POST /orders/:id/ack`
+takes it out and records who took it. Acknowledging changes nothing about the
+bill — the money was already on it.
+
+`GET /api/v1/orders` returns the tray with what was ordered, so somebody can
+walk over or call the kitchen without opening the table to find out what it was.
+`GET /api/v1/orders/summary` is the badge figure, separate for the same reason
+`/payments/claims/summary` is: a number on every screen should not be pulling
+whole orders to render itself.
+
+**A note travels with the order**: "no onion on the burger", "all of it to
+share". One per order, not per line — what a diner writes almost always names
+the dish it is about, and a box under every dish fills the screen with empty
+fields. Trimmed, up to 200 characters, newlines allowed and other control
+characters refused, because it is rendered in the staff tray. It reaches the
+tray and nowhere else: the audit log records *that* there was a note, never its
+text.
+
+`lineCount` and `items` answer different questions and both are reported.
+`lineCount` is what was ordered; `items` is what is still on the bill. A line a
+waiter has since removed is gone from `items` — correctly, nobody owes it and
+nobody should cook it — while the order still had three.
+
+**An empty table is not an error.** The first order opens the bill, exactly as a
+waiter taking the first order does. Without it, the diner who sits down and
+orders before anybody comes over gets a failure they cannot act on. `served_by`
+stays null: nobody from the house took that order, and putting a name there
+would move tips toward someone who did not. `PATCH /bills/:id/server` is the
+correction.
+
+### Approving the first order from a new phone
+
+Optional, per restaurant, **off by default**: `PATCH /api/v1/orders/settings
+{ approveNewPhones }`, owner or manager. The QR is stuck to the table, so
+anybody who photographs it can order from outside — or open a bill on an empty
+table — as a prank. With this on:
+
+- A session's **first** order is held (`guest_orders.status = 'HELD'`, lines in
+  `held_items`, `bill_id` null). It reaches no bill and opens none.
+- The tray lists held orders first. `POST /orders/:id/approve` puts the lines on
+  the bill through the same path as any order (opening the bill if needed) and
+  marks the session approved: later orders from it go straight through.
+  `POST /orders/:id/reject` keeps it off every bill and blocks that session from
+  ordering until the diner scans again. `ack` refuses a held order.
+- One held order per session (a partial unique index).
+- **A held order nobody decides on expires** after
+  `GUEST_HELD_ORDER_TIMEOUT_SECONDS` (15 minutes): `EXPIRED`, off the tray, and
+  — unlike a rejection — the phone may order again. There is no scheduler; it
+  happens whenever the tray, the diner's phone or an approve/reject looks.
+- The diner follows it with `GET /api/v1/guest/bill/orders/:id`.
+
+### What the diner cannot do
+
+Neither the table nor the restaurant is in the request body — both come from the
+guest session, which was created by verifying the QR signature. There is no
+field in which to name somebody else's table, and sending one anyway is stripped
+by the validator rather than honoured. The integration suite asserts the
+outcome, not a 400: the neighbouring table ends the test with no bill.
+
+What is left is the surface the QR itself creates. The code is stuck to the
+table and anybody who photographs it can open a session, so what is worth doing
+is bounding a bad minute rather than pretending it cannot happen:
+
+| | Staff `POST /bills/tables/:id/order` | Guest `POST /guest/bill/orders` |
+| --- | --- | --- |
+| Lines per order | 50 | **20** |
+| Units per line | 999 | **20** |
+| Rate limit | 60/min per user | **10/min per session** |
+
+Ten orders a minute is more than a whole table places in a service, and the ones
+above that are not a diner ordering. A guest who genuinely wants twenty-one of
+something sends two orders.
+
+**What this is not.** It is not a kitchen ticket. There are no preparation
+states, no printing, no timings — that is a different system with a different
+owner. This records that somebody ordered, what, and whether the room has
+noticed.
+
+## Building a menu from a photo
+
+`POST /api/v1/menu/ocr-extract` takes a photo or PDF of a menu (multipart, field
+`file`) and returns the items a vision model read off it. **It writes nothing.**
+`POST /api/v1/menu/ocr-import` is the write, and it takes what a staff member
+confirmed on screen — not what the model said.
+
+That division is the feature, not friction around it. It is the same one a
+declared Pago Móvil uses: the machine records what it thinks, a person turns it
+into a fact. OCR misreads prices, and a wrong price on a menu is charged to
+every diner who orders that dish until somebody notices.
+
+Three things follow from treating the extraction as a draft:
+
+- A row whose price could not be read arrives with `priceMinorUnits: null` and
+  `needsPrice: true` rather than being dropped. The item is real; hiding it
+  sends staff hunting for what the reader missed.
+- Rows sharing a name are flagged `duplicateName`, because `menu_products` is
+  unique on `(restaurant_id, name)` and one of them has to be renamed before
+  either can import.
+- `currencyGuess` is reported and never applied. Prices import in the
+  **restaurant's** `menu_currency`; a menu printed in dollars does not change
+  what that restaurant charges in, and the request cannot name a currency at all.
+
+Import is per row inside a savepoint, so one duplicate name rejects that row and
+keeps the other forty-nine — read `errors` as well as `importedCount`. Without
+the savepoint the first duplicate would abort the transaction and every later
+insert would fail with `25P02`, which is why a plain try/catch around the insert
+cannot do what it appears to.
+
+### Reading prices
+
+A menu writes the same number several ways, and getting this wrong is expensive
+in a direction nobody checks:
+
+| Printed | Read as |
+| --- | --- |
+| `12,50` / `12.50` | 12,50 |
+| `1.234,56` / `1,234.56` | 1.234,56 |
+| `1.500` / `1,500` | 1.500,00 — three trailing digits group thousands |
+| `25` | 25,00 — a menu never quotes céntimos |
+| `a la carta` | `null` — needs a human |
+
+Deliberately not the bank parser in `src/payments/providers/mercantil/c2p.js`,
+which solves a similar problem with one decisive difference: a bank sometimes
+quotes minor units, so a bare `25` there is twenty-five céntimos. Sharing them
+behind a flag would mean reading that flag wrongly exactly once, silently.
+
+### Operating it
+
+Off unless configured: without `MENU_OCR_API_KEY` the endpoint answers 503
+`MENU_OCR_NOT_CONFIGURED` rather than failing oddly at upload.
+
+The reader returns a `section` per item — the heading it appeared under — and
+the import creates any section it has not seen, at the end of the menu, in the
+order sections first appear in the payload. That is the printed order: the model
+walks the page top to bottom. An existing section keeps the position it already
+has, so a second import cannot renumber a menu somebody has since reordered.
+`categoriesCreated` reports what it decided, because six sections named after
+their own menu is how a reviewer knows it worked.
+
+`MENU_OCR_BASE_URL` selects the provider — the request is the OpenAI-compatible chat-completions
+shape several vendors serve, so switching is configuration rather than code.
+
+**The base URL includes the version path**; only `/chat/completions` is appended
+to it, because vendors put the version in different places:
+
+| Provider | `MENU_OCR_BASE_URL` | A vision model |
+| --- | --- | --- |
+| OpenAI | `https://api.openai.com/v1` | `gpt-4o` |
+| Google Gemini | `https://generativelanguage.googleapis.com/v1beta/openai` | `gemini-2.0-flash` |
+| Groq | `https://api.groq.com/openai/v1` | |
+| OpenRouter | `https://openrouter.ai/api/v1` | |
+| Mistral | `https://api.mistral.ai/v1` | `pixtral-12b-2409` |
+
+A base URL without its version path produces a 404, which this endpoint reports
+as `MENU_OCR_UNAVAILABLE` — the same answer it gives for a provider that is
+genuinely down. The resolved endpoint is logged with `MENU_OCR_PROVIDER_REJECTED`
+so the two can be told apart.
+
+**Ask before offering it.** `GET /api/v1/menu/settings` carries
+`menuOcrAvailable`, and a client should hide the photo import when it is false
+rather than discovering the answer the hard way. Without it the only way to find
+out was to offer the upload, let somebody choose a file, wait for several
+megabytes to go up, and then answer 503 -- which is what a deployment with no key
+did to every restaurant that tried. It is a fact about the server rather than a
+transient failure, so `false` means hide it, not retry it.
+
+Rate limited to 10 uploads a minute per staff member: each call costs money at a
+third party. Uploads are bounded (8 MB, 6 PDF pages) and held in memory only —
+no menu image is ever written to disk or to the database. A PDF is rasterised
+with `pdftoppm` (poppler, in the image) because a menu PDF is usually a design
+export whose text layer is absent or ordered by drawing position rather than
+reading order: the picture carries what extracted text loses.
+
+`pdftoppm` is the one thing here that is not a Node dependency. It is installed
+in the runtime image and in CI; without it, image uploads still work and a PDF
+answers 400 `MENU_OCR_PDF_UNREADABLE` rather than failing obscurely. The
+integration test for that path skips when the binary is absent, so a developer
+without poppler sees a skip rather than a spurious failure.
+
+## Menu sections
+
+A menu is not a list. It runs starters, mains, desserts, and a text column can
+only sort alphabetically — Bebidas, Entradas, Postres, Principales — which is
+wrong everywhere and cannot be corrected. So sections are rows, with a
+`position`, and the order belongs to the section rather than being repeated on
+every product in it.
+
+```
+POST   /api/v1/menu/categories        create, at the end unless told otherwise
+PATCH  /api/v1/menu/categories/{id}   rename, move, or take off the menu
+PUT    /api/v1/menu/categories/order  the whole new order, as an array of ids
+PUT    /api/v1/menu/products/order    one section's dishes, in their new order
+DELETE /api/v1/menu/categories/{id}   remove the heading, keep the food
+GET    /api/v1/menu/categories        with a count per section, and the loose ones
+```
+
+An OCR import creates sections from the headings it read, in first-appearance
+order, which is the printed order — the reader walks the page top to bottom.
+That is right for a first menu and no use afterwards, which is what these are
+for.
+
+**Reordering sends the whole order, not one move.** The array *is* the order:
+`position` becomes the index. One PATCH per section would make every
+intermediate state a state somebody could read — two sections both claiming
+position 3 while the next request is in flight — and a dropped request would
+leave the menu in one permanently. It runs in a transaction, because the
+statement matches only the caller's own rows: a list padded with another
+tenant's ids would reorder the rest and *then* fail, so rolling back is what
+makes the 404 mean nothing happened.
+
+The dishes inside a section follow the same rule, with one more: the list must
+be **exactly** that section — every product in it and nothing else. A partial
+list would leave two dishes sharing a position and the name deciding between
+them, which is what reordering exists to remove. `categoryId: null` orders the
+dishes without a section.
+
+**Deleting a section does not delete its food.** The foreign key is `ON DELETE
+SET NULL (category_id)` — naming the column, because the unqualified form on a
+composite key would blank `restaurant_id` too and take the tenant off the
+product. Its dishes fall back to uncategorised, still active and still
+sellable. Taking them with the heading would be a way to lose a menu by tidying
+it.
+
+`active: false` is the other removal: the whole section goes off the public menu
+with its products intact, because the kitchen ran out of fish.
+
+## The menu as a file
+
+Not every restaurant wants to transcribe a menu. Plenty have a PDF their
+designer sent them that changes twice a year, and asking them to type it in
+before Splite shows a diner anything is asking for the wrong thing first.
+
+```
+PUT    /api/v1/menu/pdf                       upload (multipart, field `file`)
+GET    /api/v1/menu/pdf                       what is stored, described
+DELETE /api/v1/menu/pdf                       remove it
+GET    /api/v1/menu/public/{restaurantId}/pdf the diner's copy, unauthenticated
+```
+
+One file per restaurant — the primary key is the tenant, so replacing the menu
+is an upsert rather than a second row and a rule about which one wins.
+
+**This is not the OCR route.** `/menu/ocr-extract` reads a menu in order to
+throw the file away and keep the prices; this keeps the file and shows it. A
+bill is still built from priced rows in `menu_products`, and nothing uploaded
+here can be added to one. The PDF is for reading.
+
+The bytes live in Postgres, in a table of their own rather than columns on
+`restaurants`: a `bytea` on the restaurant row travels with every query that
+forgets to name its columns, and that row is read on nearly every request. A
+`CHECK` keeps `size_bytes` equal to `octet_length(bytes)`, so a listing can
+report the size without reading the file.
+
+Uploads are checked for the `%PDF-` header as well as the declared content type.
+That is not a security boundary — the file is served back as what it says it is,
+with `nosniff`, and never executed — but it catches somebody uploading a
+photograph of their menu to the wrong route, and says so.
+
+`GET /menu/public/{restaurantId}/products` carries `menuPdf` (or `null`)
+alongside the products, so a client can decide between embedding and linking,
+and a menu that is *only* a PDF still has something to show when `products`
+comes back empty.
+
+## A photograph of the dish
+
+A menu that is a list of names and prices asks a diner to already know what
+*cachapa con cochino* looks like. Photos are optional, one per product, and
+always the restaurant's choice — a menu without them has to keep looking
+deliberate rather than unfinished, because most start that way and some stay
+that way.
+
+| | |
+|---|---|
+| `PUT /api/v1/menu/products/{id}/image` | OWNER, MANAGER. `multipart/form-data`, field `file`. JPEG, PNG or WebP |
+| `DELETE /api/v1/menu/products/{id}/image` | removes the photo, leaves the dish |
+| `GET /api/v1/menu/public/{restaurantId}/products/{productId}/image` | unauthenticated, what a phone loads |
+
+Stored in Postgres like the menu file, in `menu_product_images` (migration 033)
+rather than on `menu_products`. The reason is the bytes: a `bytea` on the
+product row rides along with every `SELECT *` and every menu listing — the exact
+query a diner's phone makes — and one forgotten column list would put a megabyte
+per dish on the wire. Out here it is touched only by the routes that want it.
+Listings select `(pi.product_id IS NOT NULL)` and the checksum, never the file.
+
+**The ceiling is 2 MB, not the PDF's 20.** A PDF is fetched once by a diner who
+chose to open it; a dish photo is fetched by everyone at the table at once, on a
+phone with one bar of signal.
+
+**A replaced photo is a new address.** `imageUrl` carries `?v=` taken from the
+file's SHA-256, so uploading a new picture changes the URL. That is what makes
+the new dish appear instead of the one the phone cached, and it is why the
+response can be `immutable` for a year rather than revalidating every few
+minutes. The checksum is computed once at upload rather than per request —
+hashing a megabyte to decide whether to send it costs more than sending it — and
+doubles as the `ETag` for a client that arrives without the suffix.
+
+The declared type is checked against the file's own signature (`ffd8ff`,
+`\x89PNG`, `RIFF….WEBP`). Not a security boundary — the file is served as what
+it says it is, with `nosniff`, and never executed — but it catches a HEIC
+straight off an iPhone and says so instead of storing something no browser will
+render.
+
+Scoped by restaurant *and* product, both from the path, and the photo carries
+its own `restaurant_id` so that check is a `WHERE` rather than a join somebody
+has to remember. A product from another tenant is a 404 rather than a picture,
+and a deactivated product takes its photo off the menu with it.
+
+## The restaurant's own face
+
+A diner who scans a code used to get a page saying the restaurant's name in the
+app's typeface and nothing else. Two images fix that, both optional:
+
+| | |
+|---|---|
+| `PUT /api/v1/menu/branding/{kind}` | OWNER, MANAGER. `multipart/form-data`, field `file`. `kind` is `COVER` or `LOGO` |
+| `DELETE /api/v1/menu/branding/{kind}` | takes it down |
+| `GET /api/v1/menu/public/{restaurantId}/branding/{kind}` | unauthenticated, what a phone loads |
+
+The cover is wide and sits behind the name; the logo is square and sits on top
+of it. Where exactly is the client's decision — the API stores two images and
+says where they are. Both surface as `coverUrl` and `logoUrl` on the QR context
+and on the public menu, or `null`, which is the common case and has to look
+deliberate rather than broken.
+
+Stored in `restaurant_images` (migration 034), keyed on `(restaurant_id, kind)`
+so replacing either is an upsert. Out of `restaurants` for the reason migrations
+032 and 033 gave: `restaurants` is read on nearly every authenticated request,
+and a `bytea` there would ride along with each one. The reads that need them
+join for the **checksum only** — never the bytes.
+
+The ceiling is 4 MB rather than a dish photo's 2. A cover is a wide shot, and
+one that has to be cropped down to fit usually ends up not uploaded at all.
+
+Everything else matches the dish photo: the checksum on the query string so a
+replaced image is a new address, `immutable` for a year because of it, the
+file's own signature checked against the declared type, and
+`Cross-Origin-Resource-Policy: cross-origin` so a browser will actually render
+it from another site.
+
+## The receipt
+
+`GET /api/v1/guest/payments/{id}/receipt` gives the diner **the whole table's
+bill, and only then what they themselves paid**: every product with its quantity
+and unit price, the subtotal, the service charge, the VAT broken out by rate, the
+total — and after that, their own payment, tip and method.
+
+That ordering is the point, not a layout preference. Four receipts from a table
+of four have to line up and tell the same dinner: same products, same subtotal,
+same VAT, same total, with only the last block differing. A receipt showing one
+person's share alone lets them check nothing — not that they were charged for
+what they ordered, nor that the parts sum to the whole.
+
+So the `bill` block is derived from the bill and nothing else. `billSection`
+takes a bill id and no payment; there is no parameter through which one diner's
+figures could reach it, and an integration test deep-compares two diners'
+receipts from the same table to hold that. The per-rate breakdown comes from
+`summariseTaxGroups`, the same function that writes the bill's stored totals,
+rather than a second implementation that would drift by a rounding céntimo.
+
+It is anchored to the payment rather than to the open bill, for the same reason
+the invoice is: the receipt is read right after the charge is confirmed, which is
+the instant the bill closes.
+
+**A receipt is not a fiscal invoice.** It evidences that a charge happened. It
+carries no control number, no authorised printer issued it, and it does not serve
+to deduct tax. The screen says exactly that at the foot, rather than letting the
+look of a document imply otherwise. The fiscal invoice is requested separately —
+see *Fiscal invoicing* below.
+
+The header carries the restaurant's name, its RIF and its `fiscalAddress`, set
+through `PATCH /api/v1/account`. Any of them that is missing is omitted rather
+than shown as a gap, and never invented. Sending `fiscalAddress: ""` clears it:
+without that, a mistyped address could never be removed.
+
+## The restaurant's own name
+
+`PATCH /api/v1/account` (OWNER, MANAGER) sets it. It is the first thing a diner
+reads after scanning the code on the table, above the table number — a shopfront
+rather than an internal label — and until this endpoint existed it could only be
+set once during onboarding. A restaurant that signed up as "Splite Demo", or
+simply mistyped, had that in front of every customer with no way to correct it.
+
+Nothing else in the record is touched here. Menu currency, charges and the payee
+each have their own endpoint, because each is a different decision with a
+different reach.
+
+## Charges: IVA and servicio
+
+A bill total is not just the sum of its lines. Both charges are configured per
+restaurant in **basis points** as integers — `1600` is 16%, `1000` is 10% — and
+are **snapshotted onto the bill when it opens**, for the same reason the FX rate
+is: changing a restaurant's rates must never reprice a meal already eaten.
+
+```
+  subtotal          sum of the line items
++ IVA               sum over tax rates of (rate x that rate's base)
++ service charge    service_charge_bps x subtotal, NOT taxed
+= total
+```
+
+**IVA is calculated per rate, not per bill.** Each line freezes its own
+`tax_category` and `vat_bps` when it is added, exactly as it freezes the price.
+Recalculation groups the lines by frozen rate, applies each rate once to its
+own base, and sums the groups.
+
+Where every line is taxed alike — which is every bill opened before migration
+038, and most bills after it — there is a single group whose base is the whole
+subtotal, so the arithmetic is identical to the old `vat_bps x subtotal`. That
+equality is not an assumption: `test/integration/billItemTax` asserts the
+totals against arithmetic written out by hand, so a regression in the engine
+cannot validate itself.
+
+Grouping by rate rather than by line also keeps the total independent of how
+many rows the same food was split across: one rounding per rate, not one per
+renglón.
+
+`bills.vat_bps` survives as the restaurant's **general** rate — the default a
+new line inherits. It is no longer the rate every line paid, so a client must
+not recompute `vatMinor` from it; the per-line `taxCategory` and `vatBps` say
+what was actually applied.
+
+**IVA is not charged on the servicio.** Both are taken on the subtotal
+independently and summed; the service charge never enters the taxable base.
+Compounding them — taxing subtotal + service — overstates IVA on every bill, so
+there is an explicit test asserting a $100 subtotal at 16/10 totals 126.00 and
+not 127.60.
+
+`CHECK (total_due = subtotal_minor + service_charge_minor + vat_minor)` means a
+total that disagrees with its parts cannot be stored at all, by the application
+or by anything else. Every insert has to write a consistent row.
+
+Both rates default to **zero**, including for Venezuela's statutory 16%: a
+restaurant is configured deliberately, and a migration must never silently move
+an existing total.
+
+### What a product is, for tax
+
+`menu_products.tax_category` is one of four values, not a `has_vat` boolean:
+
+| | |
+|---|---|
+| `TAXABLE` | taxed at the applicable rate |
+| `EXEMPT` | exempt by the VAT law itself |
+| `EXONERATED` | exonerated by an executive act, which has an end date |
+| `NON_TAXABLE` | not subject: outside the scope of the tax |
+
+The last three all produce zero IVA on the bill, and they are **not** the same
+thing — a sales ledger declares them separately. Collapsing them into "no IVA"
+throws the distinction away at exactly the moment somebody asks for it.
+
+`menu_products.vat_bps` is the product's own rate, and is **null** for almost
+everything, meaning "the restaurant's general rate". Null rather than a copy of
+today's number: a column full of duplicates of the same rate goes out of sync
+the first time anyone changes it. Only a `TAXABLE` product may carry one, which
+a `CHECK` enforces and the API refuses before the database has to.
+
+On `bill_items` the same pair is stored **resolved** — `vat_bps` there is never
+null — because the restaurant can change its general rate tomorrow and a meal
+served tonight cannot follow it.
+
+Migration 038 backfilled every existing line with its own bill's `vat_bps` and
+left every category at `TAXABLE`, which is what they were: until that migration
+there was no way for the menu to say anything else. **No stored total moved.**
+
+This much is needed whatever happens with fiscal invoicing, and is the reason
+it went in first: a máquina fiscal also has to know the tax category of every
+renglón. It is the one part of the tax layer that does not depend on which
+providencia turns out to apply.
+
+A voluntary tip is deliberately not modelled here. It is untaxed and chosen by
+the payer rather than the restaurant, so it belongs with the payment — see
+[Tips](#tips).
+
+## Fiscal invoicing (architecture, not conformance)
+
+**Read this first.** Nothing here makes Splite SENIAT-conforming by having been
+written. No document number and no control number is ever generated by this
+code — both come from an authorised *imprenta digital*, and inventing either
+would be forgery. Until a real authorised provider is connected and the setup
+validated by an accountant, this is **prepared architecture** and has to be
+called that.
+
+The regulatory reading it is built on, which a Venezuelan tax lawyer should
+confirm in writing: Providencia SNAT/2024/000102 governs digital invoicing and
+ties sales *at the premises* to the fiscal printer, while SNAT/2026/00084 (12
+August 2026) repealed the software homologation regime of SNAT/2024/000121. The
+build assumes a diner ordering and paying from their own phone is a sale **by
+electronic means**. That calling is each restaurant's, not Splite's, which is
+why invoicing is a capability switched on per restaurant rather than something
+imposed on every tenant.
+
+### The hard part is the remainder, not the document
+
+Several invoices are issued against one table — one per diner who pays — and
+between them they must declare the bill **exactly**: not one céntimo of taxable
+base over or under, and the same per rate. A bolívar of excess base across the
+table's invoices is not a rounding artefact, it is a false declaration.
+
+What makes that awkward here is the split model Splite already has: each diner
+pays a **free amount against what is left**. How many there will be, and how
+much each will put in, is unknown until they do it, so there are no weights to
+divide by up front — which is how most systems solve this.
+
+`src/services/fiscalAllocation.js` answers in the shape the product already
+has: **sequential, against the remainder**. The bill carries one bucket per
+declarable component — one per rate, plus the service charge — and each payment
+takes a slice of every bucket. The last payment takes exactly what is left.
+Exactness is structural rather than checked afterwards, the same decision that
+already governs `splitEngine`.
+
+Dividing by percentage instead is what loses the céntimo: three diners at 33.3%
+do not sum to 100%, and the shortfall lands in the declaration. Against the
+remainder the error is consumed rather than accumulated.
+
+**The rounding that does remain, stated plainly.** Inside a rate group the
+slice is split into base and IVA by the same largest-remainder division, so the
+sum of bases and the sum of IVA are both exact — which is what gets declared —
+but a *single* invoice's IVA can sit one céntimo off applying the rate to its
+own base. That is unavoidable once an amount chosen by the payer has to become
+two whole numbers, and `test/fiscalAllocation.test.js` pins the bound at one
+céntimo rather than leaving it to drift. What is never compromised is the
+total: each invoice is worth exactly what that person paid.
+
+When what each diner ate *is* known — the "Lo mío" mode — nothing is prorated
+and the lines are computed from theirs.
+
+### Which lines a diner's invoice carries
+
+The rule is a product one: **if we know what this person ate, that is what gets
+invoiced; if we do not, it is prorated.** Only one split mode records who
+claimed what — splitting by product — and even then only when that person pays
+exactly their share. Every other case, nobody knows what of the table was
+theirs, and saying otherwise on a tax document would be inventing it.
+
+| | |
+|---|---|
+| `ITEMISED` | Split by product, and the payment matches what was claimed. Real dish lines. |
+| `PRORATED` | The bill's lines, scaled by what was paid. |
+| `AGGREGATE` | One line: "Consumo — parte de la cuenta de la mesa N". |
+
+`ITEMISED` asks for two things at once and both matter. That the split is by
+product, because it is the only mode that records claims. And that the amount
+paid *is* their share: somebody who claimed 400 and put in 250 has not bought
+their dishes, and issuing the dish lines would declare 400 against a 250
+receipt. Splitting equally is prorated among the payers, because equal shares
+say nothing about who ate what.
+
+The basis is stored on the document itself, so in two years it is readable
+rather than deducible.
+
+**Amounts do not come from the lines.** They come from the allocation engine,
+which is what guarantees the table's invoices sum exactly. The lines are built
+afterwards by spreading what the engine already assigned across the lines of
+each rate group. That is backwards from the obvious way — sum the lines, then
+compute the IVA — and deliberately so: summing independently rounded lines is
+precisely where the céntimo goes that turns a split into a false declaration.
+
+A prorated line carries a fractional quantity in thousandths — 0.338 of a
+burger. It is ugly, and it is what prorating means. Rounding the quantity to 1
+would misstate the amount, which is the one thing that cannot move; if the
+ugliness is unacceptable on paper, the answer is `AGGREGATE`, not a rounded
+quantity.
+
+### Per diner, or per table
+
+Both are legitimate, so it is a restaurant setting
+(`restaurants.fiscal_invoice_policy`) rather than a rule:
+
+- **`PER_DINER`** (default) — one fiscal invoice per diner who pays. This is
+  what somebody claiming their own dinner as an expense needs, and it is the
+  case that motivated the work.
+- **`SINGLE_BILL`** — one fiscal invoice for the whole bill. Diners still get
+  their breakdown, derived from that one document, but those breakdowns are not
+  fiscal documents. Firmer regulatory ground — one sale, one invoice — and the
+  right answer for a restaurant that does not want to issue N documents a
+  table.
+
+A partial unique index enforces the second: a bill may hold only one
+bill-level invoice request, so the same sale cannot be declared twice. Credit
+notes are excluded from it, since correcting that invoice is exactly what has
+to remain possible.
+
+Changing the policy is `OWNER` only and audited as `FISCAL_POLICY_CHANGED`. It
+is not profile editing — it decides how the restaurant declares — so it sits
+with the money decisions. `name` stopped being required on `PATCH
+/api/v1/account` when that body grew past the name: requiring it would mean
+resending it to change anything else, which is how a restaurant gets renamed by
+accident in front of every diner who scans the QR.
+
+### Why the document and the attempt are different tables
+
+A fiscal invoice does not have states: it exists or it does not. What has
+states, retries and ambiguous provider responses is the *request*. Keeping them
+in one table would mean allowing `UPDATE` on a legal record in order to move a
+progress field.
+
+So `fiscal_invoice_requests` is mutable and carries the state machine —
+including `UNCERTAIN`, the response that matters most, where the provider
+answered something that does not say whether it issued. Against that the rule
+is to **ask, never blindly retry**: a duplicate invoice is the restaurant's tax
+problem, not an application error, and it cannot be deleted afterwards because
+`fiscal_invoices` refuses `DELETE`.
+
+That refusal is a database trigger, not a convention — it rejects `UPDATE` and
+`DELETE` on the invoice, its lines and its tax breakdown, so it also rejects the
+hand-written statement from a console at eleven at night. An issued invoice is
+not corrected; it is compensated by a credit note. Credit and debit notes are
+admitted by the schema from day one for exactly that reason: adding them later
+would mean altering tables that by then are a taxpayer's legal records.
+
+A unique index makes a second request against the same payment impossible, so
+two taps or a retry racing a response cannot produce two documents. Failed
+attempts are excluded from it — an attempt that died without issuing anything
+must be retryable.
+
+### Talking to the imprenta digital
+
+In Venezuela the control number on an invoice is assigned by an **authorised**
+imprenta digital, not by the system requesting it. That is not an integration
+detail — it is why `src/fiscal/providers` generates no numbers. Splite assembles
+the document's content; an imprenta turns it into a fiscal document.
+
+The interface is two methods, and the second is what makes the first safe:
+
+- `issue(draft)` — asks for issuance. Returns the numbers **the provider
+  assigns**, or says it does not know whether it issued.
+- `lookup(key)` — asks about an idempotency key: "did you issue this?"
+
+Every attempt lands on one of three outcomes, not two. `ISSUED` and `REJECTED`
+are facts. **`UNCERTAIN` is the absence of an answer**, and collapsing it either
+way is the expensive mistake: treat it as rejected and a retry declares the sale
+twice; treat it as issued and you store a legal record with numbers that may not
+exist. So the rule is **ask, never blindly retry** — and if the question cannot
+be asked either, the case waits in a queue a person looks at. Leaving something
+pending is a legitimate outcome here; inventing which way it went is not.
+
+The edge is deliberately distrustful of its own adapters. An unexpected
+exception, an unknown outcome value, or an `ISSUED` with no control number all
+become `UNCERTAIN` rather than a rejection — an adapter that answered badly may
+still have issued. An unknown provider name throws instead of falling back to
+anything.
+
+`test/fiscalProvider.test.js` drives all of it against a mock whose main job is
+to **fail well** — in particular `SILENT_SUCCESS`, which issues and then throws
+a timeout. That is the case that sinks a fiscal integration, and the one you
+cannot provoke on demand against a real service.
+
+**The mock issues documents with invented numbers**, prefixed `MOCK-` so they
+cannot be mistaken for real ones on a screen or in a query. It is enabled by its
+own flag (`FISCAL_MOCK_ENABLED`) rather than by naming it in `FISCAL_PROVIDER`,
+so switching it on is a deliberate, legible act and not a typo in a real
+provider's name. `assertProductionConfig` refuses to boot with it set: one of
+those documents handed to a diner as an invoice is a tax problem with a penalty
+attached, caused by an environment variable.
+
+### Issuing it ourselves
+
+> **Switched off in production (November 2026).** Providencia
+> SNAT/2026/00093 (Gaceta Oficial 43.484, 21 October 2026; in force from 19 April
+> 2027) lists the media an invoice may be issued through — SENIAT's portal or
+> app, an **authorised** imprenta digital or technology provider, or a fiscal
+> machine — and control numbers for digital documents come from the authorised
+> provider. Self-numbering by Splite is not among them, so production runs with
+> `FISCAL_PROVIDER` empty: diners are told in advance that invoices are not
+> requested in the app, and restaurants issue them through their own medium.
+> The way back is an adapter for an authorised imprenta digital (see
+> [Talking to the imprenta digital](#talking-to-the-imprenta-digital)). The code
+> below is kept, and still covered by tests, but should not be re-enabled
+> without legal advice.
+
+`FISCAL_PROVIDER=own` skips the imprenta entirely: Splite assembles the document
+*and* numbers it. The regime changed — SNAT/2026/00084 repealed the software
+homologation rules — and self-issuance became the path we take. **This is not a
+claim of conformance.** What the section above says still holds: the range and
+the format have to come from the taxpayer's own SENIAT authorisation, and
+nothing here validates that they do.
+
+What changes technically is that the two guarantees an imprenta used to provide
+now have to be provided here.
+
+**No duplicates** does not depend on this code being right. Two unique indexes
+on `fiscal_invoices` enforce it — `(restaurant_id, control_number)` and
+`(restaurant_id, document_type, document_number)`. A race that slipped through
+gets its insert rejected rather than producing two documents with one number.
+
+**No gaps** does depend on this code, and it is what rules out a `SEQUENCE`. A
+Postgres sequence is deliberately **not transactional**, so `nextval` followed by
+a `ROLLBACK` burns that number for good. For an internal id that is fine; for a
+fiscal correlative it is not, because the libro de ventas has to be continuous
+and a missing number is exactly what a fiscalización asks about. So the counter
+is a **row that gets locked** (`fiscal_counters`), and it is handed out **inside
+the transaction that writes the document**: if that transaction does not commit,
+the number was not spent either.
+
+The cost is that one restaurant does not number two invoices at once. That is
+affordable — a restaurant issues a few per minute, and the lock no longer spans
+a network call, because there is nobody to wait for. Different restaurants never
+block each other; each locks its own row.
+
+Two counters are taken, always **in the same order** — control first, then
+document type — so two simultaneous issues cannot form a deadlock cycle.
+
+`fiscal_series` holds what was authorised: prefixes, padding width, and the
+control-number range. Two refusals come out of it, and both are **409, not
+retryable**:
+
+| Code | What it means |
+| --- | --- |
+| `FISCAL_SERIES_MISSING` | This restaurant has no authorised series configured. The owner sets it; it is not a deployment setting, which is why the name is not `_NOT_CONFIGURED` |
+| `FISCAL_RANGE_EXHAUSTED` | The authorised range ran out. Issuing past it would produce a document no authorisation covers, so it stops instead of counting on in silence |
+
+A control number is unique **per taxpayer**, not across the platform. 039 had a
+unique index on `(provider, control_number)`, which described the imprenta case
+correctly — the numbers were its series, not ours. Under `own` every restaurant
+shares the same `provider` value, so that index started asserting that two
+taxpayers cannot hold the same control number, which is false: each keeps its own
+book and both may legitimately have a number 1. Measured before dropping it: two
+newly registered restaurants, each with a series starting at 1, and the second
+could not issue — a `23505` with nothing wrong in its authorisation. Migration
+045 drops it; `(restaurant_id, control_number)` is the real rule.
+
+And `UNCERTAIN` stops being reachable on this path. It exists because a third
+party can answer something that does not say whether it issued. When we write the
+document, the transaction either committed or it did not — there is no third
+state to queue for a person.
+
+`test/integration/fiscalNumbering` is where the two guarantees are held to
+account: eight bills on one restaurant invoiced simultaneously come out with
+eight consecutive control numbers, no repeats and no gaps; an allocation whose
+transaction rolls back hands the same number to the next document. Removing the
+row lock fails the first; moving the counter outside the transaction — which is
+what a `SEQUENCE` would be — fails both.
+
+### Setting the series
+
+`GET`/`PUT /api/v1/account/fiscal-series`. Its own endpoint rather than a field
+on `PATCH /api/v1/account`, because it is not a fact about the restaurant — it
+is a SENIAT authorisation transcribed, with its own rule about when it may be
+touched. Folding it into the profile would have meant renaming the shopfront and
+rewriting the series share a permission and an audit entry, and they are not the
+same decision. Reading is open to any staff role; writing is **OWNER only** and
+audited as `FISCAL_SERIES_CHANGED`. A `PUT` replaces the whole series: one
+missing field and it cannot number anything.
+
+An unconfigured restaurant answers `{ "fiscalSeries": null }`, not 404 — "you
+have not set one yet" is an answer, and it is what tells a client to render the
+empty form rather than an error screen.
+
+**Four fields freeze the moment the series numbers its first document**:
+`controlPrefix`, `documentPrefix`, `padTo` and `controlFirst`. Changing them
+would not change the series going forward, it would *contradict what is already
+issued* — the libro de ventas would carry two formats, and documents whose
+numbers no longer match the series claiming them. That answers 409
+`FISCAL_SERIES_LOCKED`, with the offending names in `details.fields` so a form
+can point at them.
+
+What stays open is exactly what changes in practice: `controlLast` and
+`authorisationRef`, for when a new authorisation widens the range. Lowering
+`controlLast` below a number already issued is refused for the same reason as
+the rest.
+
+A prefix typo found after issuing is not fixed here. A wrong document is already
+printed, and that is a credit note, not a settings screen that makes the mistake
+stop showing.
+
+The response carries `nextControlNumber` **formatted**, not raw. It is what the
+next invoice will print, and seeing it that way is what lets somebody check the
+prefix and the padding against the paper authorisation before issuing with them
+instead of after.
+
+### Not offering what cannot be given
+
+`GET /api/v1/guest/payments/{id}` carries `canRequestInvoice`. A client reads it
+**before showing anything about invoicing at all** — including the "you will be
+able to ask once your payment is confirmed" line.
+
+It exists because of a measured failure, not for symmetry. That line was
+unconditional: it rendered whenever the payment was not yet settled, checking
+nothing. The diner waited, the payment settled, they tapped, and only then did
+the API refuse — 403, because that restaurant's plan does not include invoicing
+— and the screen turned into "invoices are not requested here". The promise was
+not merely false. Someone who needed a fiscal invoice did not ask a member of
+staff *because the app told them to wait*, and by the time it took the promise
+back they could be at the door.
+
+The refusals were all knowable before anyone tapped: the plan does not include
+it, the deployment has no issuer, the restaurant has no RIF on file, or it has
+not configured its series. `fiscalInvoicing.canIssue` folds them into one
+boolean — deliberately without saying which. Which one it is concerns the
+restaurant, and what the diner should do is the same in every case: ask staff
+before leaving.
+
+**The RIF is one of them, and it was not checked anywhere.** The issuer's RIF is
+mandatory content on a Venezuelan fiscal invoice, not decoration in a header —
+but the invoice email printed it under `if (restaurant.rif)` and the receipt
+passed it through as `?? null`, so a restaurant without one issued incomplete
+documents **silently**. That is the worst way to fail here: the paper comes out,
+it looks like an invoice, and it is not one. `issueForPayment` now refuses with
+409 `FISCAL_RIF_MISSING` before anything else, for every issuer — a printer does
+not supply the taxpayer's own RIF either. An empty string counts as missing;
+it prints just as blank as a null.
+
+Self-service signup always records a RIF, so only rows created some other way
+can be in that state. There is no screen to set one after the fact — `PATCH
+/api/v1/account` does not accept it — so fixing such a row today means going to
+the database.
+
+**It rides on the payment, not on the bill.** Confirming a payment is what
+closes the bill, so the instant the invoice becomes askable is the instant
+`GET /guest/bill` stops answering. A flag living there would vanish at the one
+moment it is needed — which is exactly the screen the diner was seeing.
+
+True is not a guarantee. The payment still has to be settled and the bill must
+have something left to declare; `canRequestInvoice` says the offer is honest,
+not that a document will come out. The `unavailable` outcome stays on the client
+as a backstop for the race where a plan changes between the poll and the tap.
+
+The rule the tests hold is that the flag and the server cannot disagree: each
+case asserts both the flag and what `POST /guest/bill/invoice` answers, because
+a test watching only the boolean would still pass the day the server started
+refusing for a different reason.
+
+### Asking twice, and what the diner is told
+
+Two taps, or a retry after a dropped connection, answer **409
+`FISCAL_ALREADY_REQUESTED`**. One payment, one document — that was already
+guaranteed by a unique index on `fiscal_invoice_requests (payment_id)`, and it
+still is. What changed is how the collision is reported: it used to escape as a
+bare `23505`, which the error handler turned into **500 `INTERNAL_ERROR`**.
+Measured before the fix, on a partial payment: the second and third attempts
+both answered 500.
+
+That matters beyond tidiness, because of what a client can say. There is exactly
+one outcome that means *pending, and somebody is looking at it*: **202 with
+`UNCERTAIN`**. A request row exists, it sits in the queue, and a person will
+resolve it. Every other non-success is a refusal — no request row, no queue
+entry, nobody resolving anything.
+
+The diner-facing client used to collapse all of them into "your invoice is on
+its way, the restaurant is resolving it". On the deployment as it stands, with
+no `FISCAL_PROVIDER` configured, the common case was a 503 painted as a promise
+nobody could keep. The offer now distinguishes them: the restaurant does not
+issue from the app (503 or 403 — which of the two is not the diner's business),
+already requested, already declared in full, the payment not yet confirmed, and
+a genuine failure that is worth retrying. Only `UNCERTAIN` says "on its way".
+
+### The draft is stored before the call
+
+`fiscal_invoice_requests.draft_json` holds what was sent, because of the
+ambiguous case. When the answer arrives later — minutes or hours later, from
+that queue — the bill has moved on: other diners have paid, other invoices have
+been issued, and what remains to declare is no longer what it was. Rebuilding
+the draft then would produce a *different* document, and the one the provider
+issued is the first. So the sent draft is recorded, not today's recomputation.
+`test/integration/fiscalInvoicing` asserts exactly that, by letting a second
+diner invoice in between.
+
+The provider call happens outside the transaction that created the request. A
+network call inside one holds a locked row open for as long as the far end takes
+to answer — or not to answer.
+
+### Getting the invoice to the diner
+
+An issued invoice is emailed to whoever left an address. Two rules govern it,
+and both are about what must *not* happen.
+
+**A mail failure never touches the invoice.** The document is issued, declared
+and valid whether or not the email arrives; what is missing when sending fails
+is a delivery, not an invoice. So nothing in `fiscalMail` runs inside the
+transaction that writes the document, and nothing in it can throw into one. A
+test holds this by breaking the transport and asserting the invoice is still
+`ISSUED` with its control number — it fails if the send is ever awaited into the
+issuing path.
+
+**A simulated document is never dressed as a fiscal invoice.** The `mock`
+provider issues invented `MOCK-` numbers, and its email says so in its first
+line and its subject. The boot guard already refuses the mock in production;
+this is the second fence.
+
+`fiscal_invoice_deliveries` is a separate table because `fiscal_invoices` is
+immutable by trigger (migration 039) and a send status is the opposite — it
+moves from PENDING to SENT, counts attempts, keeps the last error. Putting it on
+the document would mean lifting the immutability of a legal record to move a
+progress field.
+
+The delivery row is written **inside** the issuing transaction so an invoice
+with an address cannot exist with no trace of a send. The send itself happens
+after, and **is not awaited**: the diner already has their control number on
+screen and should not wait on an SMTP dialogue that may take
+`MAIL_TIMEOUT_MS`. The price is that a process restarted mid-send leaves the row
+PENDING — which is why `npm run fiscal:mail` exists and runs as the third step
+of the scheduled maintenance pass. It retries PENDING and FAILED alike up to
+five attempts, then leaves the row alone and prints a WARNING: a mistyped
+address is not fixed by retrying. It deliberately never exits 1, so that a 1
+from the maintenance pass keeps meaning exactly one thing — reconciliation
+drift.
+
+A unique index on `(invoice_id, lower(email))` makes a second copy impossible:
+two taps, or a sweep racing the original send, cannot become two emails carrying
+the same document.
+
+`GET /api/v1/fiscal/invoices/{id}` carries `delivery`, so the restaurant can
+answer "it never reached me" from a screen rather than by guessing. It is null
+when nobody left an address, which is the majority case and not a gap.
+
+**What is not built.** There is no attachment: the mailer is a port with one
+body field and three adapters (`mailer.js`), and the email carries the
+document's fiscal data as text rather than a PDF. A real imprenta typically
+returns a PDF or a URL, and there is nowhere to keep one yet — `fiscal_invoices`
+has `provider_document_id` and no document URL. There is also no staff-facing
+resend endpoint; a stuck delivery is visible but has to be retried by the sweep.
+
+### Reads are never gated
+
+Issuing is an `ENTERPRISE` capability (see the plan table above). Reading an
+already-issued invoice is gated by nothing at all, ever. The duty to keep them
+outlives the subscription, and an invoice that became unreadable because an
+invoice went unpaid would be a problem Splite created.
+
+So `requirePlan` appears on `POST /api/v1/fiscal/requests/{id}/resolve` — which
+can end up recording a document — and on nothing else in
+`src/routes/fiscal.js`. `test/integration/fiscalRoutes` drops a restaurant to
+`TRIAL` *after* it has issued and asserts that the list, the document and the
+queue all still answer 200.
+
+### The email, and the two things it is for
+
+The address is asked for with a concrete reason — so the invoice can arrive —
+and the restaurant would also like to send promotions. **Those are two
+purposes.** Somebody who typed their email so a document would reach them has
+not, by doing that, agreed to receive advertising. Putting both behind one
+"yes" is precisely what gets challenged later.
+
+So `guest_contacts` keeps them as two columns. `invoice_opt_in` is why the row
+exists. `marketing_consent` defaults to **false** and reaches true only when
+someone ticks a box that was empty — there is no default on the field, and it is
+never inferred from the address being present.
+
+A boolean on its own would be worthless in a complaint, so consent carries
+`consent_at` and `consent_source`: what has to be shown is *when* it was given
+and *from which screen*, not that a flag is set.
+
+Three behaviours follow, and none is a detail:
+
+- **Leaving the address again does not reactivate a withdrawal.** Somebody who
+  unsubscribed, dines again months later and asks for their invoice stays
+  unsubscribed — they have not said yes a second time. A `CASE` in the upsert
+  enforces it and `test/integration/guestContacts` asserts it; removing that
+  branch fails exactly that test.
+- **A withdrawal keeps the row.** Deleting it would destroy the evidence that
+  consent once existed, which is the thing to produce if someone complains about
+  a message they say they never asked for — and would let the same address walk
+  back into the list without anybody agreeing again.
+- **The contact belongs to the restaurant, not to Splite.** The unique key is
+  `(restaurant_id, lower(email))`, so the same person can want to hear from one
+  place and not another. Merging them across tenants would use the data for
+  something nobody authorised.
+
+`GET /api/v1/account/contacts` returns only the diners who said yes and have
+not withdrawn. There is deliberately **no parameter for "all the addresses"**:
+it would exist to be used, and the only thing to do with the rest is send them
+something they did not ask for.
+
+### The name, and why it is not a step
+
+`bill_split_participants.name` has been accepted by the split API since it
+existed; the guest screen simply never offered a field. It does now — one
+optional line just before the split is agreed, which is the moment it starts
+being worth anything.
+
+Without it the list reads "Comensal 2" and works fine. The value is for
+everyone *else* at the table: seeing who has already paid without asking out
+loud. That is why it is a line and not a step.
+
+### Asking for one
+
+`POST /api/v1/guest/bill/invoice`, offered after paying, beside the receipt.
+Before payment it would turn a dinner into paperwork.
+
+**Consumidor final is the main path.** Every recipient field is optional and a
+body carrying only `paymentId` is a complete request. Most people do not hand
+over their cédula for a dinner; if the minimal body did not suffice, the
+majority case would be the awkward one. Somebody who does give it usually needs
+it exact — they are claiming an expense — so `taxId` is validated against the
+same cédula/RIF pattern the rest of the API uses rather than accepted as free
+text.
+
+The bill comes from the QR session, so a diner can only invoice a payment on
+their own table. There is no field in which to name another.
+
+The response code carries the distinction that matters: **201 only when a
+document exists.** An attempt that ended `UNCERTAIN` or `FAILED` answers 202
+with `invoice: null`, because saying "created" about a document that may never
+exist is the kind of lie a client then renders to a diner. Every response also
+carries `paymentUnaffected: true` — worth saying out loud, since a failure here
+never means the payment failed. The money is taken and the receipt stands; what
+may be pending is the fiscal document.
+
+For the panel, `GET /api/v1/fiscal/requests?status=UNCERTAIN` is the queue,
+returned **oldest first** — the opposite of the invoice list — because a doubt
+from yesterday is more urgent than one from a minute ago.
+
+## Where the money goes
+
+Splite never holds it. A Pago Móvil goes from the diner's account to the
+restaurant's, so the payee is not administrative trivia — without it the bill
+screen shows what is owed and offers no way to pay it.
+
+```
+PUT /api/v1/account/payout      bankCode, accountNumber, phone, holderId
+GET /api/v1/account/banks       the picker, with integration status
+```
+
+OWNER and MANAGER only. This is the address money is sent to: getting it wrong
+does not degrade the product, it pays a stranger.
+
+Four fields together or none, enforced in the schema *and* by a CHECK. A
+half-filled payee looks configured on screen and cannot receive money, and that
+failure lands on a diner holding a phone rather than on whoever filled in the
+form. `{}` clears it.
+
+A Venezuelan account number begins with its own four-digit bank code, so
+`accountNumber` and `bankCode` are one fact typed twice and are checked against
+each other — which catches the right account entered under the wrong bank in the
+picker, an error that would otherwise surface as a payment that never arrives.
+
+`holderId` is recorded rather than taken from `restaurants.rif`: plenty of small
+restaurants bank on the owner's cédula. It accepts `V E J G P C` — the union of
+our original list and the one in Mercantil's own C2P form, which offers `C` and
+omits `E`. Turning away a legitimate account holder at a configuration screen is
+the expensive error.
+
+`phone` must be a **mobile** line — `0412`, `0414`, `0416`, `0422`, `0424`,
+`0426`. A landline cannot receive a Pago Móvil at all, so accepting one
+configures a payee that can never be paid, and the diner finds that out rather
+than the restaurant. `0422` was added after a live C2P checkout was seen
+offering it: a diner on that range could not have paid us, and the error we gave
+them said their own number was not Venezuelan.
+
+**The diner is not shown the account number.** A Pago Móvil is addressed by
+bank, phone and identity document; the account number adds nothing to it, and
+anyone who scans a sticker on a table reaches the guest surface. `dto.payout`
+and `dto.guestPayee` are separate mappers for that one reason.
+
+### Banks are not one integration
+
+`src/payments/banks.js` is the registry, and `integration` on each entry is the
+honest part: `null` means we have no module for that bank. **Every entry is null
+today.** A restaurant may name any bank — that is where diners send money
+whether or not we have an API — but only a bank with a module can take part in
+an in-app payment, and `chargeable` on the API says which is which.
+
+There is no such thing as "the bank API" here. Each bank exposes its own, with
+its own credentials, its own field encryption, and its own idea of what a
+payment reference is. Mercantil's C2P, for instance, takes a merchant id, client
+id, secret key, integrator id and terminal id — **one set per restaurant** — and
+encrypts the identity document, both phone numbers and the payment key with
+AES-128-ECB before sending. That is one integration. Banesco is another.
+
+> **The bank list is still not officially sourced**, though it is no longer only
+> from memory. It has been cross-checked against two independent published lists,
+> which agreed with every code already in it and added three that were missing
+> (`0146` Bangente, `0173` Banco Internacional de Desarrollo, `0178` N58). The
+> only disagreements were names, both of them renames: `0169` Mi Banco is now
+> R4, and `0175` Banco Bicentenario became Banco Digital de los Trabajadores in
+> July 2024. Codes did not move, so payees configured under the old names still
+> work.
+>
+> The authoritative document exists — the BCV publishes the institutions active
+> in the SCCE — and we still have not read it: `sudeban.gob.ve`,
+> `www.sudeban.gob.ve` and `cbn.org.ve` do not respond, and `bcv.org.ve` is
+> blocked from our network. The dead ends are recorded in
+> `src/payments/banks.js` so nobody repeats them; what is left is fetching that
+> PDF from a network that can reach the BCV, or asking a bank directly, since
+> Mercantil gives its integrators the `destination_bank_id` list.
+>
+> **A bank picker elsewhere is not a registry.** A live Venezuelan C2P checkout
+> was compared against this table and offered eleven institutions we do not
+> list — but most are dead, including Banco Industrial de Venezuela, ordered
+> into liquidation in 2016. Its dropdown is a snapshot of whenever it was last
+> edited. The live ones it named were added; the rest deliberately were not,
+> because listing a dead bank lets a restaurant configure a payee that can never
+> receive money.
+>
+> The cross-check limits the damage meanwhile: an account number carries its own
+> bank's code, so a wrong name-to-code pairing shows up as a rejected form at
+> configuration time rather than as misdirected money. The hole it does not
+> cover is two banks transposed — both would validate. No payment path uses
+> these codes today, so **confirming the list is a prerequisite for the first
+> bank module, not for the first restaurant.**
+
+### Bank API credentials
+
+Separate from the payee for a reason that is not tidiness. Those fields are
+readable by design, some of them by anyone who scans a table QR; these are the
+only values in the system that let software move a restaurant's money, and they
+are issued by the bank to the merchant, so we cannot rotate them if they leak.
+
+```
+GET    /api/v1/account/payment-providers
+PUT    /api/v1/account/payment-providers/{provider}
+DELETE /api/v1/account/payment-providers/{provider}
+```
+
+**OWNER only** — not MANAGER, who may set the payee. Saying where money should
+be sent and letting software move it are different kinds of authority.
+
+Sealed with **AES-256-GCM** before reaching the database, in
+`src/payments/credentials.js`. Not the AES-128-ECB Mercantil specifies for
+fields inside its own request bodies: ECB is deterministic and unauthenticated,
+which is fine to implement when a counterparty requires it for a phone number in
+transit and wrong for something we choose ourselves for data at rest. GCM
+detects tampering, and a modified credential fails loudly rather than decrypting
+into one that talks somewhere else.
+
+**Nothing returns a credential.** There is no read endpoint, and
+`dto.paymentProviderConfig` has no field that could carry one — `configured` is
+a boolean because the alternative, a masked tail like `sk_live_••••4821`, is a
+leak with a decoration on it, and the four characters shown are the four an
+attacker needed to confirm a guess. `loadCredentials` is the single function
+returning plaintext; it is reachable only from `src/payments/`.
+
+The credential set is an **opaque sealed blob**, not columns. No two banks agree
+on what a credential is: Mercantil issues five fields, the next bank will issue
+a different number with different names, and a schema trying to be the union of
+all of them means a migration per bank plus a row of nulls for every bank that
+does not use them. The shape lives in a per-provider registry in
+`src/payments/providerConfigs.js`; adding a bank is an entry in that object.
+Unknown fields are rejected rather than stored — a blob that carries whatever
+was sent is where a stray password ends up, sealed forever and invisible to
+review.
+
+Two rules the database enforces rather than trusting the service to remember:
+
+- **Storing credentials does not switch a rail on.** `enabled` defaults to
+  false, and replacing credentials resets it. New credentials are unproven
+  credentials however good the old ones were, and a mistyped secret key must not
+  leave a rail on and quietly broken.
+- **A rail cannot be enabled on credentials nobody has proven.** `CHECK (NOT
+  enabled OR credentials_validated_at IS NOT NULL)`. Only a real call to the
+  bank sets that timestamp — there is no endpoint for it, because "these
+  credentials work" is a fact an adapter establishes by using them, not a
+  checkbox somebody ticks.
+
+Keys are a ring, `PAYMENT_CREDENTIALS_KEYS=1:<key>,2:<key>` with
+`PAYMENT_CREDENTIALS_ACTIVE_KEY_VERSION`. The interesting moment is not the
+first encryption but the rotation years later: add a version, point the active
+version at it, and `providerConfigs.rotate()` re-seals old rows in batches. Each
+row records the version that sealed it, so that query uses an index instead of
+decrypting everything to ask.
+
+The key is read lazily and never asserted at boot. Most deployments will never
+store bank credentials, and a missing key must break storing them rather than
+break starting the app — it answers 503 `PAYMENT_CREDENTIALS_KEY_MISSING`, which
+says configuration rather than bug.
+
+## Getting paid
+
+Four ways money reaches a bill, and they all settle through **one** function —
+`applyToBill` in `src/services/locks.js`. That matters: the rules are that a
+bill must be OPEN, that the running total may never exceed what is due, and that
+CLOSED happens on exact equality and nowhere else. Each path had a reason to
+write its own version, and each version was subtly different — `>=` instead of
+`===` closes a bill on an overpayment and swallows the difference, and an
+omitted status check settles a bill that was voided an hour ago.
+
+| Path | Who says the money arrived | Verified by |
+| --- | --- | --- |
+| `POST /api/v1/bills/:id/payments` | staff at the till | the person taking it |
+| `POST /api/v1/guest/bill/payment-claims` → `confirm` | the diner | a person with the bank app open |
+| `POST /api/v1/guest/bill/c2p` | Splite, on the diner's instruction | Mercantil's charge response, or staff resolving an in-doubt one |
+| `POST /api/v1/webhooks/:provider` | the provider | an HMAC signature |
+
+The C2P path is the only one where Splite **initiates** the debit rather than
+being told about money after it moved, which is what makes it the delicate one —
+see [Mercantil C2P](#mercantil-c2p) below.
+
+### How a payment reaches a table
+
+`payments` carries `restaurant_id` and `bill_id`, and **no `table_id`**. The
+table is reached through the bill, because a payment belongs to a bill and the
+bill is what sits on a table; a copy of `table_id` on the payment would be a
+second record of the same fact, and two records of one fact drift.
+
+```
+payments.restaurant_id ─────────────────→ restaurants.id
+payments.bill_id ───────────────────────→ bills.id
+                          bills.table_id ─┐
+                     bills.restaurant_id ─┴─→ tables (restaurant_id, id)
+```
+
+Both links are composite foreign keys, so a row cannot name one restaurant while
+pointing at another's record — `bills_table_same_restaurant_fk` (migration 004)
+and `payments_bill_same_restaurant_fk` with
+`payment_transitions_payment_same_restaurant_fk` (migration 016). Every write
+path already re-reads the bill under `WHERE id = $1 AND restaurant_id = $2`, but
+that is discipline in application code; these are the guarantee, and this is the
+table that holds money.
+
+Which restaurant and table a payment belongs to is never taken from the request
+body:
+
+| Path | Restaurant from | Table from |
+| --- | --- | --- |
+| Staff | `req.user.restaurantId`, in the JWT | the bill named in the URL |
+| Diner | the guest session | the guest session |
+| Webhook | the signed body, then re-checked against the payment row | the payment's bill |
+
+The diner's case is the strictest and worth stating plainly: **a guest never
+names a bill.** Their session comes from a signed QR carrying `tableId` and
+`restaurantId`, and the open bill is resolved with
+`WHERE restaurant_id = $1 AND table_id = $2 AND status = 'OPEN'`. There is no
+identifier to tamper with, and the partial unique index on
+`(restaurant_id, table_id) WHERE status = 'OPEN'` is what makes table → bill a
+function rather than a guess.
+
+### Declared Pago Móvil
+
+Splite never touches this money — it goes from the diner's bank to the
+restaurant's — so no API of ours can watch it arrive. A diner declares a payment
+and a reference; that creates a `payments` row in **PENDING** and touches
+`bills.amountPaidVes` not at all. A bill that showed itself as paid because
+somebody typed a number into a form would be worse than one showing nothing,
+because the restaurant would stop asking.
+
+Staff work the queue at `GET /api/v1/payments/claims` and either confirm
+(OWNER/MANAGER/CASHIER — a waiter can take an order, deciding money arrived is a
+cashier's job upwards) or reject with a reason.
+
+**What the verifier is given to match on.** The reference is required and is
+what makes a claim checkable at all. Three optional fields make it quick, and
+they are the three a receiving bank prints beside the movement:
+
+| Field | Shape | Why |
+| --- | --- | --- |
+| `phoneOrigin` | a Venezuelan mobile line | a Pago Móvil has no other origin, so a landline here is a typo in the one field that finds the movement |
+| `bankOrigin` | a four-digit bank code | "Banesco", "banesco" and "BANESCO 0134" are one bank that compares as three |
+| `idOrigin` | a cédula or RIF | the strongest of the three — a phone can be borrowed and a bank is shared by millions |
+
+All three are optional: a diner who cannot supply them is still a diner who
+paid. But they are validated as the facts they are rather than accepted as free
+text, because the person who pays for a sloppy value is the one reading it off a
+screen with a bank app open in the other hand. Staff see them through
+`staffPaymentClaim`, which also resolves `bankOriginName` — the diner-facing
+`paymentClaim` carries none of it, since the guest surface is reachable by
+anyone who scans a sticker on a table.
+
+`bankOrigin` became a code after it had been free text, so claims declared
+earlier may carry a name. Those are shown as they were given with
+`bankOriginName: null`, because somebody working last week's queue is better
+served by an imperfect answer than by a blank.
+
+**Nothing pushes.** That makes an unwatched queue the weak point of the rail
+that actually carries money today: a diner declares a payment, nobody opens the
+screen, and they leave believing they have paid. Two things make it audible
+without waiting for a notification service:
+
+- `GET /api/v1/payments/claims/summary` returns `pending`,
+  `oldestPendingAt` and `oldestPendingAgeSeconds` — cheap enough to poll from
+  every screen in the room, on its own partial index (migration 026), and
+  separate from the queue itself so a badge is not pulling claim rows and payer
+  phone numbers to render a number. Any authenticated role can read it,
+  including WAITER: a waiter cannot decide money arrived, but they are the
+  person standing in the room. Poll at a human interval — 15 to 30 seconds, not
+  per second; it shares the API rate limit with everything else the till does.
+  The **age** is the half that matters. A count cannot tell a claim that arrived
+  ten seconds ago from one ignored for an hour, and those are opposite
+  situations. It is computed server-side, so a browser with a skewed clock
+  cannot invent either one.
+- The reconciler reports claims still pending beyond
+  `RECONCILE_UNWORKED_CLAIMS_HOURS` (2) as *attention*, alongside the C2P queue
+  — see [Reconciliation](#reconciliation). Two hours is well past any plausible
+  service window for one table, so a claim that old is not a busy night, it is a
+  queue nobody is working. This is the half that needs no frontend at all: with
+  no screen ever built, a neglected evening still reaches whoever reads the
+  nightly run.
+
+References are normalised to digits and hold a partial unique index per
+restaurant, excluding FAILED and CANCELLED. That closes the cheap attack —
+table A reads their reference aloud, table B with an identical total types the
+same number, and a member of staff glancing at a phone confirms both — while
+still letting a diner who mistyped correct it after a rejection.
+
+A claim is **not** a reservation. Two diners may each claim the whole balance;
+only the first confirmation can succeed, and the second gets 409.
+
+**A refusal from the share is not a refusal from the bill.** When a claim names
+a split share and that share can no longer take the money — the split went stale
+or was voided while the claim sat in the queue — the bill is still credited and
+the attribution is dropped, reported as `shareDetached`. Staff have found this
+transfer in the bank account, so its arrival is not in question, only where to
+file it; rolling the whole confirmation back left verified money stuck PENDING
+with no path to the bill at all, permanently, since a refusal about the *plan*
+cannot be argued with by retrying. The payment's `split_participant_id` is
+cleared rather than left dangling, because a settled payment still naming a
+share it never credited reads as permanent drift in `bill_split_share_drift`.
+The C2P rail deliberately answers the same refusal differently: there we
+initiated the debit, so the charge is parked for a person.
+
+### Mercantil C2P
+
+The first rail where Splite asks for money to move rather than being told it
+already did. The diner obtains a single-use *clave* from their own bank, hands it
+to us with their phone and cédula, and `POST /api/v1/guest/bill/c2p` asks
+Mercantil to pull the amount. That one difference — we initiate — is where all
+the care goes.
+
+The response is an outcome, and **all four must be handled**:
+
+| Status | Meaning | What the client must do |
+| --- | --- | --- |
+| `SUCCEEDED` | settled | show the bill figures in `settlement` |
+| `FAILED` | the bank said no | a retry with a fresh clave is safe |
+| `IN_DOUBT` | the bank did **not** say | **never offer a retry** — the debit may have landed |
+| `AMBIGUOUS` | a confirmed debit that could not be credited to the bill | staff resolve it, possibly a refund |
+
+`IN_DOUBT` is the one that matters. Mercantil does not promise that
+`invoice_number` deduplicates, so a charge whose outcome we never learned must
+not be reported as declined — the diner would retry and pay twice for one
+dinner. A timeout, a `408/425/429`, any `5xx`: all indeterminate, never a
+rejection. The payment sits in `IN_DOUBT` and `bills.amountPaidVes` is untouched,
+exactly as a PENDING claim is.
+
+Staff resolve it. `POST /api/v1/payments/c2p/:id/resolve` asks Mercantil for its
+movements and settles only when one matches on **both** the amount and the last
+four digits of the payer's phone. Amount alone is a filter, never a decision:
+two tables owing an identical total is the ordinary case in a restaurant, and
+matching on amount would settle one table with the other's money. A movement it
+cannot attribute moves the charge to `AMBIGUOUS` with the candidate references
+attached, rather than guessing. `GET /api/v1/payments/c2p/unresolved` is the
+queue that state implies — a charge that correctly refuses to guess is otherwise
+indistinguishable from one that was lost. One bank movement settles exactly one
+payment, enforced by the `(provider, provider_payment_id)` unique index.
+
+That guarantee is a **string comparison**, so it only holds while a movement has
+one spelling. Mercantil's charge endpoint quotes a reference grouped
+(`9000 0000 0999`) and its search endpoint returns it plain
+(`900000000999`); stored as they arrived, those are two rows — the index does
+not collide, the resolver's spent-movement probe does not match, and the same
+debit settles two tables. Every write and every comparison now goes through
+`canonicalReference`, which collapses a value that is only digits and separators
+down to its digits. It deliberately leaves anything carrying a letter alone: a
+`providerPaymentId` such as `TX-4F2A-9` is an identifier rather than a number,
+and stripping it to `429` would lose it and invite a collision with a real
+reference. Leading zeros are kept too, so `0900…` and `900…` stay distinct —
+merging references that may genuinely differ is a worse failure than leaving one
+split, and if Mercantil turns out to pad inconsistently, that is a question for
+them rather than a guess for us. A value that is *only* separators is kept
+verbatim as well: the unique index is partial (`WHERE provider_payment_id IS NOT
+NULL`), so blanking it would leave that movement unconstrained and free to
+settle a second bill — the very thing being prevented.
+
+Migration 025 backfills the rows written under the old rule, and checks for
+collisions first so a failure names the payments rather than surfacing as a bare
+constraint violation. **That failure repeats on every deploy, deliberately.**
+The migration ledger row is written in the same transaction as the migration, so
+a failure records nothing and the next deploy stops in the same place; there is
+no skip and none should be added. Two payments holding one movement is a double
+settlement, a person has to refund one of them, and until they do, holding back
+every later migration is the correct outcome.
+
+**A matched charge the bill can no longer take is parked, not retried forever.**
+Once the bank names a movement for a charge, `IN_DOUBT` has stopped being true —
+we now know the money moved. If the bill closed or was voided while the charge
+sat in the queue, `applyToBill` refuses it, and the charge goes to `AMBIGUOUS`
+with the reference recorded, exactly as a confirmed debit does on the charge
+path. It is the same money in the same position, so it gets the same answer: a
+person decides, usually a refund. Leaving it `IN_DOUBT` meant every later
+resolve re-ran the same query, matched the same movement and failed the same
+way, so it never reached anybody while the diner stayed debited — and because
+the attempt row rolled back with it, the queue showed a charge that looked as
+though it had never been tried.
+
+Parking is deliberately narrow, and by allowlist rather than by "did it throw".
+A settlement credits the bill and — when the payment names a share — that share
+too, so it can be refused from either side: `BILL_NOT_FOUND`, `BILL_NOT_OPEN`,
+`PAYMENT_EXCEEDS_BALANCE` from the bill, and `SPLIT_STALE`, `SPLIT_NOT_ACTIVE`,
+`SPLIT_SHARE_OVERPAID`, `SPLIT_SHARE_NOT_FOUND` from the share. All of them are
+settled facts that asking again cannot change.
+
+`AMBIGUOUS` is a state only a person leaves, so everything else keeps the charge
+`IN_DOUBT` and retryable. A statement timeout or a dropped connection says
+nothing about the bill. A reference conflict says nothing either: it means the
+movement was claimed by another payment between our search and our commit, so it
+was never ours.
+
+**Past six hours, resolution stops answering the question.** The bank is asked
+for movements from at most `RESOLUTION_WINDOW_MAX_MS` ago, so once a charge is
+older than that the window no longer contains the moment it happened — and both
+conclusions turn unsafe at the same time. An empty answer is not "the debit
+never landed", because we asked about the wrong hours; and a *matching* movement
+at that remove is more likely the same payer paying the same amount again, which
+would settle an old charge with new money. So the charge leaves automated
+resolution for `AMBIGUOUS` with `safeToRetry: false`, without a bank call being
+spent on it. It was previously marked `FAILED` and reported as safe to retry —
+an invitation to charge a diner twice, aimed at exactly the charges the
+reconciler surfaces, since that job reports C2P charges unresolved beyond six
+hours.
+
+The unresolved queue also reads **PENDING** charges older than the settlement
+window. PENDING is what a charge is while the bank is being called — normal for
+seconds, impossible for hours — so an old one is a charge whose outcome was
+never recorded, and it is the only kind nothing else would show. That matters
+because the in-doubt transition is now attempted rather than depended upon: if
+the database refuses it, the failure is logged and the caller still hears
+`IN_DOUBT`. Throwing would reach the route, which aborts the idempotency key,
+releasing the client to raise a second charge for a debit that may already have
+landed — the double charge caused by our own bookkeeping rather than by the
+bank.
+
+The charge is idempotency-keyed and rate limited to 8 per 5 minutes per session,
+because each attempt burns a clave the diner had to fetch and consumes the
+restaurant's quota with Mercantil. The clave is validated for shape, used once,
+and never stored — there is no column for it, and it is redacted out of every
+diagnostic.
+
+`GET /api/v1/guest/c2p/banks` returns, per bank, how to obtain a clave — the
+channels it offers, the SMS short code and body, and how long the clave lives.
+That last field is load-bearing: most banks give six hours, but Banplus gives
+five minutes and 100% Banco ties the clave to the amount, so those must be
+fetched at payment time, not when the diner sits down. The step Splite does not
+control is the diner asking their own bank, and a generic "ask for a clave" is
+what strands them.
+
+The `invoice_number` is a formal, server-owned id — `SPL-<REST8>-<PAY32>`, the
+restaurant's short id and the payment's full id — built from values we control,
+never read from the request, and registered before Mercantil is called. Its
+shape is enforced by a CHECK (migration 021), so every invoice reads back to its
+restaurant and its payment. A C2P charge may also carry a `splitParticipantId`
+to settle one share of a persistent split (see [Splitting a bill](#splitting-a-bill)).
+
+One caveat, stated plainly: the Mercantil **wire format** — field names, paths,
+and whether amounts cross as bolívares or céntimos — is taken from their
+playground and **not yet confirmed against a live integration**. It is isolated
+in `toMinorUnits`/`toBankAmount` with a round-trip test, so correcting the amount
+convention is a one-function change, but it must be confirmed before the first
+real charge.
+
+### Provider webhooks
+
+`POST /api/v1/webhooks/:provider`, its own router at its own path. Mounting the
+payments router under a second prefix to also serve webhooks makes every payment
+route answer there too, and middleware attached by prefix is then skipped by
+changing the URL — an authorisation bypass dressed as a convenience.
+
+There is no session; the signature is the credential. `X-Splite-Signature` is
+HMAC-SHA256 over `{timestamp}.{rawBody}`, with `X-Splite-Timestamp` in unix
+seconds. Three details are load-bearing:
+
+- It signs the **raw bytes**. `req.rawBody` is captured by the `express.json`
+  verify hook for exactly this. Signing a re-serialised `req.body` compares an
+  HMAC of our JSON formatting against one of theirs, and those differ over key
+  order and whitespace.
+- The timestamp is **inside** the MAC. Beside it, an attacker replays a captured
+  signature with a fresh timestamp and the window buys nothing.
+- The **amount comes from our record, never the body.** A valid signature proves
+  who sent the delivery and nothing more; settling whatever figure it names lets
+  a compromised provider key rewrite a bill.
+
+**202 means "stop sending this"**: settled, a duplicate of something settled, or
+a body that never named a payment and never will however often it is resent.
+Providers retry on any non-2xx and on timeouts where we did succeed, so
+answering a duplicate with an error teaches one to retry forever.
+
+It deliberately does *not* cover a delivery we merely failed to process. A
+callback can overtake the commit of our own PENDING payment row — that gap is
+milliseconds and providers are fast — and answering 202 there loses a real
+settlement permanently: the money has moved and the bill never closes. Those
+answer **503 `WEBHOOK_PAYMENT_UNRESOLVED`** with `Retry-After`, as do database
+failures.
+
+Duplicate detection is a primary key on `webhook_events_processed (provider,
+provider_event_id)`, written **inside the settling transaction** so the two
+cannot come apart: no ordering leaves money moved and the event unrecorded, or
+the reverse. A concurrent duplicate blocks on that key, then rolls back having
+settled nothing. A *failed* attempt claims nothing at all — a claim that
+outlived its failure would block the retry meant to fix it, which is the trap in
+claim-first idempotency.
+
+The Redis entry the signature middleware sets is not that guarantee. It is keyed
+on the signature and lives twice the timestamp tolerance, and providers re-sign
+every retry, so it only ever catches byte-identical replays inside ten minutes
+while retry budgets run for days. It stays because it is cheap and it stops a
+captured request being replayed verbatim.
+
+Send an `eventId`. Without one the only protection left is the payment status
+check, which cannot tell two events for the same payment apart.
+
+Every delivery is recorded in `webhook_deliveries`, rejected ones included:
+repeated signature failures are how a leaked or rotated secret announces itself,
+and a body we threw away cannot be investigated.
+
+A delivery may only settle a payment recorded against **that same provider**.
+Without the check, `PENDING` was all that was being tested — and a Pago Móvil
+claim is `PENDING` with no provider at all, so a webhook naming its id settled
+it, silently performing the verification a member of staff exists to perform.
+
+Only the `SPLITE` provider exists today. A real acquirer is an entry in
+`PROVIDERS`, not an edit to anything around it.
+
+`WEBHOOK_SECRET` is one secret shared by every restaurant, which is a real limit
+rather than an oversight: whoever holds it can name any tenant's pending
+payment. The blast radius is bounded — the amount comes from our record, the
+payment must exist, be `PENDING`, and belong to the provider that signed — but
+rotation is all-or-nothing. Per-restaurant credentials are the fix and they wait
+on the acquirer, since there is nothing yet to hold credentials *for*. **Card payments are not built
+yet** — that needs an acquirer, and with one there is no matching problem at
+all: the acquirer answers authoritatively, so none of the reconciliation
+machinery above applies.
+
+## The service dashboard
+
+```
+GET /api/v1/payments/dashboard          the room, the queues and the takings
+GET /api/v1/payments/activity?since=…   what has happened since you last looked
+GET /api/v1/tables/floor                per table, with its open bill
+```
+
+Every one of these figures could be assembled by a client from endpoints that
+already existed. That is exactly why they are here: **assembling them meant
+adding up money in a browser**, and amounts cross this wire as strings precisely
+because `Number` loses precision past 2^53. A total a client summed is the one
+figure nobody checked. They are summed in Postgres instead, in one call.
+
+`outstandingVes` is the number a manager looks at first — what the room still
+owes, due minus paid, and not something a client should compute by subtracting
+two strings.
+
+**A declared Pago Móvil is not takings.** It appears under `claims.pending` and
+leaves `outstandingVes` alone, because a diner saying they paid is not money
+until somebody has found it in the bank app. The takings figure reads settlement
+from the transition to SUCCEEDED rather than from when the row was created, for
+the same reason the tips report does.
+
+**Neither is what was forgiven.** `adjustments` carries what closing bills wrote
+off in the window — a total, a count of bills, and a breakdown into `DISCOUNT`,
+`COMP` and `WRITE_OFF` — and is never added into `taken`, because it is money
+that did not come in. It sits here rather than in a separate report because it
+is the counterpart of the takings figure: without it, a shift that forgave fifty
+thousand bolívares looks like a shift that simply took less. See
+[Closing a bill for less than it owed](#closing-a-bill-for-less-than-it-owed).
+
+### On "today"
+
+There is no timezone on a restaurant, and this product is Venezuela-only, so an
+unset `from` means the start of the current day **in America/Caracas**. In UTC a
+service ending at 23:00 local lands in tomorrow, which would make the takings
+wrong for the last four hours of every evening. A service that crosses midnight
+should pass `from` explicitly — the same rule the tips report teaches.
+
+### Knowing a payment landed
+
+`GET /api/v1/payments/activity` is a cursor, not a push. Poll it with the `asOf`
+from the previous response; entries come oldest first, so the last one is the
+next cursor, and `asOf` is returned even when nothing happened so a poll
+advances instead of re-scanning the same window forever.
+
+Two kinds, because they call for different reactions: **`SETTLED`** is money
+that became real, and **`DECLARED`** is a diner who says they paid and needs
+somebody to open the bank app. Each carries the **table name**, because nobody
+recognises a uuid across a dining room.
+
+A real push notification needs a service worker, a subscription store and a
+sender, none of which are built. This is what makes polling cheap enough that
+the absence does not matter for a screen somebody is already watching.
+
+### The floor, per table
+
+`GET /api/v1/tables/floor` gains `openedAt` and `openMinutes` — how long the
+table has been sitting, which a manager reads as either "they are ready for the
+bill" or "something has gone wrong" — plus `pendingClaims`, the diners at that
+table who say they have paid and nobody has checked, and `tipVes` so a table
+that tipped well is visible while its diners are still there.
+
+`openMinutes` is computed server-side on purpose: a browser subtracting dates
+does it against the visitor's clock, which is how a table comes to read as
+opened in the future.
+
+## Tips
+
+A tip rides on a payment and **never touches the bill**. `payments.tip_ves` sits
+beside `amount_ves`, and the bill's own columns — `total_due_ves`,
+`amount_paid_ves` — are untouched by it. That is not tidiness; putting a tip on
+the bill breaks three things at once:
+
+- `CHECK (amount_paid_ves <= total_due_ves)` would reject it, because a diner
+  who tips has handed over more than the bill asks for. That constraint is what
+  makes overpayment impossible, and it must not be relaxed for this.
+- A bill CLOSES on **exact equality** with its total. A tip inside
+  `amount_paid_ves` would close a bill early or never, depending on which side
+  of the total it landed on.
+- `payment_ledger_drift` proves the cached balance against `SUM(amount_ves)`. A
+  tip inside that sum reads as permanent drift on every tipped bill.
+
+So `amount_ves` stays exactly what it always was — the part of the bill this
+payment settles — and the tip sits next to it. What the payer actually handed
+over is `amount_ves + tip_ves`, and that sum is what a bank is charged and what
+a till receives. Nothing else in the schema has to know.
+
+It is optional on all three diner-facing rails, defaulting to zero:
+
+| Path | Field | What the money does |
+| --- | --- | --- |
+| `POST /api/v1/bills/{id}/payments` | `tipMinorUnits` | recorded on the payment; the bill advances by `amountMinorUnits` alone |
+| `POST /api/v1/guest/bill/payment-claims` | `tipVes` | staff verify `amountVes + tipVes` against the bank app as one figure |
+| `POST /api/v1/guest/bill/c2p` | `tipVes` | **Mercantil is asked to pull `amountVes + tipVes`**; only `amountVes` is credited to the bill |
+
+The C2P row is the one to read twice. The diner's bank sees the single figure
+they authorised, the bill sees only its own share, and the two are different
+numbers on purpose — and that carries into resolution: an in-doubt charge is
+matched against `amount + tip`, because that is the debit the bank actually
+holds a movement for. Matching a tipped charge on the share alone finds nothing,
+and "nothing" on that path means a charge written off while the diner stands
+debited.
+
+Responses report both halves rather than one merged figure: a payment result
+carries `tipVes` and `totalChargedVes`, and a claim carries `tipVes` and
+`totalPaidVes`. Staff reconciling against a bank statement need the sum; the
+ledger needs the share.
+
+**A recorded tip is immutable.** `payments_guard_transition` refuses to let
+`tip_ves` move, exactly as it already refuses `amount_ves` — a tip a restaurant
+could quietly reduce after the diner has gone is not a tip. Correcting one is a
+refund and a new payment, not an edit.
+
+There are no suggested percentages in the API. What to offer a diner — 10, 15,
+20 — is a screen decision that changes per restaurant and per campaign, and
+storing it here would make every change a deploy. Clients send an amount.
+
+### Reading tips back
+
+`GET /api/v1/payments/tips?from=…&to=…` answers the only question anybody asks
+of them: how much came in over this shift, and how did it arrive.
+
+```json
+{
+  "from": "2026-08-19T16:00:00.000Z",
+  "to": "2026-08-20T04:00:00.000Z",
+  "currency": "VES",
+  "totalTipsVes": "16400",
+  "inTillVes": "3000",
+  "owedToStaffVes": "13000",
+  "unclassifiedVes": "400",
+  "byMethod": [
+    { "paymentMethod": "C2P", "payments": 4, "tipsVes": "12000" },
+    { "paymentMethod": "CASH", "payments": 2, "tipsVes": "3000" },
+    { "paymentMethod": "SPLITE", "payments": 1, "tipsVes": "400" }
+  ]
+}
+```
+
+### Whose tips these are
+
+```
+GET /api/v1/payments/tips/mine?from=…&to=…   your own
+GET /api/v1/payments/tips?from=…&to=…        the shift, including byServer
+PATCH /api/v1/bills/:id/server               correct who served a table
+```
+
+Tips have been recorded per payment since migration 024 and reported per shift
+since. What never existed was any link between a bill and the person who served
+it — so the report could tell a restaurant what it owed its staff in total, and
+could tell no individual member of staff what they had earned.
+
+That is the half that changes behaviour. **A pooled figure a manager reads once
+a week is an accounting line; a number a waiter watches climb during their own
+shift is an incentive**, which is the reason to build tipping into the product
+at all.
+
+`bills.servedBy` is set to whoever opens the bill. That is right when the person
+taking the order opens it — which is the usual path, since adding the first
+order is what creates the bill — and wrong when a host or cashier opens it for
+somebody else. So it is correctable, by OWNER and MANAGER, and audited, because
+it moves money between people.
+
+**A correction is retroactive, deliberately.** Attribution is read through the
+bill's *current* server at query time rather than snapshotted when the payment
+settled, so fixing who served a table fixes the tips that followed from it. A
+correction that left yesterday's money against the wrong name would not be one.
+That is also why a waiter cannot reassign their own tables.
+
+Bills with no server — everything predating the column — report under a null
+`userId` rather than being dropped. Hiding them would make the parts stop
+summing to the total, which is exactly the kind of silent gap somebody finds
+while dividing cash.
+
+`/tips/mine` takes no user id: it is always the caller's own. A waiter seeing
+their own total is the whole incentive; seeing everybody else's is a different
+feature with a different conversation behind it, and a manager already has
+`byServer`.
+
+### Is tipping actually working?
+
+A total cannot answer that — a bigger number on a busier night says nothing. The
+report carries `billedVes` beside `totalTipsVes` and a **`tipRateBps`**: tips as
+basis points of what was billed, so 840 is 8.40%.
+
+Basis points and integer arithmetic, for the reason IVA and the service charge
+are bps: a rate gets compared against a target, and 8.4 that is really 8.399999
+is a number somebody argues with. Null when nothing was billed — zero would read
+as "nobody tipped", and "there was nothing to tip on" is a different fact about
+a shift.
+
+The split between `inTillVes` and `owedToStaffVes` is the point. A cash tip is
+physically in the drawer and the restaurant is only deciding how to divide it;
+an electronic tip landed in the restaurant's *bank account* and is a debt to
+staff until it is paid out. One number for both would describe two different
+situations identically.
+
+**Which bucket a tip lands in comes from `payment_method`**, so the till
+endpoint accepts an optional `paymentMethod` (`CASH`, `CARD`, `TRANSFER`,
+`SPLITE`, `OTHER`) alongside the amount. Send it whenever a tip is involved.
+Without it the payment records the default `SPLITE`, and the tip is reported as
+`unclassifiedVes` — deliberately its own figure rather than folded into either
+of the others, because calling it cash cancels a real debt to staff and calling
+it electronic pays out money already in the drawer. The three always sum to
+`totalTipsVes`. `C2P` and `PAGO_MOVIL` are not accepted from a client: those are
+set by the rails that own them, and naming one here would be claiming a bank
+movement nobody verified.
+
+The period is read from **when the payment settled**, not when its row was
+created. For a card or a cash sale those are the same instant. For a declared
+Pago Móvil they are not: the row is created when the diner says they paid, and
+it settles when a member of staff finds the transfer in the bank app — which can
+be hours later, and can be after midnight.
+
+This reverses an earlier decision, so the argument is worth keeping. Reporting on
+creation files a tip in the shift it was *earned* in, which is the fairer answer
+to "whose tip is it". But it made a closed shift's number **retroactively
+mutable**: a claim declared at 23:50 and confirmed at 00:10 was absent from
+Friday's report at midnight and present in it on Monday. Whoever divided the cash
+on Friday night divided the smaller number, and nothing told them a later
+confirmation would change it.
+
+A figure that money is handed out against has to be final once the shift is over.
+Settlement time gives that: after the queue is worked, a past window never moves
+again. The cost is a real one — a tip earned before midnight and confirmed after
+it appears in the next shift's figures — and a restaurant that cares about which
+crew earned it should work the claims queue before closing the till, which is
+worth doing anyway for the reason the queue exists.
+
+Only **SUCCEEDED** payments count. A tip on a PENDING Pago Móvil claim is money
+a diner *says* they sent, and counting it would have a restaurant hand out cash
+against a transfer nobody has verified; `IN_DOUBT` and `AMBIGUOUS` are excluded
+more sharply still, being charges we cannot yet prove landed at all.
+
+The window is **half-open** — `from` inclusive, `to` exclusive — so two
+consecutive shifts tile without both claiming a payment on the seam. Both bounds
+are required: a report whose period was guessed is a number somebody hands out
+money against.
+
+Nothing is cached. The per-bill figure is a `SUM` over the ledger rather than a
+counter on `bills`, because a second counter is one more thing that can fall out
+of step with the money — which is precisely what `payment_ledger_drift` exists
+to catch.
+
+## Splitting a bill
+
+`POST /api/v1/bills/{id}/split/preview` — and the guest equivalent at
+`/api/v1/guest/bill/split/preview` — computes who owes what. It is **advisory
+and mutates nothing**: it computes and returns, and payment goes through the
+payments endpoint, which holds the row lock and enforces the ceiling. To store a
+plan a group settles against, see [Persisting the split](#persisting-the-split)
+below — the preview and the persisted split compute the same allocation through
+the same engine, so they are never different numbers.
+
+| Mode | Behaviour |
+|------|-----------|
+| `FULL` | one participant owes the balance |
+| `EQUAL` | divided evenly, largest remainder |
+| `ITEMS` | participants claim lines, whole or by units; a shared claim splits between its claimants |
+| `CUSTOM` | the client states amounts, which must add up exactly |
+
+**Every mode divides the same figure** — the outstanding VES balance, echoed
+back as `outstandingVes`. Two bases would mean a client had to know which figure
+each mode picked, which is the arithmetic this endpoint exists to remove from
+the frontend.
+
+Exactness is structural: every mode routes through the largest-remainder
+allocator, whose parts sum to the total by construction, and the engine then
+asserts it and raises rather than return a quietly wrong bill.
+`totalAllocatedVes` is returned so a client can assert the same thing instead of
+trusting it.
+
+`ITEMS` allocates in three stages, all largest-remainder — the balance across the
+lines by subtotal, then each line's result across the claims on it by units, then
+each claim's result across the people on it, evenly. Every line must be claimed,
+because an unclaimed line is money owed by nobody and the parts could not sum.
+
+A line may be claimed **by units**: `quantity` on a claim says how many of the
+line's units it covers, so *three beers, two on Ana's tab and one on Luis's* is
+two claims on one `itemId`. Where a line is claimed more than once, the
+quantities must add up to the line's own quantity — claiming two of three leaves
+a unit owed by nobody, and the split is refused with `SPLIT_CLAIMS_INCOMPLETE`
+rather than silently short. A claim that omits `quantity` claims the whole line,
+which is what a claim meant before quantities existed, so clients written
+against the older shape keep their meaning exactly. `CUSTOM` refuses amounts that do not add up rather than rounding
+them into shape, which would hide a client bug behind a number that looks right.
+
+There is one *preview* endpoint, not two. An earlier
+`GET /bills/{id}/split?diners=n` answered a strictly narrower version of the same
+question and was removed rather than left alongside this one, because two
+endpoints that nearly agree are a choice a client should not have to make.
+
+### Persisting the split
+
+Preview computes and forgets. `POST /api/v1/bills/{id}/splits` — and the guest
+equivalent `POST /api/v1/guest/bill/splits` — computes the same allocation
+through the same engine and **stores** it, so a table agrees a plan once and
+settles it from several phones. Two things become impossible that the preview
+alone allowed: a group could not persist a plan across their devices, and one
+diner could pay past their share and leave another unable to pay theirs, because
+at the bill level the money was fine.
+
+The stored split is a `bill_splits` row with a `bill_split_participants` share
+per diner and, for `ITEMS`, who is on which line in `bill_split_items` — one row
+per (line, participant), so a person on one line in two claims is one row. The
+money is in the shares, computed per unit; these rows record participation. Both of
+its invariants are the **database's**, not the service's (migration 020), so an
+API path that forgot the rule still cannot break it:
+
+- The shares sum to the split's basis — the outstanding balance the moment it was
+  agreed — checked by a deferred constraint trigger at commit, whole.
+- A share is never overpaid: `CHECK (amount_paid_ves <= amount_ves)`, the exact
+  analogue of the bill-level ceiling one level down.
+
+The share is frozen once agreed; only its paid figure moves. A partial unique
+index allows one `ACTIVE` split per bill — a group that changes its mind voids
+the current one (`POST /api/v1/bills/{id}/splits/{splitId}/void`, refused once a
+share has been paid into) and agrees another. `GET .../splits/active` reads the
+live one.
+
+Voiding takes the participant rows' locks rather than just summing them.
+`advanceShare` locks the participant row and reads the split's status through a
+join without locking the split, so an unlocked `SUM` could read zero while a
+share payment committed beside it — leaving a VOID split with money credited to
+one of its shares. **Settled money is also not the only money:** a declared Pago
+Móvil or an in-doubt C2P charge names a share and has not credited it yet, and
+voiding out from under one strands it. Those are refused too, naming how many
+are in flight, because rejecting or resolving them first is a real step for
+staff rather than something the system can decide.
+
+A split can only be agreed on an **OPEN** bill, checked in `createSplit` rather
+than in each route — the same reasoning that puts the payment rules inside
+`applyToBill`. A split of a voided bill is a plan nobody can settle: the shares
+compute perfectly against its outstanding balance, the table can read them off a
+screen and agree to them, and then every payment is refused by `applyToBill`,
+one diner at a time, at the till, long after the group thought the question was
+closed. A settled bill was already refused, but incidentally — nothing
+outstanding, so the *basis* failed and the bill's state was never consulted;
+that is the right answer from an argument that stops holding the moment a status
+other than OPEN can carry a balance.
+
+The void is **scoped to the bill in the path**, not only to the tenant. That URL
+states a containment relationship, and it has to be enforced rather than
+implied: a split that is not on that bill reads as 404, the same answer a split
+from another restaurant gets. Without the check, any of a restaurant's own bill
+ids voided any of its splits — crossed ids in a client voided the wrong table's
+plan, the response came back naming a bill the caller had never asked about,
+and, since voiding is what releases the one-`ACTIVE`-per-bill index, a group
+still settling against that plan could have a second one created underneath
+them.
+
+A payment settles a share by naming `splitParticipantId` — on the staff payment,
+a Pago Móvil claim, or a C2P charge. Whichever rail it is, the share is credited
+in the same transaction that moves the money, at the one point every settlement
+passes through (`src/services/payments.js`), scoped to the bill it settled: a
+payment cannot credit a share on another bill, or one whose split was voided. The
+participant row is locked `FOR UPDATE`, so two diners racing the same share
+serialise and the second is rejected on its ceiling rather than both crediting.
+
+**A split stops governing a bill that changed underneath it.** The basis is
+frozen so the plan does not move as it is paid — but the bill itself can move,
+and in a dining room it routinely does: the table agrees to split, then orders
+another round. Adding or removing a line marks any live split `STALE`, and a
+stale split takes no further payment (409 `SPLIT_STALE`). Without that, the split
+went on claiming the old total, both diners paid their share in full, and the
+bill sat OPEN with the difference owed by nobody — everyone believing they were
+square and the table unable to be cleared.
+
+Stale rather than recomputed, because silently rewriting what a group agreed to
+is worse than telling them it changed, and a share somebody has already paid
+cannot move anyway. Money already paid in stays exactly where it was — it is on
+the bill's ledger regardless — and the group agrees a fresh split on what is
+actually left, which the one-active-per-bill index now permits. An edit that
+leaves the total unchanged leaves the agreement standing: staleness is about the
+figure, not about the fact of an edit.
+
+`GET .../splits/active` returns the ACTIVE split, or the most recent STALE one —
+so a client can tell "the bill changed, agree a new split" from "this table never
+agreed one", which are otherwise the same empty result. Branch on `status`.
+
+The split is a plan for who pays which part; it is **not** a second record of how
+much the bill has been paid. That stays `bills.amountPaidVes`, so cash at the
+till still settles the bill outside any split and the bill-level ceiling still
+governs it. Participant labels are client-owned and anonymous — a share is a part
+of a bill, not a Splite account.
+
+## Table QR codes
+
+`npm run qr` mints a code for every active table and writes a printable sheet:
+
+```
+QR_URL=https://your-api QR_EMAIL=you@example.com QR_PASSWORD='…' \
+QR_APP_URL=https://your-frontend npm run qr
+```
+
+Each code encodes `<QR_APP_URL><QR_APP_PATH>?qr=<token>` — a **frontend** URL,
+not an API one. Scanning it opens the guest app, which exchanges the token at
+`POST /api/v1/guest/sessions` and renders that table's bill. `QR_APP_PATH`
+defaults to `/t` and should match whatever route the frontend actually serves;
+it is inside the printed code, so confirm it before printing.
+
+The token is signed, not secret — it names its restaurant and table in plain
+base64url, and is useful only because the signature cannot be forged. The
+`nonce` inside it is checked against `tables.qr_nonce` on every scan.
+
+**A QR does not expire.** It is printed onto furniture, so a clock is the wrong
+control: revocation is rotating that table's nonce, which invalidates every
+code already printed for it, immediately.
+
+```
+POST /api/v1/guest/tables/{tableId}/qr/rotate
+```
+
+Set `QR_TTL_SECONDS` only for codes that *should* expire — one printed on a
+receipt rather than stuck to a table. The value is baked into each token when it
+is minted, so changing it later does not affect codes already printed.
+
+Minting goes through the API rather than the database so that it stays
+restricted to OWNER and MANAGER, stays tenant-scoped, and leaves a `QR_ISSUED`
+audit entry.
+
+### What a scan lands on
+
+A scanned code does not have to mean "open the bill". A diner reaching for a
+phone at a table is as likely to want the menu, and a session is the wrong
+price for reading one — so the code resolves first, and the diner chooses:
+
+```
+POST /api/v1/guest/qr/context   ->  { restaurant, table, hasOpenBill }
+                                     |
+                   menu ------------ +------------ bill
+                     |                              |
+GET /api/v1/menu/public/{restaurantId}/products    POST /api/v1/guest/sessions
+(no session)                                       (the existing flow)
+```
+
+Before this route the menu was unreachable from a QR at all: the public menu
+endpoints need a restaurant id, and the only way to learn one was to mint a
+session first. Both things a person does at a table were behind the same door.
+
+`POST`, not `GET`, alone among the read surface. The token would otherwise sit
+in `req.url`, which the access log records on every request. It is a low-value
+credential printed on furniture in a public room, but there is no reason to copy
+it into every log line to save a verb.
+
+The response carries no money. `hasOpenBill` is the one fact the landing needs —
+whether to offer the bill at all — and it says only what anyone standing in the
+room can already see. What the table owes stays behind the session.
+
+Both public routes that accept a printed code run the same checks from one
+function: the HMAC, a tenant-scoped table lookup, `active` on the table and its
+restaurant, and the nonce. Every failure is the same `QR_INVALID`, message
+included — a code stuck to a table is read by strangers, and distinguishing
+"no such table" from "rotated nonce" would answer questions about a restaurant
+to somebody holding a photograph of its furniture.
+
+## Guest access
+
+A diner scans a table QR, exchanges it for a session, and reads their bill:
+
+```
+POST   /api/v1/guest/qr/context          resolve a printed code, no session
+POST   /api/v1/guest/sessions            exchange a signed QR for a session
+GET    /api/v1/guest/bill                the open bill for that table
+POST   /api/v1/guest/bill/split/preview  split it
+DELETE /api/v1/guest/sessions            end the session
+```
+
+**No guest route takes a resource id.** The table comes from the session, which
+came from a signed QR whose nonce is checked against the table row, so a guest
+cannot ask for a bill that is not theirs — there is no identifier to tamper
+with. Rotating a table's nonce invalidates every code already printed for it.
+
+The session is a bearer token held in Redis, and only its SHA-256 is stored, so
+a dump of Redis yields nothing usable. Guests see a deliberately narrower view
+than staff: `dto.guestBill` withholds `restaurantId`, `calculationVersion` and
+the rate provenance, and publishes the rate itself so a client can show an
+approximate menu-currency figure.
+
+## Money model
+
+Settlement is **always VES**, in céntimos, stored as `BIGINT`. A menu may be
+priced in VES, USD or EUR, but those are what the prices were *quoted* in —
+never what is charged. `bills.currency` carries the menu currency and
+`total_due_ves`/`amount_paid_ves` carry settlement (migration 008); migration
+003 had briefly constrained `currency` itself to VES, when USD and USDT were
+being applied at face value against a bolívar balance.
+
+The exchange rate is **frozen when the bill is opened** and reused for every
+later split, so the total a diner is quoted cannot move while they eat.
+`total_due_ves`/`amount_paid_ves` are the authoritative settlement pair; the
+menu-currency figure is display. An FX outage can stop a *foreign-currency bill
+being opened* (503, fail closed), but it can never reach a payment — payments
+use the rate already frozen on the bill and make no FX call at all.
+
+Splits use largest-remainder allocation (`src/services/split.js`) so the parts
+sum to exactly the total. Rounding each share independently would leave the last
+diner unable to pay under `CHECK (amount_paid_ves <= total_due_ves)`, or leave
+the bill permanently a few céntimos short of closing.
+
+## Exchange rate
+
+`GET /api/v1/exchange-rate` returns the official reference rates published by
+the [Banco Central de Venezuela](https://www.bcv.org.ve/):
+
+```json
+{
+  "rates": {
+    "USD": { "rate": "757.54060000", "valueDate": "2026-08-10", "source": "BCV" },
+    "EUR": { "rate": "875.21695680", "valueDate": "2026-08-10", "source": "BCV" }
+  }
+}
+```
+
+BCV publishes no API, so each rate is parsed from its own block on their home
+page — `id="dolar"` and `id="euro"` (`src/connectors/bcv.js`) — in a single
+request, and cached for 15 minutes. Their own
+`cache-control` is 5 minutes and the figure changes at most once per business
+day. Policy lives separately in `src/services/fx.js`, which is the single place
+that decides whether a rate is usable.
+
+`valueDate` is **the date the rate applies to, not when it was fetched**. BCV
+posts the figure that takes effect on the next business day, so the page can be
+read at any hour — a rate read on a Saturday normally carries Monday's date. Do
+not key anything on "today".
+
+**A deployment less than a day old may have no rate at all.** BCV publishes
+after ~16:30 Caracas for the next business day, so a service started that
+evening sees a rate that is not yet in force and has no history to fall back
+on: `/api/v1/exchange-rate` answers 503 and a foreign-currency bill cannot be
+opened until midnight Caracas. Nothing is wrong, and nothing needs doing —
+the newly published rate is persisted as it arrives, and comes into force on
+its own. VES-priced bills are unaffected throughout.
+
+There is **no fallback rate anywhere**. A rate is rejected if it falls outside
+`FX_MIN_RATE`/`FX_MAX_RATE` or moves more than `FX_MAX_DEVIATION_PCT` from the
+last known good value, and a failure returns null rather than a stale or
+invented number. The endpoint answers **503** in that case; payments are
+unaffected either way.
+
+`fx_rates` keeps the rate history and doubles as the deviation baseline, so a
+restart does not lose the last known good value.
+
+> **TLS note.** `bcv.org.ve` serves an incomplete certificate chain — it presents
+> the wrong Sectigo intermediate, so the leaf cannot be verified against Node's
+> root store alone. `curl` and `openssl` mask this by fetching the missing
+> certificate themselves; Node does not. The correct intermediate is committed at
+> `certs/sectigo-public-server-auth-dv-r36.pem` and added to the trust list for
+> that request. Certificate verification is **never disabled**. That file is
+> deliberately exempted from the `*.pem` rule in `.gitignore`, and the image
+> copies it in; without it the lookup fails at runtime.
+
+## Migrations
+
+Migrations live in `/migrations` and are applied in filename order by
+`npm run migrate`, each in its own transaction, guarded by a Postgres advisory
+lock so concurrent deploys cannot race.
+
+`002_phase1_hardening.sql` adds a **globally unique staff email** index.
+Deduplicate `users.email` across restaurants before applying it to a database
+that already holds data.
+
+`003_ves_settlement.sql` constrains bills to VES and adds the locked-rate
+columns. It rewrites any non-VES bill currency to `VES`, so check that no live
+bill is mid-payment when you apply it.
+
+### Going backwards
+
+**There are no down migrations, and that is the design rather than the gap it
+looks like.** Writing thirty reverse scripts is the obvious answer and the wrong
+one: most of them are not honestly reversible — dropping a column back does not
+return the data that was in it — and a set of scripts nobody has ever run is a
+set of scripts that does not work, discovered at the worst possible moment.
+
+What makes a rollback possible instead is a property every migration has to
+hold:
+
+> A migration must leave a schema the **previous release's code** can still run
+> against.
+
+Hold that and rolling back is redeploying the previous image and nothing else —
+no schema step, no window where the two disagree. It also means a deploy is safe
+in the other direction: the migration runs before the new code is serving, and
+the old code is still serving while it runs.
+
+In practice that means **expand, then contract, a release apart**. Add the new
+column, backfill it, and let both live for a release; drop the old one only once
+nothing running reads it. `payments.tip_ves` and `guest_sessions` are both
+shaped that way.
+
+Three migrations break the rule — `006`, `008` and `009` — and each says so at
+the top of the file, in the words `NOT-BACKWARD-COMPATIBLE` and the reason. All
+three predate the first deployment, when there was no previous release to
+strand. Rolling back past one of those means restoring a backup, not redeploying.
+
+A test enforces all of this: it fails on a migration that drops a table or
+column, changes a column type, adds `NOT NULL` to an existing column, renames,
+truncates or deletes rows — unless the file carries that marker. It also pins
+the list of marked files at exactly those three, so a fourth is a decision
+somebody takes deliberately and defends in review rather than discovers in an
+incident. And it checks that every `CREATE TABLE`/`CREATE INDEX` carries
+`IF NOT EXISTS`, so replaying against a restored database is not an error
+somebody has to reason about while the service is down.
+
+## Process lifecycle
+
+An unhandled rejection and an uncaught exception are both **fatal**: log at
+`fatal`, drain, exit non-zero, let the orchestrator start a clean process.
+
+Registering a listener for `unhandledRejection` overrides Node's own default,
+which since v15 is to throw and terminate. A listener that only logged did not
+merely fail to act — it disabled the runtime's crash behaviour and left the
+process running on state nobody had reasoned about. For this service that
+matters: a rejection can surface after a bill's row lock is taken but before the
+transaction resolves, or between applying a payment and storing its idempotency
+response. Continuing means serving further payments from a process whose
+in-flight guarantees are already unknown.
+
+**Exit codes are load-bearing.** A signal exits `0` because stopping was
+intentional; anything fatal exits `1`. Exiting `0` after a crash reads as a
+clean stop, so `restart: on-failure` would leave the service down and
+Kubernetes would not record a failure. A forced exit after the drain timeout is
+also `1` — something refused to let go.
+
+**Readiness fails immediately** once a shutdown begins, so a load balancer stops
+routing new requests while in-flight ones finish. Liveness deliberately keeps
+answering `200`: failing it would have the orchestrator kill the process
+outright instead of letting it drain.
+
+## Database timeouts
+
+Four settings that are often confused for one another:
+
+| Setting | Bounds |
+| --- | --- |
+| `DB_CONNECTION_TIMEOUT_MS` | waiting to **obtain** a pooled connection |
+| `DB_STATEMENT_TIMEOUT_MS` | how long **one statement** may run |
+| `DB_IDLE_IN_TRANSACTION_TIMEOUT_MS` | a transaction that has stopped progressing |
+| `DB_PAYMENT_STATEMENT_TIMEOUT_MS` | the payment path's own statement budget |
+
+A connection timeout says nothing about query duration, so the first two are not
+alternatives. `statement_timeout` is set server-side, so Postgres cancels the
+query itself; a client-side `query_timeout` would only stop node-pg waiting
+while the backend carried on holding locks.
+
+`idle_in_transaction_session_timeout` matters here specifically because
+`processSplitPayment` takes `SELECT ... FOR UPDATE` on a bill. A client that
+stalls between `BEGIN` and `COMMIT` holds that lock, blocking every other diner
+paying the same bill until the TCP connection dies.
+
+**Payments get a larger budget deliberately.** Not because the queries are slow
+— they are a locked read and two writes — but because *waiting for the lock
+counts toward `statement_timeout`*. Several diners paying at once serialise, so
+the last one in a busy split can spend most of its budget blocked rather than
+working. `withTransaction(fn, { statementTimeoutMs })` applies it with
+`SET LOCAL`, which reverts on commit so an enlarged budget cannot leak onto the
+next caller to borrow that pooled connection.
+
+One thing this deliberately does **not** try to solve: slow Venezuelan payment
+rails. Bank confirmation latency is not database time, and the fix is to keep it
+out of the transaction rather than to raise a SQL timeout to cover it.
+
+That is a standing rule rather than an observation about payments:
+
+> **No external network call while a transaction holds a business lock.**
+
+Two places it applies today. A payment takes no exchange rate at all — the rate
+is frozen when the bill is opened — so nothing external is reachable from it.
+Opening a bill *may* fetch from BCV, so that happens before `BEGIN`; it once ran
+after the table row was locked, which stalled every other request for that table,
+held a pooled connection, and could leave the transaction idle long enough for
+`idle_in_transaction_session_timeout` to terminate the session outright. Both
+orderings are asserted by tests, so a future change cannot quietly undo either.
+
+When a payment provider is wired up, its call belongs outside the transaction on
+the same rule.
+
+## Logging
+
+Every log line is a JSON object on stdout, carrying the request context:
+
+```json
+{
+  "level": 50,
+  "time": "2026-08-10T18:22:31.004Z",
+  "service": "splite-api",
+  "requestId": "0f3c...",
+  "restaurantId": "9a1e...",
+  "userId": "44c2...",
+  "event": "REQUEST_FAILED",
+  "err": { "type": "Error", "message": "..." }
+}
+```
+
+`requestId`, `restaurantId`, `userId` and `role` are held in an
+`AsyncLocalStorage` context opened by the request-id middleware and filled in by
+`authenticateToken`, then merged into every line by pino's `mixin`. A service
+therefore logs without being handed a request object and without threading a
+correlation id through call signatures that have no other use for it.
+
+Levels: `50`/`error` is ours to fix, `40`/`warn` is usually the caller's, `30`
+/`info` is the access record. An alert on `level >= 50` is meaningful because a
+malformed request logs at 40, not 50. Health probes are not logged at all.
+
+Secrets are redacted by path (`REDACT_PATHS` in `src/connectors/logger.js`).
+That includes `rawHeaders`, which is a flat `[name, value, ...]` array and so
+cannot be filtered by key, and `res.req` — a response exposes the request that
+produced it, which is how the `Authorization` header reached the access log
+before this was added.
+
+Set `LOG_LEVEL` to override; the suite runs at `silent`.
+
+### Reporting
+
+These logs are for operating the service, not for reporting to restaurants.
+Anything a restaurant should see — items ordered, prices, payments taken, how
+many diners split a bill — belongs in the database, where `bills`, `bill_items`
+and `audit_logs` are durable, queryable and already tenant-scoped. Logs are
+sampled, expired and shipped off-box; they are the wrong system of record for a
+number a restaurant might reconcile against.
+
+What the structured events do give you is the operational half of that picture:
+because every line carries `restaurantId` and a stable `event`, "which tenant is
+seeing payment failures this week" is a query rather than a grep.
+
+### Metrics
+
+Logs answer *what happened*. They do not answer *how often, and is it getting
+worse* — so nobody could see a C2P failure rate climbing or a claims queue going
+forty deep without grepping for it or running the reconciler by hand, and both
+of those are things somebody does after a restaurant complains.
+
+`GET /metrics` serves Prometheus text, behind `METRICS_TOKEN` as a bearer.
+Unset, the route is not mounted at all: this response names every queue in the
+installation and how far behind each one is, and an endpoint that exists but
+refuses is an endpoint somebody probes.
+
+**Counters are collected at the logger, not at call sites.** Every failure this
+service knows how to have already goes through one funnel — a `warn` or `error`
+carrying a stable `event` — so a pino hook counts there. A new failure mode
+becomes a metric the moment somebody logs it rather than the moment somebody
+remembers to instrument it, and the metric vocabulary is the event vocabulary
+already in use. Instrumenting by hand would have meant twenty-seven edits and a
+twenty-eighth that somebody forgets, which is precisely how `AUDIT_WRITE_FAILED`
+came to be swallowed with nothing watching.
+
+```
+splite_events_total{event="AUDIT_WRITE_FAILED",level="error"} 3
+splite_pending_claims 12
+splite_oldest_pending_claim_age_seconds 5400
+splite_unresolved_c2p{status="IN_DOUBT"} 2
+splite_unresolved_c2p{status="AMBIGUOUS"} 0
+```
+
+The gauges are read at scrape time from the ledger, so they are exact rather
+than accumulated, and they are deliberately **cross-tenant**: this endpoint
+answers to whoever runs the service, and "somebody's diner has been waiting two
+hours" is the same alert whichever restaurant they are sitting in. A series at
+zero is emitted rather than omitted — a vanished series reads as *no data* on a
+dashboard, not as *nothing waiting*.
+
+A gauge that throws is skipped rather than failing the scrape, and the failure
+is counted like any other, so the gap explains itself in the same response. A
+monitoring endpoint that goes dark because one query failed removes the
+visibility it exists for, at the moment it is most wanted.
+
+There is deliberately **no payment counter**. The obvious one — increment on
+each state transition — would have to fire inside the caller's transaction,
+which is the only place that knows a transition happened; a transaction that
+rolled back afterwards would leave the count claiming money moved when none did.
+A number about money that can be wrong is worse than no number. The ledger holds
+the exact answer, so throughput belongs in a gauge over `payments`, which needs
+an index shaped for the window it asks about — a decision to take on its own.
+
+## Deploying to Railway
+
+Three services in one project: this app, Postgres and Redis. `railway.json`
+selects the Dockerfile, points the platform's health check at `/health/ready`,
+and runs `npm run migrate` as a pre-deploy command so a release cannot serve
+traffic against a schema it has not migrated. The runner takes an advisory lock
+and records each file in `schema_migrations`, so concurrent deploys serialise and
+re-running is a no-op.
+
+1. Create the project and add **Postgres** and **Redis** from Railway's catalogue.
+2. Deploy this repository as a third service. The Dockerfile is detected automatically.
+3. Set the variables from `.env.production.example`. `DATABASE_URL` and `REDIS_URL`
+   use Railway's reference syntax (`${{Postgres.DATABASE_URL}}`) so no credential is
+   ever copied by hand.
+4. Generate the four secrets with `npm run secrets` and paste them in. They are
+   printed once and never written to disk.
+5. Seed the first restaurant from the Railway shell, then delete the seed variables:
+
+   ```
+   ALLOW_PRODUCTION_SEED=true npm run seed
+   ```
+
+**`DB_SSL=false` is deliberate.** The app defaults it to true whenever
+`NODE_ENV=production`, but Railway's private network (`postgres.railway.internal`)
+carries no TLS, so the default fails to connect on first boot. If you switch to the
+public proxy URL instead, set `DB_SSL=true` *and*
+`DB_SSL_REJECT_UNAUTHORIZED=false` — the proxy presents a certificate for a
+different hostname.
+
+`TRUST_PROXY=1` matters more than it looks: Railway terminates TLS ahead of the
+app, and rate limiting is keyed on `req.ip`. Leave it unset and every client
+shares one bucket.
+
+## Building a frontend
+
+`docs/FRONTEND_BRIEF.md` is written to be handed to a frontend developer or
+pasted into an AI builder. It states the conventions a client cannot infer from
+the spec alone: that money is never a number, that `/auth/refresh` must not be
+used to identify a user, that guest requests carry two headers, and that split
+arithmetic belongs on the server.
+
+## Generating a frontend client
+
+`openapi.json` is committed at the repository root and CI fails if it drifts from
+the code (`npm run openapi:check`), so a client can be generated from git without
+the API running anywhere:
+
+```
+npx openapi-typescript openapi.json -o src/api.d.ts
+```
+
+Regenerate the artifact with `npm run openapi:dump` after changing any route or
+schema. The live document is also served at `/openapi.json`, with Swagger UI at
+`/docs` while `DOCS_ENABLED` is on (by default everywhere but production).
+
+## Production notes
+
+1. Use `DATABASE_URL` with TLS. Set `DB_SSL_REJECT_UNAUTHORIZED=true` once you pin your provider's CA.
+2. Keep PostgreSQL and Redis on private networking; do not publish their ports.
+3. Set `CORS_ORIGINS` to your exact frontend origins. Wildcards are rejected in production.
+4. Set `TRUST_PROXY` to the number of proxy hops in front of the API, otherwise `req.ip` — and with it rate limiting and audit records — is attacker-controlled.
+5. Run `npm run migrate` as a controlled deployment step, not on process boot.
+   On Railway that is `railway.json`'s `preDeployCommand`, which runs before the
+   new version takes traffic; elsewhere it is a release command or a manual step.
+6. Commit `package-lock.json`; the image build and CI both depend on it for reproducibility.
+7. **When a deploy never becomes healthy, read stderr first.** A container that
+   dies before `app.listen` shows up in a hosting dashboard as repeated
+   healthcheck retries and `replicas never became healthy` — the symptom, with
+   nothing about the cause. The cause is written twice: once as a structured
+   `STARTUP_FAILED` record on stdout, for querying later, and once in plain text
+   on stderr between two rules:
+
+   ```
+   ================================================================
+   STARTUP FAILED: MAIL_FROM=team@gmail.com cannot be used with MAIL_TRANSPORT=resend: ...
+   ================================================================
+   ```
+
+   The second exists because the first is a single ~1KB JSON object, and a log
+   viewer that collapses long lines hides precisely the one line worth reading.
+   Only three things run before the port is bound — `assertProductionConfig`,
+   the Postgres check, and the Redis connection — so that sentence names which.
+
+## Retention
+
+Five tables grow forever and none is consulted after a point. `npm run purge`
+clears them; `npm run purge -- --dry-run` counts without deleting. Guest sessions
+are the newest of them: a session is dead the moment its absolute cap passes and
+nothing reads one afterwards, but they are kept a day past expiry so a question
+about an evening can still be answered the morning after. Nothing here
+is urgent — a purge that misses a week deletes a week more the next time. It
+runs daily on a schedule; see
+[Scheduled maintenance](#scheduled-maintenance).
+
+## Reconciliation
+
+Two counters in this schema are caches of the ledger, maintained in the same
+transaction that moves the money: `bills.amount_paid_ves`, and one level down
+`bill_split_participants.amount_paid_ves`. Each has a view returning the rows
+where the cache and the ledger disagree — `payment_ledger_drift` and
+`bill_split_share_drift` — and both should always be empty.
+
+`npm run reconcile` reads them and **exits non-zero when either is not**, so
+whatever runs it raises the finding instead of logging into the void. Both views
+existed before this and nothing read them, which is the same as not having them:
+the discrepancy would then be found by an accountant, or by a diner arguing at a
+till, which is the situation the ledger was built to make impossible.
+
+It repairs nothing, deliberately. Drift means a write path is wrong, and quietly
+correcting the symptom removes the only evidence of it — fix the cause, then
+correct the rows on purpose and record why.
+
+It also reports, as *attention* rather than failure, declared Pago Móvil claims
+still unconfirmed beyond `RECONCILE_UNWORKED_CLAIMS_HOURS` (2) — see
+[Declared Pago Móvil](#declared-pago-móvil) for why an unwatched queue is the
+weak point of that rail — and C2P charges left `IN_DOUBT`,
+`AMBIGUOUS` or `PENDING` beyond `RECONCILE_UNRESOLVED_C2P_HOURS` (6). The first
+two are correct states, not broken ones, but the diner has been debited and is
+waiting on a person, so a queue that has stopped being worked should not stay
+silent. `PENDING` is the odd one: it is what a charge is *while the bank is
+being called*, so it is normal for seconds and impossible for hours — one this
+old is a charge whose outcome was never recorded, and the only kind nothing else
+would surface.
+
+## Scheduled maintenance
+
+`npm run maintenance` runs the purge, then the reconciler, then the undelivered
+invoice emails, and exits with the worst of the three — drift outranks a
+housekeeping failure, because one is money not adding up and the other is disk.
+
+`fiscal-mail` deliberately never exits 1 for an invoice it could not deliver: it
+prints a WARNING line instead, so that a 1 from the pass keeps meaning exactly
+one thing. See *Getting the invoice to the diner*.
+
+Deploy it as a second Railway service from the same image, pointed at
+`railway.maintenance.json` (Settings → Config-as-code path), which carries a
+`cronSchedule` of `0 7 * * *` and `restartPolicyType: NEVER` so a failed run is
+reported rather than retried in a loop. It needs the same `DATABASE_URL` as the
+API and nothing else.
+
+A command on a schedule rather than a timer inside the API process: the web
+service is replicated, and N replicas each waking to delete the same rows or run
+the same scan is work multiplied by N to no effect. The purge's advisory lock
+makes concurrent runs safe, which is not the same as making them useful.
+
+A command rather than a timer inside the API process: the web process is
+replicated, and N replicas each waking to delete the same rows is work
+multiplied by N to no effect. An advisory lock makes concurrent runs safe rather
+than useful.
+
+| Table | Kept | Because |
+| --- | --- | --- |
+| `idempotency_keys` | until `expires_at` | the endpoint treats a missing key as a first attempt |
+| `refresh_sessions` | 14 days past expiry | an expired session authenticates nothing; the extra fortnight is so reuse detection has something to point at |
+| `fx_rates` | 180 days | the rate fallback reads this when BCV is unreachable, so it must outlast an outage |
+| `webhook_deliveries` | 90 days | read when a payment is disputed, which happens within a billing cycle or not at all |
+| `webhook_events_processed` | 180 days | it is what stops a redelivered event settling a bill twice, so it must outlast provider retry budgets |
+
+Retention is set by what still *reads* a row, not by what feels tidy. And the
+purge can never empty a table something depends on being non-empty: **the newest
+`fx_rates` row per currency is never deleted, whatever its age.** If FX has been
+disabled or failing for longer than the retention window, every row is older
+than it, and a plain age-based delete would empty the table and leave the
+fallback with nothing — turning the purge into the outage the fallback exists to
+prevent.
+
+Deletes run in bounded batches. One statement removing a year of webhook
+deliveries holds locks and bloats WAL for as long as it takes; a loop of small
+deletes lets the table stay usable while it runs.
+
+## Login throttling
+
+Failed logins are counted **per account** as well as per address, since attempts
+spread over many addresses at one account are not slowed by an address limiter
+at all.
+
+Worth being precise about what that buys, because it is easy to file under
+"brute force handled" and stop looking. Passwords are created with a twelve
+character minimum and every attempt costs an Argon2id verify at 19 MiB — a
+thousand addresses at ten a minute never reaches a twelve-character space.
+Guessing was never the exposure. What the counter buys is:
+
+- **Cost.** `login()` hashes a decoy when the account does not exist, so that
+  response timing cannot enumerate accounts. That means *every* attempt pays the
+  full 19 MiB, including attempts against addresses never registered, and a
+  distributed caller bypassed the per-address bound on that work. The counter is
+  checked before the lookup and before the verify, which is where the saving is.
+- **Visibility.** Failures were already audited; a counter is what turns rows in
+  a table nobody reads into something that can raise an alarm.
+
+Two properties matter more than the threshold.
+
+**It must not become the attack.** If hammering an address locked the account
+behind it, anyone who knows an owner's email — it is on the registration form
+and on their receipts — could shut a restaurant out of its own till on a Friday
+night. That is worse than what it prevents. So: no persistent lock, a fifteen
+minute self-healing window, a threshold of 20, and the count cleared the moment
+a real password succeeds. Nothing here ever needs a human to lift it.
+
+**It must not enumerate.** The count is kept against the address that was
+*submitted*, whether or not an account exists for it, and the response is the
+same `RATE_LIMITED` the address limiter returns. If only real accounts could be
+throttled, "this address can be throttled and that one cannot" would be exactly
+the oracle the decoy hash exists to deny. The key is a SHA-256 of the address,
+because Redis keys surface in logs and dashboards and this one is somebody's
+email.
+
+The correct password is refused too while the count stands. That is deliberate:
+a throttle that let the right password through would not be a throttle, since
+the right password is what the attacker is looking for.
+
+**What none of this stops is credential stuffing** — one password per account,
+known from someone else's breach, tried once. No threshold fires on a single
+attempt. MFA and rejecting known-breached passwords at creation are the answers
+to that, and both are unbuilt.
+
+## Rate limiting
+
+Several layers, and which one does the real work depends on whether the caller has
+been identified yet.
+
+| Where | Keys on | Ceiling (production, fixed) | Why |
+| --- | --- | --- | --- |
+| `/api/v1` | address | 1200 / min | coarse backstop, mounted before any authentication |
+| `/api/v1` with a staff token | staff subject, **signature verified** | 600 / min | the real per-caller limit for the panel |
+| `POST /guest/sessions`, `POST /guest/qr/context` | address | 60 / min | nothing else exists yet — this is where a credential is created |
+| authenticated guest routes | guest session | 60 / min | mounted after `authenticateGuest` |
+| `/api/v1/bills` | staff subject | 300 / min | mounted after `authenticateToken` |
+| `/api/v1/auth` attempts | address, **fail-closed** | 10 / min | the limiter is what stands between an attacker and a password |
+
+The distinction that matters: **a credential identifies a caller, an address
+identifies a network.** A whole restaurant — the bar tablet, the waiters'
+phones and every diner on the venue WiFi — leaves through one address, and
+Venezuelan carriers put many subscribers behind another. A bill screen polls
+about twenty times a minute and a panel screen about thirty, so the old 120 per
+address was spent by one tablet and five diners, and every one of them got 429
+mid-service. The address limit is now only a backstop; the limits that bound
+real use are per staff member and per guest session.
+
+The staff limiter runs before authentication, so it verifies the token's
+signature itself before counting (`src/middleware/rateLimitKeys.js`). Counting
+an unverified `sub` would let anyone open a fresh bucket per request by making
+tokens up; a forged or expired token is simply not counted there and falls to
+the address backstop, and the route rejects it anyway.
+
+`/api/v1/auth` counts **only what guesses something**: login, the second
+factor, changing a password, accepting an invitation. Reading the session
+(`GET /me`), renewing it with a 256-bit refresh token and logging out no longer
+count, because the panel reads the session on every screen and three phones on
+one WiFi used to spend the ten attempts without anyone trying a password.
+
+The public menu photo and brand endpoints allow 1200 a minute per address for
+the same reason: ten diners opening a forty-photo menu is four hundred requests
+in a minute, even though each phone then caches them for a year.
+
+Only `/auth` fails closed. There the limiter is the brute-force protection
+itself. Everywhere else it bounds volume, and refusing every diner in the
+building because Redis blinked would be choosing an outage over a rate limit.
+
+One trap worth knowing if you add another limiter here: the guest counter uses
+the prefix `guest:rl`, **not** `guest:session`, because the latter is where the
+sessions themselves are stored. Pointing a limiter at it makes the counter and
+the credential the same Redis key — `INCR` on a key holding JSON errors, the
+limiter reads that as its backend being unavailable and fails open, and the
+limit silently never applies.
+
+## Open points
+
+Everything known to be incomplete, in rough priority order. Nothing here is a
+surprise waiting to be found; it is the list of things deliberately not done
+yet.
+
+### Waiting on a decision
+
+Beta. These are not unfinished code — they are questions whose answers change
+what gets built, and they are parked deliberately rather than guessed at.
+
+| Open question | What it blocks | What happens meanwhile |
+| --- | --- | --- |
+| ~~**On what domain does Splite send?**~~ **Answered: `splite.lat`.** | Nothing. Onboarding mail sends over `MAIL_TRANSPORT=resend` from a verified domain. | Closed. It was answered earlier than planned because the host forced it: Railway disables outbound SMTP below Pro, so sending through the team's Gmail mailbox — which this table previously recommended — cannot work there at all. See [How the mail actually leaves](#how-the-mail-actually-leaves). No code changed; it was three variables. |
+| **Which authorised imprenta digital?** | Fiscal invoices from the app. Self-numbering is off (see [Issuing it ourselves](#issuing-it-ourselves)); 00093 is in force from 19 April 2027. | Diners are told up front to ask the restaurant, which issues through its own medium. |
+| **Which card acquirer?** | Card payments entirely, and paying inside the app. | Diners declare Pago Móvil and staff confirm. |
+| **What does a lapsed trial lose?** | Nothing automatic. An expired trial is only flagged, in the console and to the restaurant. What refuses is a person's decision: an operator who marks a subscription `SUSPENDED` or `CANCELLED` stops **new** bills from opening (`403 SUBSCRIPTION_SUSPENDED`); bills already open keep working. `plan_tier` also drives a capability table (`src/services/entitlements.js`), where only `fiscalInvoicing` refuses. | Clients read `GET /api/v1/account/subscription` and `plan.capabilities`. Cutting off bills mid-service would strand a dining room full of seated diners over an unpaid invoice, which is why nothing is cut on a timer. |
+| **Should a failing RIF check digit be rejected?** | Nothing. The mod-11 result is recorded in `restaurant_signups.rif_checksum_ok` and shown to the reviewer. | Accepted either way. Turning away a real restaurant at the form is worse than storing one malformed tax id, and the column is the evidence for deciding later. Note `J-00000000-0` passes — the checksum catches transcription slips, not invention. |
+
+Two smaller ones, same character:
+
+- **The console cannot create operators.** It exists now — see
+  [`docs/operator-console.md`](operator-console.md) — with its own
+  accounts, sessions and mandatory second factor, and it invites leads through
+  the same functions the CLI uses. Creating a second operator is still
+  `npm run operator`, run inside the service, on purpose: an operator who can
+  mint operators from a browser is the one account worth stealing.
+- **Alerts stop when the screen does.** The panel shows the claims waiting on
+  every screen (`GET /api/v1/payments/claims/summary`) and plays a sound for
+  new orders, with a tablet mode that keeps the screen on. Nothing reaches a
+  locked phone: that needs web push, which is not built.
+
+### Blocking real use
+
+- **The Mercantil C2P wire format is unconfirmed.** The in-app charge rail is
+  built end to end — charge, in-doubt resolution, the clave guide, the invoice
+  policy — and a guest *can* now pay from their own bank without leaving the app.
+  What is not yet verified against a live integration is Mercantil's own request
+  shape: field names, paths, and whether amounts cross as bolívares or céntimos.
+  It is isolated in `toMinorUnits`/`toBankAmount` with a round-trip test, so the
+  correction is one function, but it must be confirmed before the first real
+  charge — sending céntimos where bolívares are expected is a debit a hundred
+  times too large. Until then, C2P is code-complete but not switched on for real
+  money. Declared Pago Móvil remains the money path that works today.
+- **Onboarding depends on mail.** A public form records a lead and emails the
+  team, who telephone the restaurant and then invite it from the console (or
+  `npm run onboarding -- invite <id>`); the restaurant finishes at
+  `/registro/verificar`. It is mounted only under `ONBOARDING_ENABLED`, and that
+  needs a working mail provider on a verified domain — see
+  [How the mail actually leaves](#how-the-mail-actually-leaves).
+- **No card payments.** A diner can declare a Pago Móvil, a signed webhook can
+  settle a bill, and C2P (above) is Splite moving money on the diner's
+  instruction — but a card, entered and charged in the app, needs an acquirer,
+  which is the open decision below. With one there is no reconciliation problem
+  at all: the acquirer answers authoritatively.
+- **One direct bank feed so far, not yet live.** Automatic confirmation is
+  built — see [`docs/bank-connections.md`](bank-connections.md) — and works
+  with every bank through a statement upload or a signed webhook, including
+  verification services such as Pabilo or PagoFlash. Mercantil's payment
+  notifications (`MERCANTIL_P2C`) have a receiver, written to the bank's own
+  spec and tested against it, but no real message has arrived yet: the cipher
+  variant is confirmed by the bank's first test message, and the affiliation
+  waits on Splite's company registration. Other banks' APIs wait on their
+  credentials. The trap
+  it was built around still holds: two tables with identical totals, or a
+  payment with no reference, become an exception for staff, never a guess.
+
+### Port still outstanding
+
+From the working copy, onto the current model:
+
+- POS settlement: HMAC request signing, timestamp and nonce replay protection,
+  and an external-reference idempotency key.
+- Per-unit claims are not persisted *as* units. The engine divides by
+  `quantity` and the resulting shares are stored exactly, but
+  `bill_split_items` holds one row per (line, participant) and no quantity
+  column, so reading a stored split back tells you who was on a line and what
+  they owe, not how the units were apportioned. Recovering that would be a
+  quantity column and a relaxed uniqueness rule on that table.
+
+### Phase 2, not started
+
+- **A real provider adapter.** The webhook route is mounted and
+  `src/middleware/webhookSignature.js` is wired to it, but the only provider
+  defined is `SPLITE` — our own HMAC scheme. A Venezuelan rail is an entry in
+  `PROVIDERS` supplying its own verifier and parser, and nothing else changes.
+
+### Security and correctness
+
+- **Access tokens cannot be revoked** within their 15-minute life, so "revoke"
+  only ever affects refresh tokens. Acceptable at that TTL. The Redis refresh
+  mirror that claimed to solve it has been removed: nothing read it, and nothing
+  usefully could, since the access token carries no `jti` and the refresh path
+  has to read Postgres anyway in order to rotate.
+- **The address limiter is only a backstop.** It runs ahead of authentication
+  and so sees nothing but the address, which a whole restaurant shares. The
+  limits that bound real use key on the caller — a staff limiter that verifies
+  the token's signature before counting, and the guest session — see
+  [Rate limiting](#rate-limiting).
+- **`/health/ready` is an unauthenticated database round-trip**, deliberately
+  ahead of the rate limiter so probes do not consume client budget. That also
+  makes it free load for anyone who finds it. What it is no longer is free
+  reconnaissance: in production the body is only `{"status":"not_ready"}`, and
+  naming the dependency that fell over is behind `HEALTH_DETAIL`.
+
+### Tooling
+
+- **`scripts/` still uses `console.*`.** Only `src/` was converted to structured
+  logging; the migrate and seed CLIs were left alone deliberately, but a deploy
+  step arguably deserves structured output too.
+- **Dead code:** none known. `requireTenant` and `registerSchema` were exported
+  and never called, and have been deleted — an unused export is a thing a
+  reviewer has to reason about and a thing a future caller may reach for
+  believing it is load-bearing. `revokeAllSessionsForUser` was on that list too
+  and is now genuinely used, by staff deactivation and by a password change.
+
+### Numbers that are guesses
+
+These are placeholders chosen without data, and should be set from observed
+behaviour once there is traffic:
+
+- `DB_PAYMENT_STATEMENT_TIMEOUT_MS=15000` — a guess at how much lock contention
+  a busy split produces.
+- `SHUTDOWN_TIMEOUT_MS` is hardcoded at 10s. If a payment rail is ever called
+  inside a request handler, this must exceed the longest in-flight request or
+  shutdown will sever payments mid-flight.
+- `FX_MAX_DEVIATION_PCT=5` — rejects a rate that moves more than 5% from the
+  last known good one. A genuine devaluation beyond that needs a human.
+
+### Accepted, not fixed
+
+- The old development secrets (`dev_jwt_secret`, `dev_webhook_secret`) remain in
+  public git history. They were never deployed, so nothing was ever signed with
+  them; rotating would not remove them from history, and rewriting history would
+  break every clone. Any secret that touches a real deploy must be rotated in the
+  hosting provider, not here.
