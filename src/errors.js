@@ -164,6 +164,8 @@ const CODES = {
   // Invitar necesita el alta por enlace encendida (ONBOARDING_ENABLED).
   ONBOARDING_DISABLED: 409,
   PASSWORD_UNCHANGED: 409,
+  // Enlace de restablecer caducado, usado, anulado o inventado: uno solo para todos.
+  PASSWORD_RESET_INVALID: 400,
   STAFF_LAST_OWNER: 409,
   // Enrolment state, all of them "the account is not in the state this asks
   // for" rather than an authentication failure.

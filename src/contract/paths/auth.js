@@ -249,6 +249,71 @@ const login = {
     }
   },
 
+  '/api/v1/auth/password/forgot': {
+    post: {
+      tags: ['Auth'],
+      summary: 'Forgot password: email a one-time reset link',
+      operationId: 'forgotPassword',
+      description: [
+        'No session. **Always 202**, whether or not the address has an account, so the answer cannot be',
+        'used to find out who is registered; the email is sent outside the request, so the response',
+        'time does not tell either.',
+        '',
+        'The link is `{APP_BASE_URL}/restablecer#<token>`: the token travels in the fragment, which',
+        'browsers never send to a server. It works once, expires in 30 minutes, and asking again',
+        'cancels the previous one. At most three per account per hour, besides the `/auth` limit per IP.'
+      ].join('\n'),
+      security: [],
+      requestBody: {
+        required: true,
+        content: { 'application/json': { schema: {
+          type: 'object', required: ['email'],
+          properties: { email: { type: 'string', format: 'email', maxLength: 254 } }
+        } } }
+      },
+      responses: {
+        202: {
+          description: 'Accepted. Says nothing about whether the address exists.',
+          content: { 'application/json': { schema: { type: 'object', properties: { accepted: { type: 'boolean', enum: [true] } } } } }
+        },
+        400: response('BadRequest'),
+        ...commonErrors
+      }
+    }
+  },
+
+  '/api/v1/auth/password/reset': {
+    post: {
+      tags: ['Auth'],
+      summary: 'Set a new password with a reset link',
+      operationId: 'resetPassword',
+      description: [
+        'No session; the token from the link\'s fragment goes in the body. Sets the new password and',
+        '**revokes every session** of the account. Does not sign in: the user logs in afterwards with',
+        'the new password, and their second factor if they have one — a reset never bypasses it.',
+        '',
+        '`400 PASSWORD_RESET_INVALID` for a link that is expired, used, superseded or made up — one',
+        'answer for all of them, since telling them apart only helps someone guessing tokens.'
+      ].join('\n'),
+      security: [],
+      requestBody: {
+        required: true,
+        content: { 'application/json': { schema: {
+          type: 'object', required: ['token', 'password'],
+          properties: {
+            token: { type: 'string', pattern: '^[A-Za-z0-9_-]{43}$' },
+            password: { type: 'string', minLength: 12, maxLength: 128 }
+          }
+        } } }
+      },
+      responses: {
+        204: { description: 'Password changed; every session signed out.' },
+        400: response('BadRequest'),
+        ...commonErrors
+      }
+    }
+  },
+
   '/api/v1/auth/password': {
     post: {
       tags: ['Auth'],
