@@ -592,7 +592,8 @@ const bill = {
       summary: 'What became of an order this phone sent',
       operationId: 'getGuestOrderStatus',
       description: [
-        'For a held order: poll until it is `PLACED` (approved, now on the bill) or `REJECTED`.',
+        'For a held order: poll until it is `PLACED` (approved, now on the bill), `REJECTED`, or',
+        '`EXPIRED` (nobody decided in time; the phone may order again).',
         'Only the session that sent the order can see it; anyone else gets 404.'
       ].join('\n'),
       security: [{ guestAuth: [] }],
@@ -606,7 +607,7 @@ const bill = {
                 type: 'object',
                 properties: {
                   orderId: { type: 'string', format: 'uuid' },
-                  status: { type: 'string', enum: ['PLACED', 'HELD', 'REJECTED'] },
+                  status: { type: 'string', enum: ['PLACED', 'HELD', 'REJECTED', 'EXPIRED'], description: 'EXPIRED: nobody approved or rejected it in time (GUEST_HELD_ORDER_TIMEOUT_SECONDS, 15 min by default). Unlike REJECTED, the phone can order again.' },
                   createdAt: { type: 'string', format: 'date-time' },
                   decidedAt: { type: ['string', 'null'], format: 'date-time' }
                 }

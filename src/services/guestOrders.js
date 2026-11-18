@@ -30,10 +30,32 @@ const { ApiError } = require('../errors');
  * poner ahí un nombre movería propinas hacia quien no tomó esa nota. La
  * corrección existe y es `PATCH /bills/:id/server`.
  */
-const STATUS = Object.freeze({ PLACED: 'PLACED', HELD: 'HELD', REJECTED: 'REJECTED' });
+const STATUS = Object.freeze({ PLACED: 'PLACED', HELD: 'HELD', REJECTED: 'REJECTED', EXPIRED: 'EXPIRED' });
+
+/**
+ * Caducar los retenidos de este restaurante que llevan demasiado esperando.
+ *
+ * Sin tarea programada: se hace al mirar -- la bandeja, el teléfono que
+ * pregunta, quien aprueba o rechaza, quien vuelve a pedir --, que es justo
+ * cuando importa. Un retenido que nadie mira no molesta a nadie.
+ *
+ * Sale de la bandeja (se da por visto) y no bloquea el teléfono: puede volver
+ * a pedir, y ese pedido vuelve a esperar.
+ */
+async function expireStale(restaurantId, client = db) {
+  await client.query(
+    `UPDATE guest_orders
+        SET status = 'EXPIRED', decided_at = NOW(), acknowledged_at = NOW()
+      WHERE restaurant_id = $1 AND status = 'HELD'
+        AND created_at < NOW() - make_interval(secs => $2)`,
+    [restaurantId, config.guest.heldOrderTimeoutSeconds]
+  );
+}
 
 async function placeOrder({ restaurantId, tableId, guestSessionId = null, items, note = null }) {
   if (guestSessionId) {
+    // Uno caducado ya no ocupa el sitio del «uno esperando por sesión».
+    await expireStale(restaurantId);
     const gate = await approvalGate({ restaurantId, sessionId: guestSessionId });
     if (gate.rejected) {
       throw new ApiError('GUEST_ORDERS_BLOCKED',
@@ -291,6 +313,7 @@ async function throwAlreadyDecided(client, { restaurantId, orderId }) {
  * teléfono ya pide sin esperar.
  */
 async function approve({ restaurantId, orderId, userId }) {
+  await expireStale(restaurantId);
   const { rows } = await db.query(
     `SELECT id, table_id, guest_session_id, note, status, held_items
        FROM guest_orders WHERE id = $1 AND restaurant_id = $2`,
@@ -320,6 +343,7 @@ async function approve({ restaurantId, orderId, userId }) {
  * Idempotente como el «visto»: rechazar dos veces no es un error.
  */
 async function reject({ restaurantId, orderId, userId }) {
+  await expireStale(restaurantId);
   return db.withTransaction(async client => {
     const { rows } = await client.query(
       `UPDATE guest_orders
@@ -353,6 +377,7 @@ async function reject({ restaurantId, orderId, userId }) {
 
 /** En qué quedó un pedido, para el teléfono que lo mandó y sólo para él. */
 async function statusForSession({ restaurantId, sessionId, orderId }) {
+  await expireStale(restaurantId);
   const { rows } = await db.query(
     `SELECT id, status, created_at, decided_at FROM guest_orders
       WHERE id = $1 AND restaurant_id = $2 AND guest_session_id = $3`,
@@ -392,6 +417,7 @@ async function updateSettings({ restaurantId, approveNewPhones }) {
  * frente a las que quedan.
  */
 async function listPending({ restaurantId, limit = 50 }) {
+  await expireStale(restaurantId);
   const { rows } = await db.query(
     `SELECT o.id, o.table_id, o.bill_id, o.line_count, o.note, o.created_at,
             o.status, o.held_items,
@@ -430,6 +456,7 @@ async function listPending({ restaurantId, limit = 50 }) {
 
 /** Cuántos esperan. El panel lo pide cada pocos segundos; una lista entera no. */
 async function pendingSummary({ restaurantId }) {
+  await expireStale(restaurantId);
   const { rows } = await db.query(
     `SELECT count(*)::int AS pending, min(created_at) AS oldest,
             count(*) FILTER (WHERE status = 'HELD')::int AS awaiting_approval
@@ -485,6 +512,6 @@ async function acknowledge({ restaurantId, orderId, userId }) {
 }
 
 module.exports = {
-  STATUS, placeOrder, approvalGate, approve, reject, statusForSession,
+  STATUS, expireStale, placeOrder, approvalGate, approve, reject, statusForSession,
   getSettings, updateSettings, listPending, pendingSummary, acknowledge
 };

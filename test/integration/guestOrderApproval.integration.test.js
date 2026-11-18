@@ -275,4 +275,36 @@ describe('approval of the first order from a new phone', { skip }, () => {
     assert.ok(results.filter(r => r.status !== 200).every(r => r.status === 409));
     assert.equal(await linesOn(await openBillOn(table)), 1);
   });
+
+  it('a held order nobody decides on expires: off the tray, the phone may order again', async () => {
+    const table = await newTable();
+    const ana = await scan(table);
+    const held = await order(ana);
+    await db.query(
+      `UPDATE guest_orders SET created_at = NOW() - make_interval(secs => $2) WHERE id = $1`,
+      [held.body.orderId, config.guest.heldOrderTimeoutSeconds + 60]);
+
+    const tray = await request('GET', '/api/v1/orders', { token: waiter });
+    assert.ok(!tray.body.data.some(o => o.id === held.body.orderId), 'gone from the tray');
+    assert.equal((await request('GET', `/api/v1/guest/bill/orders/${held.body.orderId}`, ana)).body.status, 'EXPIRED');
+
+    const late = await request('POST', `/api/v1/orders/${held.body.orderId}/approve`, { token: waiter });
+    assert.equal(late.status, 409);
+    assert.equal(late.body.error.details.status, 'EXPIRED');
+    assert.equal(await openBillOn(table), null);
+
+    const again = await order(ana);
+    assert.equal(again.status, 201, 'expiry does not block the phone the way a rejection does');
+    assert.equal(again.body.status, 'HELD');
+  });
+
+  it('a stale held order does not block a new one from the same phone', async () => {
+    const ana = await scan(await newTable());
+    const held = await order(ana);
+    await db.query(
+      `UPDATE guest_orders SET created_at = NOW() - make_interval(secs => $2) WHERE id = $1`,
+      [held.body.orderId, config.guest.heldOrderTimeoutSeconds + 60]);
+    const again = await order(ana);
+    assert.equal(again.status, 201, JSON.stringify(again.body));
+  });
 });

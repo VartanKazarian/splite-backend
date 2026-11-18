@@ -24,7 +24,8 @@ const core = {
         'opening the table to find out what it was.',
         '',
         'With approval of new phones on, it also holds the first order from each phone (`status: HELD`,',
-        'listed first). Those are not on any bill yet: approve or reject them, `ack` refuses them.'
+        'listed first). Those are not on any bill yet: approve or reject them, `ack` refuses them.',
+        'One nobody decides on within 15 minutes expires and leaves the tray by itself.'
       ].join('\n'),
       security: staff,
       responses: {
@@ -104,7 +105,7 @@ const core = {
         'Any staff role. The lines go onto the table\'s bill — opening one if the table is free — with the',
         'same checks as any order, and the phone that sent it orders without waiting from then on.',
         '',
-        '`409 GUEST_ORDER_ALREADY_DECIDED` (with `status`) if it is no longer held. A product taken off',
+        '`409 GUEST_ORDER_ALREADY_DECIDED` (with `status`, possibly `EXPIRED`) if it is no longer held. A product taken off',
         'the menu meanwhile fails the approval like any order would (`PRODUCT_INACTIVE`).'
       ].join('\n'),
       security: staff,
