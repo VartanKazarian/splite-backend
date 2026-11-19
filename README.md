@@ -48,6 +48,9 @@ they eat.
 
 **Splite team**
 - Operator console: plans, subscriptions, charges, leads and onboarding.
+- Staff push notifications (Web Push) on locked phones: payment notices to
+  verify go to cashiers, orders from the table to the floor. No setup: the
+  VAPID key pair is generated on first use.
 
 **Security, in short**
 - Tenant-scoped queries everywhere; RBAC by rank; Argon2id passwords.
@@ -57,7 +60,7 @@ they eat.
   fail closed on `/auth`, idempotency keys and row locks on money paths,
   append-only payment ledger, audit log.
 
-**Not built:** card payments (needs an acquirer), web push, a live direct bank
+**Not built:** card payments (needs an acquirer), a live direct bank
 API (statement upload and webhooks work with every bank). Mercantil C2P is code
 complete but its wire format is unconfirmed, so it is not used for real money.
 The full list is in [Open points](docs/ARCHITECTURE.md#open-points).

@@ -126,6 +126,10 @@ const CODES = {
   GUEST_ORDER_ALREADY_DECIDED: 409,
   // «Visto» no vale para uno retenido: hay que aprobarlo o rechazarlo.
   GUEST_ORDER_NEEDS_APPROVAL: 409,
+  // Avisos en el teléfono (R19): apagados en este despliegue, o un aviso de
+  // prueba pedido desde un teléfono que no está suscrito.
+  PUSH_DISABLED: 503,
+  PUSH_NOT_SUBSCRIBED: 409,
   PRODUCT_NOT_FOUND: 404,
   CATEGORY_NOT_FOUND: 404,
   MENU_PDF_NOT_FOUND: 404,

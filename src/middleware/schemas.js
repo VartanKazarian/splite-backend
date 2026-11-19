@@ -347,6 +347,21 @@ const orderSettingsSchema = Joi.object({
   approveNewPhones: Joi.boolean().strict().required()
 });
 
+// Lo que da `PushSubscription.toJSON()` en el navegador (R19). Las claves son
+// base64url; los tamaños son los de P-256 (65 bytes) y del secreto (16).
+const pushSubscriptionSchema = Joi.object({
+  endpoint: Joi.string().uri({ scheme: ['https'] }).max(2048).required(),
+  expirationTime: Joi.any().strip(),
+  keys: Joi.object({
+    p256dh: Joi.string().pattern(/^[A-Za-z0-9_-]+={0,2}$/).min(80).max(100).required(),
+    auth: Joi.string().pattern(/^[A-Za-z0-9_-]+={0,2}$/).min(16).max(30).required()
+  }).required()
+});
+
+const pushUnsubscribeSchema = Joi.object({
+  endpoint: Joi.string().uri({ scheme: ['https'] }).max(2048).required()
+});
+
 const billItemIdParamSchema = Joi.object({
   id: uuid.required(),
   itemId: uuid.required()
@@ -1338,6 +1353,8 @@ module.exports = {
   guestOrderSchema,
   guestOrderIdParamSchema,
   orderSettingsSchema,
+  pushSubscriptionSchema,
+  pushUnsubscribeSchema,
   createCategorySchema,
   updateCategorySchema,
   reorderCategoriesSchema,

@@ -712,5 +712,17 @@ module.exports = {
     // migration waits would be a deadlock made out of good intentions.
     lockId: integer('PURGE_ADVISORY_LOCK_ID', 776644)
   },
+  push: {
+    // Avisos en el teléfono del personal (R19). Encendido salvo que se apague:
+    // sin claves por entorno, el servidor genera un par la primera vez y lo
+    // guarda (`push_vapid_keys`), así que no hace falta configurar nada.
+    enabled: process.env.PUSH_ENABLED !== 'false',
+    vapidPublicKey: process.env.VAPID_PUBLIC_KEY || '',
+    vapidPrivateKey: process.env.VAPID_PRIVATE_KEY || '',
+    // Quién firma: los servicios de push lo usan para escribir si algo va mal.
+    // La web por defecto; Apple rechaza un `mailto:` a localhost.
+    subject: process.env.VAPID_SUBJECT ||
+      (process.env.APP_BASE_URL || 'https://splite.lat').replace(/\/+$/, '')
+  },
   trustProxy: integer('TRUST_PROXY', isProduction ? 1 : 0)
 };

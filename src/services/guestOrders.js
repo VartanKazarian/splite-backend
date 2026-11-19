@@ -1,5 +1,6 @@
 const db = require('../connectors/base');
 const guestBillBinding = require('./guestBillBinding');
+const push = require('./push');
 const config = require('../config');
 const billItems = require('./billItems');
 const { snapshotFx } = require('./billOpen');
@@ -61,7 +62,13 @@ async function placeOrder({ restaurantId, tableId, guestSessionId = null, items,
       throw new ApiError('GUEST_ORDERS_BLOCKED',
         'The staff declined an order from this phone; ask your waiter or scan the table again');
     }
-    if (gate.needsApproval) return holdOrder({ restaurantId, tableId, guestSessionId, items, note });
+    const placed = gate.needsApproval
+      ? await holdOrder({ restaurantId, tableId, guestSessionId, items, note })
+      : await commitOrder({ restaurantId, tableId, guestSessionId, items, note });
+    // A quien atiende la sala, en el teléfono (R19). Sólo los de un comensal:
+    // uno que mete el mesero no tiene que avisarle a él mismo.
+    push.guestOrder({ restaurantId, orderId: placed.orderId });
+    return placed;
   }
   return commitOrder({ restaurantId, tableId, guestSessionId, items, note });
 }

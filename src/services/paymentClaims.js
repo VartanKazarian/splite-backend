@@ -4,6 +4,7 @@ const { ApiError } = require('../errors');
 const { applyToBill, settlementView, toPaymentAmount } = require('./locks');
 const { recordPayment, transitionPayment, PAYMENT_COLUMNS } = require('./payments');
 const bankReconciliation = require('./bankReconciliation');
+const push = require('./push');
 const { logAudit } = require('./audit');
 const { logger } = require('../connectors/logger');
 const invoiceIntents = require('./invoiceIntents');
@@ -151,6 +152,10 @@ async function declareClaim({
     // Por si el dinero llegó antes que el aviso: con una conexión bancaria, se
     // mira ya. No lanza nunca; el aviso queda declarado pase lo que pase.
     await bankReconciliation.reconcileAfterClaim(restaurantId);
+
+    // Al teléfono de caja, si sigue por verificar (R19). Sin esperar: el aviso
+    // ya está declarado y el comensal no tiene por qué esperar a Google.
+    push.paymentClaim({ restaurantId, paymentId: claim.id });
 
     return claim;
   } catch (err) {

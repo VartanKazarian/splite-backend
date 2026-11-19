@@ -2530,9 +2530,40 @@ that became real, and **`DECLARED`** is a diner who says they paid and needs
 somebody to open the bank app. Each carries the **table name**, because nobody
 recognises a uuid across a dining room.
 
-A real push notification needs a service worker, a subscription store and a
-sender, none of which are built. This is what makes polling cheap enough that
-the absence does not matter for a screen somebody is already watching.
+Polling serves a screen somebody is watching. A phone in a pocket gets a push
+instead: see [Push notifications to staff](#push-notifications-to-staff).
+
+### Push notifications to staff
+
+Web Push, so a cashier with the phone locked still hears about a transfer to
+verify (R19). The pieces: `push_subscriptions` (one row per browser, the
+endpoint unique, so a phone somebody else signs in on becomes theirs), a
+service worker in the panel, and `src/services/push.js`.
+
+| Event | Who | Title | TTL |
+|---|---|---|---|
+| A diner declares a Pago Móvil, still `PENDING` after auto-reconciliation | OWNER, MANAGER, CASHIER | Pago por verificar · Mesa 4 | 1 h |
+| An order from the table | OWNER, MANAGER, WAITER | Pedido nuevo · Mesa 4 | 15 min |
+| A first order from a new phone, held for approval | OWNER, MANAGER, WAITER | Pedido por aprobar · Mesa 4 | the hold timeout |
+
+Rules that shape the code:
+
+- **A push never breaks what it reports.** Sent after the commit, not awaited,
+  never thrown: Google being slow cannot fail a payment.
+- **Nothing personal on a lock screen.** Table, amount and what was ordered. No
+  names, phones or bank references.
+- **Only the real push services.** The server POSTs to the endpoint a browser
+  hands it; `assertPushEndpoint` accepts FCM, Mozilla, Apple and Windows hosts
+  only, which is the difference between push and SSRF.
+- **Subscriptions end with the sessions.** `revokeAllSessionsForUser` --
+  deactivation, role change, password reset -- deletes the user's
+  subscriptions. A service reporting 404/410 deletes that one.
+- **No setup.** Without `VAPID_PUBLIC_KEY`/`VAPID_PRIVATE_KEY` the first push
+  generates a pair and stores it in `push_vapid_keys` (one row, first insert
+  wins). Changing the pair invalidates every subscription.
+
+iPhones receive web push only from a site added to the home screen (iOS 16.4+);
+the panel says so instead of offering a switch that cannot work.
 
 ### The floor, per table
 
@@ -3547,10 +3578,9 @@ Two smaller ones, same character:
   the same functions the CLI uses. Creating a second operator is still
   `npm run operator`, run inside the service, on purpose: an operator who can
   mint operators from a browser is the one account worth stealing.
-- **Alerts stop when the screen does.** The panel shows the claims waiting on
-  every screen (`GET /api/v1/payments/claims/summary`) and plays a sound for
-  new orders, with a tablet mode that keeps the screen on. Nothing reaches a
-  locked phone: that needs web push, which is not built.
+- **Push needs the home screen on iPhone.** Locked-phone alerts are built
+  (Web Push), but iOS only delivers them to a site added to the home screen,
+  so an iPhone user has one extra step.
 
 ### Blocking real use
 
