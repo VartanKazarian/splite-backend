@@ -338,12 +338,15 @@ function floorTable(row) {
         : null,
       // Diners at this table who say they have paid and nobody has verified.
       pendingClaims: row.pending_claims ?? 0,
+      // Diners in their bank app right now (live payment holds).
+      payingNow: row.paying_now ?? 0,
       tipVes: row.tip_ves ?? '0',
       updatedAt: isoTimestamp(row.bill_updated_at)
     }
     : null;
 
-  return { ...table(row), openBill };
+  // On the table, not the bill: a held first order opens no bill.
+  return { ...table(row), heldOrders: row.held_orders ?? 0, openBill };
 }
 
 /**

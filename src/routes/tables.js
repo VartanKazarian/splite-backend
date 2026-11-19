@@ -1,5 +1,6 @@
 const express = require('express');
 const db = require('../connectors/base');
+const config = require('../config');
 const { authenticateToken, requireRole } = require('../middleware/auth');
 const {
   validateBody,
@@ -135,13 +136,28 @@ router.get('/floor', async (req, res, next) => {
               -- is visible while the diners are still sitting at it.
               (SELECT COALESCE(SUM(pt.tip_ves), 0)::BIGINT FROM payments pt
                 WHERE pt.bill_id = b.id AND pt.restaurant_id = b.restaurant_id
-                  AND pt.status = 'SUCCEEDED') AS tip_ves
+                  AND pt.status = 'SUCCEEDED') AS tip_ves,
+              -- Diners in their bank app right now: a live hold ("Ana está
+              -- pagando"). Not money yet, but the waiter should not start a
+              -- cash payment for that part, or close the table under them.
+              (SELECT count(*)::int FROM payment_holds h
+                WHERE h.bill_id = b.id AND h.restaurant_id = b.restaurant_id
+                  AND h.released_at IS NULL AND h.consumed_by_payment_id IS NULL
+                  AND h.expires_at > NOW()) AS paying_now,
+              -- A new phone's first order waiting for approval. Per table and
+              -- not per bill: it opens no bill until approved, so without this
+              -- the floor showed "Libre" for a table with someone waiting at it.
+              -- Same cutoff as the expiry in guestOrders.expireStale.
+              (SELECT count(*)::int FROM guest_orders go
+                WHERE go.table_id = t.id AND go.restaurant_id = t.restaurant_id
+                  AND go.status = 'HELD'
+                  AND go.created_at > NOW() - make_interval(secs => $2)) AS held_orders
          FROM tables t
          LEFT JOIN bills b
            ON b.table_id = t.id AND b.restaurant_id = t.restaurant_id AND b.status = 'OPEN'
         WHERE t.restaurant_id = $1 AND t.active = true
         ORDER BY t.name`,
-      [req.user.restaurantId]
+      [req.user.restaurantId, config.guest.heldOrderTimeoutSeconds]
     );
 
     res.json({ data: rows.map(dto.floorTable) });

@@ -751,6 +751,10 @@ const schemas = {
         type: 'object',
         description: 'A table with whatever bill is open on it. `openBill` is null when the table is free — never absent.',
         properties: {
+          heldOrders: {
+            type: 'integer',
+            description: 'First orders from new phones waiting for staff approval at this table (when the restaurant has approval on). On the table, not the bill: a held order opens no bill, so a table can be free and still have someone waiting at it.'
+          },
           openBill: {
             type: ['object', 'null'],
             description: 'Summary only: enough to render a floor plan, without the line items.',
@@ -778,6 +782,10 @@ const schemas = {
               pendingClaims: {
                 type: 'integer',
                 description: 'Diners at this table who say they have paid and nobody has verified. The one per-table fact a floor view cannot derive from the bill, and the one with somebody waiting.'
+              },
+              payingNow: {
+                type: 'integer',
+                description: 'Diners in their bank app right now: live payment holds ("Ana está pagando"). Not money yet — do not start another payment for that part.'
               },
               tipVes: { ...minorUnits, description: 'Tips already settled on this bill, so a table that tipped well is visible while its diners are still sitting there.' },
               updatedAt: { type: 'string', format: 'date-time' }
