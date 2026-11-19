@@ -2061,6 +2061,17 @@ Object.assign(schemas, {
       idempotencyKey: {
         type: 'string', minLength: 16, maxLength: 128, pattern: '^[A-Za-z0-9._:-]+$',
         description: 'Used when the Idempotency-Key header is absent. Mandatory here: it is what makes a lost connection safe to retry.'
+      },
+      tipVes: {
+        ...minorUnits, default: '0',
+        description:
+          'VES céntimos of tip, charged on top of `amountVes` in the same debit. The diner\'s bank pulls `amountVes + tipVes`; ' +
+          'the bill is credited only `amountVes`, so a tip can never push a payment past the balance. ' +
+          'The clave must be requested for that combined figure when the bank binds claves to an amount.'
+      },
+      splitParticipantId: {
+        type: 'string', format: 'uuid',
+        description: 'Optional. The split share this charge pays; it is credited to that share when the charge settles.'
       }
     }
   },
