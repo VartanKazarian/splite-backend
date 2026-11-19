@@ -17,6 +17,7 @@ const notices = require('../services/subscriptionNotices');
 const settings = require('../services/platformSettings');
 const metrics = require('../services/platformMetrics');
 const leads = require('../services/platformLeads');
+const clientEvents = require('../services/clientEvents');
 
 /**
  * La consola de Splite: clientes, planes, cargos y pagos.
@@ -144,6 +145,17 @@ router.post(
     } catch (err) { next(err); }
   }
 );
+
+/**
+ * Los errores que ven los navegadores (FR4): los más frecuentes de los últimos
+ * días, uno por huella. La lista donde mirar después de publicar.
+ */
+router.get('/client-errors', anyone, async (req, res, next) => {
+  try {
+    const days = Math.min(30, Math.max(1, Number.parseInt(req.query.days, 10) || 7));
+    res.json({ data: await clientEvents.recentErrors({ days }) });
+  } catch (err) { next(err); }
+});
 
 router.get('/prices', anyone, async (req, res, next) => {
   try {

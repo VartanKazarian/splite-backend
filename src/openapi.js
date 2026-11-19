@@ -33,6 +33,7 @@ const adminPaths = require('./contract/paths/admin');
 const bankPaths = require('./contract/paths/bank');
 const pushPaths = require('./contract/paths/push');
 const feedbackPaths = require('./contract/paths/feedback');
+const clientEventPaths = require('./contract/paths/clientEvents');
 
 /**
  * Las rutas, en el mismo orden de siempre. El documento se compara texto a
@@ -65,6 +66,7 @@ const paths = {
   ...accountPaths.invitations,
   ...pushPaths.core,
   ...feedbackPaths.core,
+  ...clientEventPaths.core,
 
   /**
    * Registration is described always, and served behind ONBOARDING_ENABLED.

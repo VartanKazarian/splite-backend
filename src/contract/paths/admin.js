@@ -217,6 +217,19 @@ const auth = {
     }
   },
 
+  '/api/v1/admin/client-errors': {
+    get: {
+      tags: ['Operator console'], summary: 'Errors browsers reported, most frequent first', operationId: 'adminClientErrors',
+      description: 'ADMIN and SUPPORT. One row per fingerprint (message + first stack frame, without bundle hashes or line numbers) over the last `days` (default 7, max 30). Paths carry no query string or fragment, and QR and receipt tokens are replaced by placeholders.',
+      security: operator, 'x-required-roles': ['ADMIN', 'SUPPORT'],
+      parameters: [{ name: 'days', in: 'query', schema: { type: 'integer', minimum: 1, maximum: 30, default: 7 } }],
+      responses: {
+        200: { description: 'Errors.', content: { 'application/json': { schema: { type: 'object', properties: { data: { type: 'array', items: { type: 'object', properties: { fingerprint: { type: 'string' }, message: { type: 'string' }, path: { type: ['string', 'null'] }, surface: { type: ['string', 'null'] }, occurrences: { type: 'integer' }, release: { type: ['string', 'null'] }, firstSeenAt: { type: 'string', format: 'date-time' }, lastSeenAt: { type: 'string', format: 'date-time' } } } } } } } } },
+        403: response('Forbidden'), ...commonErrors
+      }
+    }
+  },
+
   '/api/v1/admin/prices': {
     get: {
       tags: ['Operator console'], summary: 'The price list', operationId: 'adminListPrices',
