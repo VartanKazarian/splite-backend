@@ -528,9 +528,22 @@ const bill = {
         'leaving is a table\'s order, not four hundred portions. Rate limited to 10 per minute per session.',
         '',
         '`403 SUBSCRIPTION_SUSPENDED` when the order would open a new bill and Splite suspended the',
-        'restaurant\'s subscription. A table that already has a bill keeps ordering and paying.'
+        'restaurant\'s subscription. A table that already has a bill keeps ordering and paying.',
+        '',
+        'Send an `Idempotency-Key` to make a retry safe. A phone that lost the response does not know',
+        'whether the kitchen got the order; retrying with the same key and body returns the first response',
+        'instead of ordering twice. Keys are scoped to the guest session. `409 IDEMPOTENCY_IN_FLIGHT` while',
+        'the first attempt is still running; `409 IDEMPOTENCY_KEY_REUSED` for the same key with a different',
+        'order. Optional, so older clients keep working.'
       ].join('\n'),
       security: [{ guestAuth: [] }],
+      parameters: [{
+        name: 'Idempotency-Key',
+        in: 'header',
+        required: false,
+        schema: { type: 'string', minLength: 16, maxLength: 80, pattern: '^[A-Za-z0-9._:-]+$' },
+        description: 'One per order attempt. Replaying it returns the stored response instead of ordering again.'
+      }],
       requestBody: {
         required: true,
         content: {

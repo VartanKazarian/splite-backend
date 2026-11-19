@@ -11986,10 +11986,24 @@
         ],
         "summary": "Order from the table",
         "operationId": "placeGuestOrder",
-        "description": "The lines go straight onto the table's bill and the floor is told by the notice the order\nleaves behind (`GET /api/v1/orders`) — unless the restaurant turned on approval of new phones\n(`PATCH /api/v1/orders/settings`). Then the **first** order from a session is held\n(`status: HELD`): nothing reaches a bill and no bill is opened until someone on the floor\napproves it. Once one is approved, that session orders without waiting. Follow a held order with\n`GET /api/v1/guest/bill/orders/{id}`.\n\n`409 GUEST_ORDER_AWAITING_APPROVAL` while the session already has one held. `403\nGUEST_ORDERS_BLOCKED` after the floor rejected one: the diner has to scan again.\n\nNeither the table nor the restaurant is in the body: both come from the guest session, which was\ncreated by verifying the QR signature. There is no field in which to name somebody else's table.\n\nIf the table has no open bill, the first order opens one, exactly as a waiter taking the first\norder does. `served_by` stays null: nobody from the house took this order, and putting a name\nthere would move tips toward someone who did not.\n\nBounded harder than the staff order endpoint — 20 lines of up to 20 units, against 50 of 999.\nThe QR is stuck to the table and anyone who photographs it can open a session, so the room worth\nleaving is a table's order, not four hundred portions. Rate limited to 10 per minute per session.\n\n`403 SUBSCRIPTION_SUSPENDED` when the order would open a new bill and Splite suspended the\nrestaurant's subscription. A table that already has a bill keeps ordering and paying.",
+        "description": "The lines go straight onto the table's bill and the floor is told by the notice the order\nleaves behind (`GET /api/v1/orders`) — unless the restaurant turned on approval of new phones\n(`PATCH /api/v1/orders/settings`). Then the **first** order from a session is held\n(`status: HELD`): nothing reaches a bill and no bill is opened until someone on the floor\napproves it. Once one is approved, that session orders without waiting. Follow a held order with\n`GET /api/v1/guest/bill/orders/{id}`.\n\n`409 GUEST_ORDER_AWAITING_APPROVAL` while the session already has one held. `403\nGUEST_ORDERS_BLOCKED` after the floor rejected one: the diner has to scan again.\n\nNeither the table nor the restaurant is in the body: both come from the guest session, which was\ncreated by verifying the QR signature. There is no field in which to name somebody else's table.\n\nIf the table has no open bill, the first order opens one, exactly as a waiter taking the first\norder does. `served_by` stays null: nobody from the house took this order, and putting a name\nthere would move tips toward someone who did not.\n\nBounded harder than the staff order endpoint — 20 lines of up to 20 units, against 50 of 999.\nThe QR is stuck to the table and anyone who photographs it can open a session, so the room worth\nleaving is a table's order, not four hundred portions. Rate limited to 10 per minute per session.\n\n`403 SUBSCRIPTION_SUSPENDED` when the order would open a new bill and Splite suspended the\nrestaurant's subscription. A table that already has a bill keeps ordering and paying.\n\nSend an `Idempotency-Key` to make a retry safe. A phone that lost the response does not know\nwhether the kitchen got the order; retrying with the same key and body returns the first response\ninstead of ordering twice. Keys are scoped to the guest session. `409 IDEMPOTENCY_IN_FLIGHT` while\nthe first attempt is still running; `409 IDEMPOTENCY_KEY_REUSED` for the same key with a different\norder. Optional, so older clients keep working.",
         "security": [
           {
             "guestAuth": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "Idempotency-Key",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "type": "string",
+              "minLength": 16,
+              "maxLength": 80,
+              "pattern": "^[A-Za-z0-9._:-]+$"
+            },
+            "description": "One per order attempt. Replaying it returns the stored response instead of ordering again."
           }
         ],
         "requestBody": {
