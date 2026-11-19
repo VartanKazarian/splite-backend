@@ -1,9 +1,14 @@
 /** A diner's own payment after the fact: its status and its receipt. */
 const express = require('express');
-const { validateParams, guestPaymentParamSchema } = require('../../middleware/schemas');
+const {
+  validateBody, validateParams, guestPaymentParamSchema, dinerFeedbackSchema
+} = require('../../middleware/schemas');
 const { authenticateGuest } = require('../../services/guest');
 const invoicing = require('../../services/fiscalInvoicing');
 const receipts = require('../../services/receipts');
+const feedback = require('../../services/feedback');
+const { signReceiptLink } = require('../../utils/tokens');
+const { ApiError } = require('../../errors');
 const { perSession, billForGuestPayment } = require('./shared');
 
 const router = express.Router();
@@ -111,6 +116,66 @@ router.get(
       res.json(await receipts.forPayment({
         restaurantId: req.guest.restaurantId,
         paymentId: req.params.id
+      }));
+    } catch (err) { next(err); }
+  }
+);
+
+/**
+ * «¿Qué tal todo?», después de pagar (R20).
+ *
+ * Contra el pago, por lo mismo que el recibo: después de pagar la cuenta suele
+ * cerrarse, y es justo entonces cuando se pregunta. Devuelve el enlace de
+ * reseñas de Google del restaurante si lo tiene, **para cualquier nota**: ver
+ * `services/feedback.js`.
+ */
+router.post(
+  '/payments/:id/feedback',
+  authenticateGuest,
+  perSession,
+  validateParams(guestPaymentParamSchema),
+  validateBody(dinerFeedbackSchema),
+  async (req, res, next) => {
+    try {
+      await billForGuestPayment(req.guest, req.params.id);
+      res.json(await feedback.submit({
+        restaurantId: req.guest.restaurantId,
+        guestSessionId: req.guest.sessionId,
+        paymentId: req.params.id,
+        rating: req.body.rating,
+        comment: req.body.comment
+      }));
+    } catch (err) { next(err); }
+  }
+);
+
+/** Cuánto vale un enlace de recibo: lo bastante para buscarlo al hacer cuentas. */
+const RECEIPT_LINK_TTL_SECONDS = 180 * 24 * 60 * 60;
+
+/**
+ * Un enlace al recibo que el comensal puede mandarse por WhatsApp (R20).
+ *
+ * El recibo del teléfono sólo se abre con la sesión de la mesa, que caduca y
+ * se queda en ese navegador. Éste se abre desde cualquier sitio, sin sesión,
+ * durante seis meses, y enseña lo mismo salvo la referencia bancaria entera
+ * (ver `routes/receipts.js`). Sólo de un pago que existe: no de uno rechazado.
+ */
+router.post(
+  '/payments/:id/receipt-link',
+  authenticateGuest,
+  perSession,
+  validateParams(guestPaymentParamSchema),
+  async (req, res, next) => {
+    try {
+      const row = await billForGuestPayment(req.guest, req.params.id);
+      if (!feedback.RATEABLE.includes(row.payment_status)) {
+        throw new ApiError('PAYMENT_NOT_RATEABLE', 'There is no receipt for a payment that did not go through',
+          { status: row.payment_status });
+      }
+      res.json(signReceiptLink({
+        paymentId: req.params.id,
+        restaurantId: req.guest.restaurantId,
+        ttlSeconds: RECEIPT_LINK_TTL_SECONDS
       }));
     } catch (err) { next(err); }
   }

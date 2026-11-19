@@ -115,7 +115,46 @@ function verifyQrToken(token) {
   return payload;
 }
 
+/**
+ * A link to one receipt that a diner can send themselves on WhatsApp (R20).
+ *
+ * Signed with the QR secret but under its own label, so neither token can be
+ * replayed as the other: a QR signature is the HMAC of the body, this one is
+ * the HMAC of `receipt-link:` + the body. No new secret to configure, and no
+ * table to store links in -- the link is the proof.
+ */
+const RECEIPT_LINK_LABEL = 'receipt-link:v1:';
+
+function signReceiptLink({ paymentId, restaurantId, ttlSeconds }) {
+  const exp = Math.floor(Date.now() / 1000) + ttlSeconds;
+  const body = Buffer.from(JSON.stringify({ p: paymentId, r: restaurantId, exp })).toString('base64url');
+  const signature = crypto.createHmac('sha256', config.qrSigningSecret)
+    .update(RECEIPT_LINK_LABEL + body).digest('base64url');
+  return { token: `${body}.${signature}`, expiresAt: new Date(exp * 1000).toISOString() };
+}
+
+/** `{ paymentId, restaurantId }`, or null for anything forged, mangled or expired. */
+function verifyReceiptLink(token) {
+  const parts = String(token || '').split('.');
+  if (parts.length !== 2 || !parts[0] || !parts[1]) return null;
+  const [body, signature] = parts;
+  const expected = crypto.createHmac('sha256', config.qrSigningSecret)
+    .update(RECEIPT_LINK_LABEL + body).digest('base64url');
+  if (!safeEqual(expected, signature)) return null;
+  let payload;
+  try {
+    payload = JSON.parse(Buffer.from(body, 'base64url').toString('utf8'));
+  } catch {
+    return null;
+  }
+  if (!payload || !payload.p || !payload.r || !Number.isInteger(payload.exp)) return null;
+  if (payload.exp < Math.floor(Date.now() / 1000)) return null;
+  return { paymentId: payload.p, restaurantId: payload.r };
+}
+
 module.exports = {
+  signReceiptLink,
+  verifyReceiptLink,
   hashToken,
   safeEqual,
   signAccessToken,

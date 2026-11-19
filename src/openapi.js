@@ -32,6 +32,7 @@ const accountPaths = require('./contract/paths/account');
 const adminPaths = require('./contract/paths/admin');
 const bankPaths = require('./contract/paths/bank');
 const pushPaths = require('./contract/paths/push');
+const feedbackPaths = require('./contract/paths/feedback');
 
 /**
  * Las rutas, en el mismo orden de siempre. El documento se compara texto a
@@ -63,6 +64,7 @@ const paths = {
   ...bankPaths.core,
   ...accountPaths.invitations,
   ...pushPaths.core,
+  ...feedbackPaths.core,
 
   /**
    * Registration is described always, and served behind ONBOARDING_ENABLED.
@@ -160,6 +162,7 @@ const document = {
     { name: 'Payments' },
     { name: 'Orders' },
     { name: 'Push' },
+    { name: 'Feedback' },
     { name: 'Menu' },
     { name: 'Exchange rate' },
     { name: 'Webhooks' },

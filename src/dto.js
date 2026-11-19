@@ -616,6 +616,8 @@ function account(row) {
     // la pantalla omite la línea en vez de enseñar un hueco.
     fiscalAddress: row.fiscal_address ?? null,
     contactEmail: row.contact_email ?? null,
+    // Adónde se invita a dejar una reseña después de pagar (R20).
+    googleReviewUrl: row.google_review_url ?? null,
     menuCurrency: row.menu_currency,
     vatBps: row.vat_bps,
     serviceChargeBps: row.service_charge_bps,

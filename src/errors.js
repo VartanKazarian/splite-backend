@@ -130,6 +130,10 @@ const CODES = {
   // prueba pedido desde un teléfono que no está suscrito.
   PUSH_DISABLED: 503,
   PUSH_NOT_SUBSCRIBED: 409,
+  // Valorar un pago rechazado o anulado (R20).
+  PAYMENT_NOT_RATEABLE: 409,
+  // Un enlace de recibo falsificado, roto o caducado (R20).
+  RECEIPT_LINK_INVALID: 404,
   PRODUCT_NOT_FOUND: 404,
   CATEGORY_NOT_FOUND: 404,
   MENU_PDF_NOT_FOUND: 404,
