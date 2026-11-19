@@ -3,6 +3,7 @@ const config = require('../config');
 const { ApiError } = require('../errors');
 const { applyToBill, settlementView, toPaymentAmount } = require('./locks');
 const { recordPayment, transitionPayment, PAYMENT_COLUMNS } = require('./payments');
+const { lockPayment } = require('./lockOrder');
 const bankReconciliation = require('./bankReconciliation');
 const { logAudit } = require('./audit');
 const { logger } = require('../connectors/logger');
@@ -262,14 +263,13 @@ async function claimsSummary({ restaurantId }) {
  */
 async function confirmClaim({ restaurantId, claimId, actor, via = 'STAFF', bankMovementId = null, meta = {} }) {
   const result = await db.withTransaction(async client => {
-    const { rows } = await client.query(
-      `SELECT id, bill_id, amount_ves, tip_ves, status, payment_method
-         FROM payments
-        WHERE id = $1 AND restaurant_id = $2
-        FOR UPDATE`,
-      [claimId, restaurantId]
-    );
-    const claim = rows[0];
+    // The bill, then the claim (`lockOrder.js`). This took the claim first and
+    // the bill second, the opposite of a cash payment at the till -- so the two
+    // on one bill at once could deadlock, and the cashier got a 500.
+    const claim = await lockPayment(client, {
+      restaurantId, paymentId: claimId,
+      columns: 'id, bill_id, amount_ves, tip_ves, status, payment_method'
+    });
     if (!claim || claim.payment_method !== 'PAGO_MOVIL') {
       throw new ApiError('PAYMENT_CLAIM_NOT_FOUND', 'Payment claim not found');
     }
@@ -388,12 +388,9 @@ async function rejectClaim({ restaurantId, claimId, reason = null, actor, meta =
     // Guarded rather than transitioning straight to FAILED: without this,
     // "reject a claim" is an endpoint that can fail any payment in the
     // restaurant by id, including a settled card payment.
-    const { rows } = await client.query(
-      `SELECT id, status, payment_method FROM payments
-        WHERE id = $1 AND restaurant_id = $2 FOR UPDATE`,
-      [claimId, restaurantId]
-    );
-    const existing = rows[0];
+    const existing = await lockPayment(client, {
+      restaurantId, paymentId: claimId, columns: 'id, status, payment_method'
+    });
     if (!existing || existing.payment_method !== 'PAGO_MOVIL') {
       throw new ApiError('PAYMENT_CLAIM_NOT_FOUND', 'Payment claim not found');
     }

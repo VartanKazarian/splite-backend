@@ -3,6 +3,7 @@ const config = require('../config');
 const { ApiError } = require('../errors');
 const { applyToBill, settlementView, toPaymentAmount, toTipAmount } = require('./locks');
 const { recordPayment, transitionPayment } = require('./payments');
+const { lockPayment } = require('./lockOrder');
 const { MercantilC2PClient, MercantilC2PError } = require('../payments/providers/mercantil/c2p');
 const { matchInDoubtPayment, OUTCOME, digitsOnly, canonicalReference } = require('./c2pMatcher');
 const { logAudit } = require('./audit');
@@ -271,13 +272,16 @@ async function createC2PPayment({
   let settlement;
   try {
     settlement = await db.withTransaction(async tx => {
+      // The bill before the payment row (`lockOrder.js`): `applyToBill` takes
+      // the bill, and the UPDATE below takes the payment. They ran the other
+      // way round.
+      const applied = await applyToBill(tx, { restaurantId, billId, amount });
       if (reference) {
         await tx.query(
           `UPDATE payments SET provider_payment_id = $1 WHERE id = $2 AND restaurant_id = $3`,
           [reference, payment.id, restaurantId]
         );
       }
-      const applied = await applyToBill(tx, { restaurantId, billId, amount });
       await transitionPayment(tx, {
         paymentId: payment.id, restaurantId, toStatus: 'SUCCEEDED',
         reason: 'Confirmed by Mercantil', actorType: 'PROVIDER'
@@ -546,11 +550,10 @@ async function resolveC2PPayment({ restaurantId, paymentId, actorUserId = null, 
       // Re-read under lock. Another resolve -- or a webhook, or a scheduled
       // sweep -- may have finished while we were waiting on the bank, and
       // everything decided above was decided against a stale row.
-      const locked = (await tx.query(
-        `SELECT id, status, bill_id, amount_ves FROM payments
-          WHERE id = $1 AND restaurant_id = $2 FOR UPDATE`,
-        [paymentId, restaurantId]
-      )).rows[0];
+      // Its bill first, then the payment (`lockOrder.js`).
+      const locked = await lockPayment(tx, {
+        restaurantId, paymentId, columns: 'id, status, bill_id, amount_ves'
+      });
 
       if (locked.status !== 'IN_DOUBT') {
         await logAttempt(tx, {
