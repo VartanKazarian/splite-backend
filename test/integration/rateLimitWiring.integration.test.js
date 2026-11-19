@@ -8,6 +8,8 @@ const { redis, closeRedis } = require('../../src/connectors/redis');
 const fixtures = require('./helpers/fixtures');
 const config = require('../../src/config');
 const app = require('../../src/app');
+const crypto = require('node:crypto');
+const jwt = require('jsonwebtoken');
 const { signAccessToken } = require('../../src/utils/tokens');
 
 /**
@@ -25,9 +27,11 @@ describe('rate limit wiring', { skip }, () => {
   const minted = [];
 
   const IP_KEYS = ['auth:::ffff:127.0.0.1', 'auth:127.0.0.1', 'guest:::ffff:127.0.0.1', 'guest:127.0.0.1'];
+  // Sólo lo de esta suite. Las demás corren a la vez contra el mismo Redis y
+  // tienen sus propios cubos `rl:staff:<usuario>`: borrarlos todos, o esperar
+  // que no haya ninguno, hacía fallar a ésta o a otra según el orden.
   const clear = async () => {
-    const staffKeys = await redis.keys('rl:staff:*');
-    await redis.del(...IP_KEYS, ...staffKeys);
+    await redis.del(...IP_KEYS, ...minted.map(id => `rl:staff:${id}`));
   };
 
   const mint = async role => {
@@ -85,9 +89,23 @@ describe('rate limit wiring', { skip }, () => {
   });
 
   it('un token inventado no abre cubo propio', async () => {
-    const res = await fetch(`${base}/api/v1/auth/me`, { headers: { authorization: 'Bearer forged.token.value' } });
-    assert.equal(res.status, 401);
-    assert.deepEqual(await redis.keys('rl:staff:*'), []);
+    // Uno con forma de token y firmado con otra clave, que dice ser alguien:
+    // si el limitador leyera `sub` sin verificar la firma, abriría su cubo.
+    const claimed = crypto.randomUUID();
+    const forged = jwt.sign({ sub: claimed, role: 'OWNER' }, 'not-the-server-secret', { expiresIn: '5m' });
+
+    for (const token of [forged, 'forged.token.value']) {
+      const res = await fetch(`${base}/api/v1/auth/me`, { headers: { authorization: `Bearer ${token}` } });
+      assert.equal(res.status, 401);
+    }
+
+    // Las claves exactas que abriría un limitador que se fía del token. No se
+    // mira «ningún cubo»: las demás suites corren a la vez y los suyos siguen
+    // vivos un minuto, aunque ya hayan borrado sus usuarios.
+    assert.equal(
+      await redis.exists(`rl:staff:${claimed}`, 'rl:staff:undefined', 'rl:staff:null', 'rl:staff:'),
+      0
+    );
   });
 
   it('el invitado ya no comparte un cubo por dirección para todo el local', async () => {
