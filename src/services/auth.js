@@ -462,6 +462,11 @@ async function revokeAllSessionsForUser(userId) {
     'UPDATE refresh_sessions SET revoked_at = NOW() WHERE user_id = $1 AND revoked_at IS NULL RETURNING id',
     [userId]
   );
+  // Sus avisos en el teléfono, con ellas (R19): a quien se le cierra todo --
+  // baja, cambio de rol, contraseña nueva -- no le siguen llegando pagos y
+  // pedidos a la pantalla bloqueada. El panel se vuelve a suscribir solo al
+  // entrar otra vez.
+  await require('./push').forgetUser(userId);
   return rows.length;
 }
 

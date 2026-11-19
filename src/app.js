@@ -28,6 +28,7 @@ const onboardingRoutes = require('./routes/onboarding');
 const accountRoutes = require('./routes/account');
 const paymentRoutes = require('./routes/payments');
 const orderRoutes = require('./routes/orders');
+const pushRoutes = require('./routes/push');
 const fiscalRoutes = require('./routes/fiscal');
 const webhookRoutes = require('./routes/webhooks');
 const bankConnectionRoutes = require('./routes/bankConnections');
@@ -216,6 +217,7 @@ app.use('/api/v1/menu', menuRoutes);
 app.use('/api/v1/account', accountRoutes);
 app.use('/api/v1/payments', paymentRoutes);
 app.use('/api/v1/orders', orderRoutes);
+app.use('/api/v1/push', pushRoutes);
 app.use('/api/v1/fiscal', fiscalRoutes);
 
 // A SEPARATE router object, mounted at exactly one path. Serving webhooks by

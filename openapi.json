@@ -216,6 +216,9 @@
       "name": "Orders"
     },
     {
+      "name": "Push"
+    },
+    {
       "name": "Menu"
     },
     {
@@ -425,6 +428,8 @@
                   "GUEST_ORDER_AWAITING_APPROVAL",
                   "GUEST_ORDER_ALREADY_DECIDED",
                   "GUEST_ORDER_NEEDS_APPROVAL",
+                  "PUSH_DISABLED",
+                  "PUSH_NOT_SUBSCRIBED",
                   "PRODUCT_NOT_FOUND",
                   "CATEGORY_NOT_FOUND",
                   "MENU_PDF_NOT_FOUND",
@@ -17668,6 +17673,238 @@
           },
           "409": {
             "$ref": "#/components/responses/Conflict"
+          },
+          "429": {
+            "$ref": "#/components/responses/TooManyRequests"
+          },
+          "500": {
+            "$ref": "#/components/responses/ServerError"
+          }
+        }
+      }
+    },
+    "/api/v1/push/config": {
+      "get": {
+        "tags": [
+          "Push"
+        ],
+        "summary": "Whether push is on, and the key to subscribe with",
+        "operationId": "getPushConfig",
+        "description": "Any staff role. `publicKey` is the VAPID application server key for\n`PushManager.subscribe({ applicationServerKey })`. It never changes for a deployment:\nchanging it would invalidate every subscription.",
+        "security": [
+          {
+            "staffAuth": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Push configuration.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "required": [
+                    "enabled",
+                    "publicKey"
+                  ],
+                  "properties": {
+                    "enabled": {
+                      "type": "boolean"
+                    },
+                    "publicKey": {
+                      "type": [
+                        "string",
+                        "null"
+                      ],
+                      "description": "base64url; null when push is off"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "429": {
+            "$ref": "#/components/responses/TooManyRequests"
+          },
+          "500": {
+            "$ref": "#/components/responses/ServerError"
+          }
+        }
+      }
+    },
+    "/api/v1/push/subscriptions": {
+      "post": {
+        "tags": [
+          "Push"
+        ],
+        "summary": "Send notifications to this phone",
+        "operationId": "createPushSubscription",
+        "description": "The body is `PushSubscription.toJSON()`. One row per browser: if somebody else signs in on\nthe same phone, the subscription becomes theirs.\n\nWhat arrives depends on the role: payment notices to verify go to OWNER, MANAGER and CASHIER;\norders from the table (and first orders awaiting approval) go to OWNER, MANAGER and WAITER.\nNothing personal is ever in a notification: table, amount and what was ordered.\n\nEvery subscription of a user is dropped when all their sessions are revoked (deactivated,\nrole changed, password reset).",
+        "security": [
+          {
+            "staffAuth": []
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "required": [
+                  "endpoint",
+                  "keys"
+                ],
+                "properties": {
+                  "endpoint": {
+                    "type": "string",
+                    "format": "uri",
+                    "maxLength": 2048,
+                    "description": "The browser push service address. Only the known services are accepted (FCM, Mozilla, Apple, Windows)."
+                  },
+                  "expirationTime": {
+                    "description": "Ignored."
+                  },
+                  "keys": {
+                    "type": "object",
+                    "required": [
+                      "p256dh",
+                      "auth"
+                    ],
+                    "properties": {
+                      "p256dh": {
+                        "type": "string",
+                        "description": "base64url P-256 public key"
+                      },
+                      "auth": {
+                        "type": "string",
+                        "description": "base64url auth secret"
+                      }
+                    }
+                  }
+                },
+                "additionalProperties": false
+              }
+            }
+          }
+        },
+        "responses": {
+          "204": {
+            "description": "Subscribed."
+          },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "429": {
+            "$ref": "#/components/responses/TooManyRequests"
+          },
+          "500": {
+            "$ref": "#/components/responses/ServerError"
+          }
+        }
+      },
+      "delete": {
+        "tags": [
+          "Push"
+        ],
+        "summary": "Stop notifications on this phone",
+        "operationId": "deletePushSubscription",
+        "description": "Only the caller's own subscription. No error if it was already gone.",
+        "security": [
+          {
+            "staffAuth": []
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "required": [
+                  "endpoint"
+                ],
+                "additionalProperties": false,
+                "properties": {
+                  "endpoint": {
+                    "type": "string",
+                    "format": "uri",
+                    "maxLength": 2048
+                  }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "204": {
+            "description": "Unsubscribed."
+          },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "429": {
+            "$ref": "#/components/responses/TooManyRequests"
+          },
+          "500": {
+            "$ref": "#/components/responses/ServerError"
+          }
+        }
+      }
+    },
+    "/api/v1/push/test": {
+      "post": {
+        "tags": [
+          "Push"
+        ],
+        "summary": "Send a test notification to my phones",
+        "operationId": "sendPushTest",
+        "description": "`PUSH_NOT_SUBSCRIBED` when the caller has no subscription; `PUSH_DISABLED` when push is off.",
+        "security": [
+          {
+            "staffAuth": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "How many of the caller's devices it reached.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "required": [
+                    "sent",
+                    "devices"
+                  ],
+                  "properties": {
+                    "sent": {
+                      "type": "integer"
+                    },
+                    "devices": {
+                      "type": "integer"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
           },
           "429": {
             "$ref": "#/components/responses/TooManyRequests"
