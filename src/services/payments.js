@@ -1,6 +1,7 @@
 const { getContext, logger } = require('../connectors/logger');
 const { ApiError } = require('../errors');
 const { advanceShare } = require('./splits');
+const { lockPayment } = require('./lockOrder');
 
 /**
  * The payment ledger.
@@ -188,13 +189,11 @@ async function transitionPayment(client, {
    */
   onShareRefusal = 'THROW'
 }) {
-  const { rows } = await client.query(
-    `SELECT id, status, split_participant_id, amount_ves, bill_id FROM payments
-      WHERE id = $1 AND restaurant_id = $2
-      FOR UPDATE`,
-    [paymentId, restaurantId]
-  );
-  const current = rows[0];
+  // Its bill first, then it: see `lockOrder.js`. Every status move goes
+  // through here, so this one call puts every caller in the same order.
+  const current = await lockPayment(client, {
+    restaurantId, paymentId, columns: 'id, status, split_participant_id, amount_ves, bill_id'
+  });
   if (!current) {
     throw new ApiError('NOT_FOUND', 'Payment not found');
   }

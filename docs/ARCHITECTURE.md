@@ -202,6 +202,27 @@ Closing or voiding a bill releases the table for the next one; the partial index
 only covers `OPEN`, so history is retained. Migration 004 also adds a composite
 foreign key so a bill's table must belong to the same restaurant as the bill.
 
+### Lock order
+
+Every transaction that moves money locks rows in one order:
+
+    tables -> bills -> payments -> bill_splits -> bill_split_participants
+
+Postgres detects a deadlock and kills one side, and at the till that side is a
+500 on "Confirmar" or on a cash payment. Two transactions can only deadlock by
+taking the same two locks in opposite orders, so the rule is one order
+everywhere. `src/services/lockOrder.js` holds it: `lockBill`, and
+`lockPayment`, which reads the payment's bill, locks that, and only then locks
+the payment (`bill_id` on a payment never changes, so the unlocked read is
+safe). `transitionPayment` goes through `lockPayment`, which puts every status
+change in the same order without each caller having to remember.
+
+Until R18, confirming or rejecting a Pago Móvil claim, a provider webhook and
+C2P resolution all locked the payment first and the bill second -- the
+opposite of a payment at the till. `test/integration/lockOrder.integration.test.js`
+holds a bill the way the till does, starts a confirm or a reject, and then
+takes the payment: in the old order that is exactly the deadlock.
+
 ### Closing a bill for less than it owed
 
 A bill used to reach `CLOSED` on its own, and only when what had been collected
@@ -260,7 +281,7 @@ So `POST /api/v1/tables` reactivates a deactivated row with that name instead
 of refusing it, and answers `200` with the original table rather than `201`:
 same id, same `created_at`, its bills still attached. Reviving the row is also
 what keeps the **printed QR** working — a guest lookup requires `active = true`
-(`src/routes/guest.js`), so the sticker on that table went dead when it was
+(`src/routes/guest/`), so the sticker on that table went dead when it was
 deactivated and comes back with it. Minting a new row would leave that sticker
 pointing at a table that no longer exists, with nothing on screen to explain
 why the code stopped working. `POST /api/v1/tables/bulk` does the same for

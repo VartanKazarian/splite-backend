@@ -3,6 +3,7 @@ const config = require('../config');
 const { ApiError } = require('../errors');
 const inFlight = require('./inFlight');
 const paymentHolds = require('./paymentHolds');
+const { lockBill } = require('./lockOrder');
 const splitEngine = require('./splitEngine');
 const { logAudit } = require('./audit');
 
@@ -87,6 +88,8 @@ async function createSplit({ restaurantId, bill, items, request, createdBy }) {
        * impide y no se crea nada -- que es lo correcto: ahí ya no es una
        * propuesta.
        */
+      // La cuenta antes que el reparto (`lockOrder.js`).
+      await lockBill(client, { restaurantId, billId: bill.id });
       const live = (await client.query(
         `SELECT id FROM bill_splits
           WHERE restaurant_id = $1 AND bill_id = $2 AND status = 'ACTIVE'
@@ -335,6 +338,9 @@ async function voidSplit({ restaurantId, billId, splitId, actor }) {
     // bill the caller had not asked about, and -- because voiding releases the
     // one-ACTIVE-split-per-bill index -- the group still using that plan could
     // have a second one created underneath them.
+    //
+    // The bill before the split (`lockOrder.js`).
+    await lockBill(client, { restaurantId, billId });
     const split = (await client.query(
       `SELECT id, status FROM bill_splits
         WHERE id = $1 AND restaurant_id = $2 AND bill_id = $3
@@ -460,6 +466,8 @@ async function nameShare({ restaurantId, billId, ref, name }) {
   // `createSplit`: `getSplit` usa el pool, así que llamarlo desde dentro lee por
   // otra conexión y devuelve el nombre de antes. Lo destapó la prueba.
   const splitId = await db.withTransaction(async client => {
+    // La cuenta antes que el reparto (`lockOrder.js`).
+    await lockBill(client, { restaurantId, billId });
     const split = (await client.query(
       `SELECT id FROM bill_splits
         WHERE restaurant_id = $1 AND bill_id = $2 AND status = 'ACTIVE'

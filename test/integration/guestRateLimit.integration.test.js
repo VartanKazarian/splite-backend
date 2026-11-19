@@ -29,7 +29,7 @@ describe('guest rate limiting', { skip }, () => {
   let restaurant;
   const tables = [];
 
-  const PER_SESSION_MAX = 60;   // mirrors the limiter in src/routes/guest.js
+  const PER_SESSION_MAX = 60;   // mirrors the limiter in src/routes/guest/shared.js
 
   before(async () => {
     server = http.createServer(app);

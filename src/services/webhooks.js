@@ -4,6 +4,7 @@ const { ApiError } = require('../errors');
 const verifyWebhookSignature = require('../middleware/webhookSignature');
 const { applyToBill, settlementView } = require('./locks');
 const { transitionPayment } = require('./payments');
+const { lockPayment } = require('./lockOrder');
 const { logAudit } = require('./audit');
 const { logger } = require('../connectors/logger');
 
@@ -195,14 +196,11 @@ async function settleFromWebhook({ providerCode, parsed, rawBody, signature }) {
   const { paymentId, restaurantId } = parsed;
 
   const outcome = await db.withTransaction(async client => {
-    const { rows } = await client.query(
-      `SELECT id, bill_id, amount_ves, status, provider, payment_method
-         FROM payments
-        WHERE id = $1 AND restaurant_id = $2
-        FOR UPDATE`,
-      [paymentId, restaurantId]
-    );
-    const payment = rows[0];
+    // Its bill first, then the payment (`lockOrder.js`).
+    const payment = await lockPayment(client, {
+      restaurantId, paymentId,
+      columns: 'id, bill_id, amount_ves, status, provider, payment_method'
+    });
     // Rolls back the claim above, so the retry this triggers can re-claim.
     if (!payment) throw new ApiError('WEBHOOK_PAYMENT_UNRESOLVED', 'No such payment yet');
 
