@@ -31,6 +31,7 @@ const orderRoutes = require('./routes/orders');
 const pushRoutes = require('./routes/push');
 const feedbackRoutes = require('./routes/feedback');
 const receiptRoutes = require('./routes/receipts');
+const clientEventRoutes = require('./routes/clientEvents');
 const fiscalRoutes = require('./routes/fiscal');
 const webhookRoutes = require('./routes/webhooks');
 const bankConnectionRoutes = require('./routes/bankConnections');
@@ -133,6 +134,9 @@ if (config.metrics.token) {
     } catch (err) { next(err); }
   });
 }
+
+// Antes del parser JSON general: este endpoint lee su propio cuerpo (texto).
+app.use('/api/v1/client-events', clientEventRoutes);
 
 // rawBody is captured for HMAC webhook verification, which must sign the exact
 // bytes received rather than a re-serialised object.
