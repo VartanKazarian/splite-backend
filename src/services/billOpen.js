@@ -5,7 +5,7 @@ const { ApiError } = require('../errors');
 /**
  * Lo que hace falta para abrir una cuenta antes de tocar la base de datos.
  *
- * Vivía dentro de `routes/bills.js`, que es donde se abría la única cuenta que
+ * Vivía dentro de `routes/bills.js` (hoy `routes/bills/`), que es donde se abría la única cuenta que
  * se abría. Ahora hay dos caminos que abren una -- el mesero tomando nota y el
  * comensal pidiendo desde el QR -- y la regla de "sin tasa no hay cuenta" no
  * puede existir dos veces: la segunda copia es la que un día se queda sin

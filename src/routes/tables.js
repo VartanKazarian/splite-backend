@@ -22,7 +22,7 @@ const router = express.Router();
 router.use(authenticateToken);
 
 // qr_nonce is deliberately never returned: it is signing input for QR tokens,
-// and nothing outside src/routes/guest.js has any reason to see it.
+// and nothing outside src/routes/guest/ has any reason to see it.
 const TABLE_COLUMNS = 'id, restaurant_id, name, active, created_at';
 
 router.get('/', validateQuery(listTablesQuerySchema), async (req, res, next) => {
@@ -62,7 +62,7 @@ router.get('/', validateQuery(listTablesQuerySchema), async (req, res, next) => 
  * name is the restaurant's word for a physical table, and asking for it back is
  * asking for that table back. Reviving the same row -- rather than minting a
  * new one -- is also what keeps the printed QR sticker working: guest lookups
- * require `active = true` (src/routes/guest.js), so the code on the table went
+ * require `active = true` (src/routes/guest/), so the code on the table went
  * dead when it was deactivated and comes back with it. A new row would have a
  * new id and a new nonce, and the sticker on that table would stay dead.
  *
