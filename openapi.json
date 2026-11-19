@@ -14913,6 +14913,109 @@
         }
       }
     },
+    "/api/v1/admin/client-errors": {
+      "get": {
+        "tags": [
+          "Operator console"
+        ],
+        "summary": "Errors browsers reported, most frequent first",
+        "operationId": "adminClientErrors",
+        "description": "ADMIN and SUPPORT. One row per fingerprint (message + first stack frame, without bundle hashes or line numbers) over the last `days` (default 7, max 30). Paths carry no query string or fragment, and QR and receipt tokens are replaced by placeholders.",
+        "security": [
+          {
+            "operatorAuth": []
+          }
+        ],
+        "x-required-roles": [
+          "ADMIN",
+          "SUPPORT"
+        ],
+        "parameters": [
+          {
+            "name": "days",
+            "in": "query",
+            "schema": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 30,
+              "default": 7
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Errors.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "data": {
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "properties": {
+                          "fingerprint": {
+                            "type": "string"
+                          },
+                          "message": {
+                            "type": "string"
+                          },
+                          "path": {
+                            "type": [
+                              "string",
+                              "null"
+                            ]
+                          },
+                          "surface": {
+                            "type": [
+                              "string",
+                              "null"
+                            ]
+                          },
+                          "occurrences": {
+                            "type": "integer"
+                          },
+                          "release": {
+                            "type": [
+                              "string",
+                              "null"
+                            ]
+                          },
+                          "firstSeenAt": {
+                            "type": "string",
+                            "format": "date-time"
+                          },
+                          "lastSeenAt": {
+                            "type": "string",
+                            "format": "date-time"
+                          }
+                        }
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "403": {
+            "$ref": "#/components/responses/Forbidden"
+          },
+          "429": {
+            "$ref": "#/components/responses/TooManyRequests"
+          },
+          "500": {
+            "$ref": "#/components/responses/ServerError"
+          }
+        }
+      }
+    },
     "/api/v1/admin/prices": {
       "get": {
         "tags": [
@@ -18259,6 +18362,117 @@
                 }
               }
             }
+          },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "429": {
+            "$ref": "#/components/responses/TooManyRequests"
+          },
+          "500": {
+            "$ref": "#/components/responses/ServerError"
+          }
+        }
+      }
+    },
+    "/api/v1/client-events": {
+      "post": {
+        "tags": [
+          "Health"
+        ],
+        "summary": "Report a browser error or a Web Vitals sample",
+        "operationId": "reportClientEvent",
+        "description": "No session: a diner without an account fails too. 30 per minute per IP, 12 KB body.\nSent as `text/plain` holding JSON (a CORS \"simple\" request, which is all a\n`fetch(…, { keepalive: true })` on page exit can send); `application/json` is accepted too.\n\n`error` events are stored one row per fingerprint per day and listed in\n`GET /api/v1/admin/client-errors`; `vital` events only go to the log (`WEB_VITAL`).\nPaths are stripped of query and fragment, and QR and receipt tokens are replaced.",
+        "security": [],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "text/plain": {
+              "schema": {
+                "type": "string",
+                "description": "JSON of the object below."
+              }
+            },
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "required": [
+                  "kind"
+                ],
+                "properties": {
+                  "kind": {
+                    "type": "string",
+                    "enum": [
+                      "error",
+                      "vital"
+                    ]
+                  },
+                  "path": {
+                    "type": "string",
+                    "maxLength": 500
+                  },
+                  "surface": {
+                    "type": "string",
+                    "enum": [
+                      "guest",
+                      "staff",
+                      "public",
+                      "admin"
+                    ]
+                  },
+                  "release": {
+                    "type": "string",
+                    "maxLength": 60
+                  },
+                  "message": {
+                    "type": "string",
+                    "maxLength": 2000,
+                    "description": "error only"
+                  },
+                  "stack": {
+                    "type": "string",
+                    "maxLength": 8000,
+                    "description": "error only"
+                  },
+                  "name": {
+                    "type": "string",
+                    "enum": [
+                      "LCP",
+                      "INP",
+                      "CLS",
+                      "FCP",
+                      "TTFB"
+                    ],
+                    "description": "vital only"
+                  },
+                  "value": {
+                    "type": "number",
+                    "description": "vital only: ms, or the unitless CLS score"
+                  },
+                  "rating": {
+                    "type": "string",
+                    "enum": [
+                      "good",
+                      "needs-improvement",
+                      "poor"
+                    ]
+                  },
+                  "connection": {
+                    "type": "string",
+                    "maxLength": 20,
+                    "description": "navigator.connection.effectiveType"
+                  }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "204": {
+            "description": "Recorded."
           },
           "400": {
             "$ref": "#/components/responses/BadRequest"
