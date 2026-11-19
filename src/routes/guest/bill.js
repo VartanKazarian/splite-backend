@@ -18,6 +18,31 @@ const dto = require('../../dto');
 const { logAudit } = require('../../services/audit');
 const invoicing = require('../../services/fiscalInvoicing');
 const { perSession, openBillForGuest } = require('./shared');
+const { requestHash, begin, complete, abort } = require('../../services/idempotency');
+const { ApiError } = require('../../errors');
+const { logger } = require('../../connectors/logger');
+
+/**
+ * La clave de idempotencia de un pedido, si el teléfono mandó una.
+ *
+ * Opcional para que un cliente anterior siga pidiendo. Con ella, un pedido
+ * reintentado tras un corte -- el comensal no sabe si llegó y pulsa otra vez --
+ * devuelve la respuesta del primero en vez de pedirlo dos veces a cocina.
+ *
+ * Va con la sesión delante: las claves son de todo el restaurante
+ * (`idempotency_keys` es única por restaurante y clave), y la de un teléfono no
+ * debe poder devolverle a otro la respuesta de su pedido. 80 caracteres como
+ * mucho para que el total quepa en la columna (128).
+ */
+function orderIdempotencyKey(req) {
+  const raw = req.get('Idempotency-Key');
+  if (raw === undefined) return null;
+  const key = raw.trim();
+  if (!/^[A-Za-z0-9._:-]{16,80}$/.test(key)) {
+    throw new ApiError('VALIDATION_FAILED', 'Idempotency-Key must be 16-80 characters of [A-Za-z0-9._:-]');
+  }
+  return `go:${req.guest.sessionId ?? req.guest.tableId}:${key}`;
+}
 
 const router = express.Router();
 
@@ -148,7 +173,17 @@ router.post(
   rateLimit({ windowSeconds: 60, max: 10, keyPrefix: 'guest:order' }),
   validateBody(guestOrderSchema),
   async (req, res, next) => {
+    const restaurantId = req.guest.restaurantId;
+    let key = null;
+    let claimed = false;
     try {
+      key = orderIdempotencyKey(req);
+      if (key) {
+        const idem = await begin({ restaurantId, userId: null, key, hash: requestHash(req) });
+        if (!idem.owner) return res.status(idem.response.status).json(idem.response.body);
+        claimed = true;
+      }
+
       const result = await guestOrders.placeOrder({
         restaurantId: req.guest.restaurantId,
         tableId: req.guest.tableId,
@@ -156,6 +191,20 @@ router.post(
         items: req.body.items,
         note: req.body.note || null
       });
+
+      // PLACED: ya está en su cuenta, y ahí lo ve. HELD: es el primero de este
+      // teléfono y el restaurante pide aprobarlo; lo sigue con
+      // GET /bill/orders/:id.
+      const body = {
+        orderId: result.orderId,
+        createdAt: result.createdAt,
+        lineCount: req.body.items.length,
+        status: result.status
+      };
+      // En cuanto el pedido existe, antes de nada más: si la auditoría o la
+      // respuesta fallan, un reintento encuentra el pedido hecho y no lo
+      // repite (`abort` sólo suelta claves sin respuesta guardada).
+      if (claimed) await complete({ restaurantId, key, status: 201, body });
 
       await logAudit({
         restaurantId: req.guest.restaurantId,
@@ -174,16 +223,18 @@ router.post(
         requestId: req.id
       });
 
-      // PLACED: ya está en su cuenta, y ahí lo ve. HELD: es el primero de este
-      // teléfono y el restaurante pide aprobarlo; lo sigue con
-      // GET /bill/orders/:id.
-      res.status(201).json({
-        orderId: result.orderId,
-        createdAt: result.createdAt,
-        lineCount: req.body.items.length,
-        status: result.status
-      });
-    } catch (err) { next(err); }
+      res.status(201).json(body);
+    } catch (err) {
+      // Si el pedido no llegó a hacerse (placeOrder es una transacción), la
+      // clave se suelta para que el reintento lo intente de verdad. Si se hizo,
+      // ya tiene respuesta guardada y `abort` no la toca.
+      if (claimed) {
+        try { await abort({ restaurantId, key }); } catch (abortErr) {
+          logger.error({ event: 'IDEMPOTENCY_ABORT_FAILED', err: abortErr }, 'Idempotency abort failed');
+        }
+      }
+      next(err);
+    }
   }
 );
 

@@ -26,10 +26,11 @@ describe('guest ordering', { skip }, () => {
   let productB;
   let seq = 0;
 
-  const request = async (method, path, { body, session, token } = {}) => {
+  const request = async (method, path, { body, session, token, idempotencyKey } = {}) => {
     const res = await fetch(base + path, {
       method,
       headers: {
+        ...(idempotencyKey ? { 'idempotency-key': idempotencyKey } : {}),
         ...(token ? { authorization: `Bearer ${token}` } : {}),
         ...(session ? { 'x-guest-session': session } : {}),
         ...(body ? { 'content-type': 'application/json' } : {})
@@ -81,6 +82,7 @@ describe('guest ordering', { skip }, () => {
 
   beforeEach(async () => {
     await clearIpRateLimits();
+    await db.query('DELETE FROM idempotency_keys WHERE restaurant_id = $1', [restaurant.id]);
     await db.query('DELETE FROM guest_orders WHERE restaurant_id = $1', [restaurant.id]);
     await db.query('DELETE FROM bill_items WHERE restaurant_id = $1', [restaurant.id]);
     await db.query('DELETE FROM bills WHERE restaurant_id = $1', [restaurant.id]);
@@ -351,5 +353,103 @@ describe('guest ordering', { skip }, () => {
     });
     assert.equal(res.status, 400, JSON.stringify(res.body));
     assert.equal(res.body.error.code, 'VALIDATION_FAILED');
+  });
+
+  describe('with an Idempotency-Key', () => {
+    const order = () => ({ items: [{ productId: productA, quantity: 2 }] });
+    const linesOn = async (tableId) => {
+      const { rows } = await db.query(
+        `SELECT COUNT(*)::int AS n FROM bill_items i JOIN bills b ON b.id = i.bill_id
+          WHERE b.restaurant_id = $1 AND b.table_id = $2`,
+        [restaurant.id, tableId]
+      );
+      return rows[0].n;
+    };
+
+    it('replays the first response to a retry instead of ordering twice', async () => {
+      // El caso para el que existe: el teléfono perdió la respuesta, no sabe si
+      // la cocina tiene el pedido, y lo manda otra vez.
+      const table = await tableWithNonce(`O${++seq}`);
+      const session = await scan(table);
+      const idempotencyKey = 'order-attempt-0001-abcdef';
+      const body = { items: [{ productId: productA, quantity: 2 }] };
+
+      const first = await request('POST', '/api/v1/guest/bill/orders', { ...session, body, idempotencyKey });
+      const again = await request('POST', '/api/v1/guest/bill/orders', { ...session, body, idempotencyKey });
+
+      assert.equal(first.status, 201, JSON.stringify(first.body));
+      assert.equal(again.status, 201, JSON.stringify(again.body));
+      assert.deepEqual(again.body, first.body, 'la misma respuesta, el mismo pedido');
+      assert.equal(await linesOn(table.id), 1, 'una línea en la cuenta, no dos');
+      const { rows } = await db.query(
+        'SELECT COUNT(*)::int AS n FROM guest_orders WHERE restaurant_id = $1', [restaurant.id]);
+      assert.equal(rows[0].n, 1);
+    });
+
+    it('refuses the same key for a different order', async () => {
+      const table = await tableWithNonce(`O${++seq}`);
+      const session = await scan(table);
+      const idempotencyKey = 'order-attempt-0002-abcdef';
+
+      await request('POST', '/api/v1/guest/bill/orders', {
+        ...session, body: { items: [{ productId: productA, quantity: 1 }] }, idempotencyKey
+      });
+      const other = await request('POST', '/api/v1/guest/bill/orders', {
+        ...session, body: { items: [{ productId: productB, quantity: 1 }] }, idempotencyKey
+      });
+
+      assert.equal(other.status, 409, JSON.stringify(other.body));
+      assert.equal(other.body.error.code, 'IDEMPOTENCY_KEY_REUSED');
+      assert.equal(await linesOn(table.id), 1);
+    });
+
+    it('scopes keys to the session, so one phone never gets another\'s response', async () => {
+      const mine = await tableWithNonce(`O${++seq}`);
+      const theirs = await tableWithNonce(`O${++seq}`);
+      const a = await scan(mine);
+      const b = await scan(theirs);
+      const idempotencyKey = 'order-attempt-0003-abcdef';
+      const body = { items: [{ productId: productA, quantity: 1 }] };
+
+      const first = await request('POST', '/api/v1/guest/bill/orders', { ...a, body, idempotencyKey });
+      const second = await request('POST', '/api/v1/guest/bill/orders', { ...b, body, idempotencyKey });
+
+      assert.equal(second.status, 201, JSON.stringify(second.body));
+      assert.notEqual(second.body.orderId, first.body.orderId, 'un pedido propio, no el de la otra mesa');
+      assert.equal(await linesOn(theirs.id), 1);
+    });
+
+    it('releases the key when the order fails, so a corrected retry goes through', async () => {
+      const table = await tableWithNonce(`O${++seq}`);
+      const session = await scan(table);
+      const idempotencyKey = 'order-attempt-0004-abcdef';
+      const body = { items: [{ productId: productA, quantity: 1 }] };
+
+      await db.query('UPDATE menu_products SET active = false WHERE id = $1', [productA]);
+      try {
+        const failed = await request('POST', '/api/v1/guest/bill/orders', { ...session, body, idempotencyKey });
+        assert.notEqual(failed.status, 201);
+      } finally {
+        await db.query('UPDATE menu_products SET active = true WHERE id = $1', [productA]);
+      }
+
+      const retry = await request('POST', '/api/v1/guest/bill/orders', { ...session, body, idempotencyKey });
+      assert.equal(retry.status, 201, JSON.stringify(retry.body));
+      assert.equal(await linesOn(table.id), 1);
+    });
+
+    it('rejects a malformed key and still accepts orders without one', async () => {
+      const table = await tableWithNonce(`O${++seq}`);
+      const session = await scan(table);
+
+      const bad = await request('POST', '/api/v1/guest/bill/orders', {
+        ...session, body: order(), idempotencyKey: 'short'
+      });
+      assert.equal(bad.status, 400, JSON.stringify(bad.body));
+      assert.equal(bad.body.error.code, 'VALIDATION_FAILED');
+
+      const without = await request('POST', '/api/v1/guest/bill/orders', { ...session, body: order() });
+      assert.equal(without.status, 201, JSON.stringify(without.body));
+    });
   });
 });
