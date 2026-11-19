@@ -219,6 +219,9 @@
       "name": "Push"
     },
     {
+      "name": "Feedback"
+    },
+    {
       "name": "Menu"
     },
     {
@@ -430,6 +433,8 @@
                   "GUEST_ORDER_NEEDS_APPROVAL",
                   "PUSH_DISABLED",
                   "PUSH_NOT_SUBSCRIBED",
+                  "PAYMENT_NOT_RATEABLE",
+                  "RECEIPT_LINK_INVALID",
                   "PRODUCT_NOT_FOUND",
                   "CATEGORY_NOT_FOUND",
                   "MENU_PDF_NOT_FOUND",
@@ -3499,6 +3504,14 @@
             "format": "email",
             "description": "Where a customer's reply to their invoice goes: it is the Reply-To of every invoice email, which is otherwise sent from a no-reply address. Null means no Reply-To, and the email says to ask the restaurant instead. Deliberately not the owner's login email, which would otherwise be handed to every customer."
           },
+          "googleReviewUrl": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "uri",
+            "description": "Where diners are invited to leave a Google review after rating their meal (R20). Offered to everyone who rates, whatever the stars. Null when not set."
+          },
           "menuCurrency": {
             "type": "string",
             "enum": [
@@ -6454,6 +6467,14 @@
               "facturas@casa72.com"
             ],
             "description": "Where customers reply to their invoice (Reply-To). Must be an email address; lowercased before it is stored. The same three states as `fiscalAddress`: omit to keep, a value to replace, an empty string to clear."
+          },
+          "googleReviewUrl": {
+            "type": "string",
+            "maxLength": 500,
+            "examples": [
+              "https://g.page/r/CasaSetentaYDos/review"
+            ],
+            "description": "The restaurant's Google review page. Only https Google addresses are accepted (g.page, maps.app.goo.gl, google.com, search.google.com, maps.google.com): it is a link a diner's phone opens. The same three states as `fiscalAddress`."
           }
         }
       },
@@ -17894,6 +17915,345 @@
                     },
                     "devices": {
                       "type": "integer"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "429": {
+            "$ref": "#/components/responses/TooManyRequests"
+          },
+          "500": {
+            "$ref": "#/components/responses/ServerError"
+          }
+        }
+      }
+    },
+    "/api/v1/guest/payments/{id}/feedback": {
+      "post": {
+        "tags": [
+          "Guest"
+        ],
+        "summary": "Rate the meal after paying",
+        "operationId": "rateGuestPayment",
+        "description": "One rating per diner per bill: rating again corrects it instead of adding another. The\npayment must be on the scanning session's own bill and must have gone through (PENDING or\nSUCCEEDED); a rejected one answers 409 `PAYMENT_NOT_RATEABLE`.\n\n**The Google link goes to everyone who rates, whatever the stars.** Inviting only happy\ndiners is what Google calls selectively soliciting positive reviews; it is against its\npolicy and can cost the restaurant its reviews. The stars and comment are stored privately\nfor the restaurant either way.",
+        "security": [
+          {
+            "guestAuth": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "required": [
+                  "rating"
+                ],
+                "additionalProperties": false,
+                "properties": {
+                  "rating": {
+                    "type": "integer",
+                    "minimum": 1,
+                    "maximum": 5
+                  },
+                  "comment": {
+                    "type": "string",
+                    "maxLength": 500
+                  }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Stored.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "required": [
+                    "googleReviewUrl"
+                  ],
+                  "properties": {
+                    "googleReviewUrl": {
+                      "type": [
+                        "string",
+                        "null"
+                      ],
+                      "format": "uri",
+                      "description": "Where to leave a Google review, if the restaurant has set one."
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "404": {
+            "$ref": "#/components/responses/NotFound"
+          },
+          "429": {
+            "$ref": "#/components/responses/TooManyRequests"
+          },
+          "500": {
+            "$ref": "#/components/responses/ServerError"
+          }
+        }
+      }
+    },
+    "/api/v1/guest/payments/{id}/receipt-link": {
+      "post": {
+        "tags": [
+          "Guest"
+        ],
+        "summary": "A link to this receipt, to send to yourself on WhatsApp",
+        "operationId": "createGuestReceiptLink",
+        "description": "The phone's receipt opens only with the table session, which expires and stays in that\nbrowser. This returns a signed token that opens the same receipt without a session, from\nanywhere, for 180 days: the page is `/recibo/{token}` on the frontend, which reads\n`GET /api/v1/receipts/{token}`. Nothing is stored; the signature is the permission.",
+        "security": [
+          {
+            "guestAuth": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The link token.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "required": [
+                    "token",
+                    "expiresAt"
+                  ],
+                  "properties": {
+                    "token": {
+                      "type": "string"
+                    },
+                    "expiresAt": {
+                      "type": "string",
+                      "format": "date-time"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "404": {
+            "$ref": "#/components/responses/NotFound"
+          },
+          "429": {
+            "$ref": "#/components/responses/TooManyRequests"
+          },
+          "500": {
+            "$ref": "#/components/responses/ServerError"
+          }
+        }
+      }
+    },
+    "/api/v1/receipts/{token}": {
+      "get": {
+        "tags": [
+          "Guest"
+        ],
+        "summary": "A receipt opened from a shared link",
+        "operationId": "getSharedReceipt",
+        "description": "No session: the signed token is the permission. The same receipt as\n`GET /api/v1/guest/payments/{id}/receipt`, except that the bank reference is cut to its\nlast four digits (`…1234`): a link gets forwarded and sits in chats, and the full\nreference has no reason to travel with it.\n\nA forged, mangled or expired link answers 404 `RECEIPT_LINK_INVALID`, the same as a\npayment that does not exist, so it does not say which of the three it was.",
+        "security": [],
+        "parameters": [
+          {
+            "name": "token",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "maxLength": 600
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The receipt.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/GuestReceipt"
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "404": {
+            "$ref": "#/components/responses/NotFound"
+          },
+          "429": {
+            "$ref": "#/components/responses/TooManyRequests"
+          },
+          "500": {
+            "$ref": "#/components/responses/ServerError"
+          }
+        }
+      }
+    },
+    "/api/v1/feedback": {
+      "get": {
+        "tags": [
+          "Feedback"
+        ],
+        "summary": "What diners said after paying",
+        "operationId": "getFeedback",
+        "description": "OWNER and MANAGER. The average, how many of each rating, and the latest 50 with their table and date. Nothing about the diner is stored, so nothing about them is returned.",
+        "security": [
+          {
+            "staffAuth": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "days",
+            "in": "query",
+            "schema": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 365,
+              "default": 30
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The summary.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "required": [
+                    "days",
+                    "count",
+                    "average",
+                    "distribution",
+                    "recent"
+                  ],
+                  "properties": {
+                    "days": {
+                      "type": "integer"
+                    },
+                    "count": {
+                      "type": "integer"
+                    },
+                    "average": {
+                      "type": [
+                        "number",
+                        "null"
+                      ],
+                      "description": "One decimal; null with no ratings."
+                    },
+                    "distribution": {
+                      "type": "object",
+                      "properties": {
+                        "1": {
+                          "type": "integer"
+                        },
+                        "2": {
+                          "type": "integer"
+                        },
+                        "3": {
+                          "type": "integer"
+                        },
+                        "4": {
+                          "type": "integer"
+                        },
+                        "5": {
+                          "type": "integer"
+                        }
+                      }
+                    },
+                    "recent": {
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "required": [
+                          "id",
+                          "rating",
+                          "comment",
+                          "tableName",
+                          "createdAt"
+                        ],
+                        "properties": {
+                          "id": {
+                            "type": "string",
+                            "format": "uuid"
+                          },
+                          "rating": {
+                            "type": "integer",
+                            "minimum": 1,
+                            "maximum": 5
+                          },
+                          "comment": {
+                            "type": [
+                              "string",
+                              "null"
+                            ]
+                          },
+                          "tableName": {
+                            "type": [
+                              "string",
+                              "null"
+                            ]
+                          },
+                          "createdAt": {
+                            "type": "string",
+                            "format": "date-time"
+                          }
+                        }
+                      }
                     }
                   }
                 }

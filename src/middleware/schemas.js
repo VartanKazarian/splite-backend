@@ -766,8 +766,29 @@ const restaurantProfileSchema = Joi.object({
   fiscalAddress: Joi.string().trim().max(200).allow(''),
   // Adónde responden los clientes a su factura (Reply-To). Vacío lo borra, por
   // lo mismo que la dirección fiscal.
-  contactEmail: Joi.string().trim().lowercase().email().max(255).allow('')
+  contactEmail: Joi.string().trim().lowercase().email().max(255).allow(''),
+  // Adónde se invita a dejar una reseña (R20). Sólo una página de Google:
+  // es un enlace que el teléfono del comensal abre sin preguntar. Vacío lo
+  // borra, como los dos de arriba.
+  googleReviewUrl: Joi.string().trim().max(500).allow('').custom((value, helpers) => {
+    if (value === '' || require('../services/feedback').isGoogleReviewUrl(value)) return value;
+    return helpers.error('any.invalid');
+  })
 }).min(1);
+
+// Lo que opina un comensal después de pagar (R20).
+const dinerFeedbackSchema = Joi.object({
+  rating: Joi.number().integer().min(1).max(5).required(),
+  comment: Joi.string().trim().max(500).allow('')
+});
+
+const receiptLinkParamSchema = Joi.object({
+  token: Joi.string().max(600).pattern(/^[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+$/).required()
+});
+
+const feedbackQuerySchema = Joi.object({
+  days: Joi.number().integer().min(1).max(365).default(30)
+});
 
 /**
  * La serie que el SENIAT le autorizó a este restaurante.
@@ -1354,6 +1375,9 @@ module.exports = {
   guestOrderIdParamSchema,
   orderSettingsSchema,
   pushSubscriptionSchema,
+  dinerFeedbackSchema,
+  receiptLinkParamSchema,
+  feedbackQuerySchema,
   pushUnsubscribeSchema,
   createCategorySchema,
   updateCategorySchema,

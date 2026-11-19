@@ -1444,6 +1444,10 @@ const onboardingSchemas = {
         type: ['string', 'null'], format: 'email',
         description: 'Where a customer\'s reply to their invoice goes: it is the Reply-To of every invoice email, which is otherwise sent from a no-reply address. Null means no Reply-To, and the email says to ask the restaurant instead. Deliberately not the owner\'s login email, which would otherwise be handed to every customer.'
       },
+      googleReviewUrl: {
+        type: ['string', 'null'], format: 'uri',
+        description: 'Where diners are invited to leave a Google review after rating their meal (R20). Offered to everyone who rates, whatever the stars. Null when not set.'
+      },
       menuCurrency: { type: 'string', enum: ['VES', 'USD', 'EUR'] },
       vatBps: { type: 'integer' },
       serviceChargeBps: { type: 'integer' },
@@ -2479,6 +2483,10 @@ Object.assign(schemas, {
       contactEmail: {
         type: 'string', maxLength: 255, examples: ['facturas@casa72.com'],
         description: 'Where customers reply to their invoice (Reply-To). Must be an email address; lowercased before it is stored. The same three states as `fiscalAddress`: omit to keep, a value to replace, an empty string to clear.'
+      },
+      googleReviewUrl: {
+        type: 'string', maxLength: 500, examples: ['https://g.page/r/CasaSetentaYDos/review'],
+        description: 'The restaurant\'s Google review page. Only https Google addresses are accepted (g.page, maps.app.goo.gl, google.com, search.google.com, maps.google.com): it is a link a diner\'s phone opens. The same three states as `fiscalAddress`.'
       }
     }
   },

@@ -48,6 +48,9 @@ they eat.
 
 **Splite team**
 - Operator console: plans, subscriptions, charges, leads and onboarding.
+- After paying, diners rate the meal (stored privately; every rater is offered the
+  restaurant's Google review link) and can send themselves a signed link to
+  their receipt on WhatsApp.
 - Staff push notifications (Web Push) on locked phones: payment notices to
   verify go to cashiers, orders from the table to the floor. No setup: the
   VAPID key pair is generated on first use.

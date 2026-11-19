@@ -41,7 +41,7 @@ router.get('/', async (req, res, next) => {
     const { rows } = await db.query(
       `SELECT id, name, rif, menu_currency, vat_bps, service_charge_bps,
               payout_bank_code, payout_account_number, payout_phone, payout_holder_id,
-              plan_tier, trial_ends_at, fiscal_invoice_policy, fiscal_address, contact_email, created_at
+              plan_tier, trial_ends_at, fiscal_invoice_policy, fiscal_address, contact_email, google_review_url, created_at
          FROM restaurants
         WHERE id = $1`,
       [req.user.restaurantId]
@@ -100,13 +100,20 @@ router.patch(
                   WHEN $5 = '' THEN NULL
                   ELSE $5
                 END,
+                -- Y para el enlace de reseñas de Google (R20).
+                google_review_url = CASE
+                  WHEN $6::TEXT IS NULL THEN google_review_url
+                  WHEN $6 = '' THEN NULL
+                  ELSE $6
+                END,
                 updated_at = NOW()
           WHERE id = $1
         RETURNING id, name, rif, menu_currency, vat_bps, service_charge_bps,
                   payout_bank_code, payout_account_number, payout_phone, payout_holder_id,
-                  plan_tier, trial_ends_at, fiscal_invoice_policy, fiscal_address, contact_email, created_at`,
+                  plan_tier, trial_ends_at, fiscal_invoice_policy, fiscal_address, contact_email, google_review_url, created_at`,
         [req.user.restaurantId, req.body.name ?? null, req.body.fiscalInvoicePolicy ?? null,
-          req.body.fiscalAddress ?? null, req.body.contactEmail ?? null]
+          req.body.fiscalAddress ?? null, req.body.contactEmail ?? null,
+          req.body.googleReviewUrl ?? null]
       );
       if (!rows.length) throw new ApiError('RESTAURANT_NOT_FOUND', 'Restaurant not found');
 
@@ -324,7 +331,7 @@ router.put(
           WHERE id = $1
         RETURNING id, name, rif, menu_currency, vat_bps, service_charge_bps,
                   payout_bank_code, payout_account_number, payout_phone, payout_holder_id,
-                  plan_tier, trial_ends_at, fiscal_invoice_policy, fiscal_address, contact_email, created_at`,
+                  plan_tier, trial_ends_at, fiscal_invoice_policy, fiscal_address, contact_email, google_review_url, created_at`,
         [req.user.restaurantId, bankCode ?? null, accountNumber ?? null,
          normalisedPhone, holderId ?? null]
       );

@@ -202,6 +202,23 @@ Closing or voiding a bill releases the table for the next one; the partial index
 only covers `OPEN`, so history is retained. Migration 004 also adds a composite
 foreign key so a bill's table must belong to the same restaurant as the bill.
 
+### After paying: rating and a shareable receipt
+
+R20. A diner who paid rates the meal 1-5 with an optional comment
+(`POST /guest/payments/{id}/feedback`), one row per diner per bill in
+`diner_feedback`; OWNER and MANAGER read the average and the latest in
+`GET /feedback`. **Every** rater is offered the restaurant's Google review link
+(`restaurants.google_review_url`, https Google hosts only): inviting only the
+happy ones is "selectively soliciting positive reviews", which Google forbids
+and punishes by removing reviews.
+
+The receipt link for WhatsApp is stateless: `signReceiptLink` signs
+`{payment, restaurant, exp}` with the QR secret under its own label, so a QR
+token can never pass as a receipt link or the reverse, and nothing needs
+storing or configuring. It lasts 180 days. `GET /receipts/{token}` serves the
+same receipt as the phone's, without a session, with the bank reference cut to
+its last four digits; a bad, tampered or expired link is a plain 404.
+
 ### Lock order
 
 Every transaction that moves money locks rows in one order:
