@@ -96,11 +96,16 @@ async function invoiceOfferedAt(restaurantId) {
  */
 async function payeeForGuest(guest) {
   const { rows } = await db.query(
-    `SELECT payout_bank_code, payout_phone, payout_holder_id
+    `SELECT payout_bank_code, payout_phone, payout_holder_id, default_tip_pct
        FROM restaurants WHERE id = $1`,
     [guest.restaurantId]
   );
-  return rows[0] ? dto.guestPayee(rows[0]) : null;
+  // La propina que el restaurante quiere marcada viaja en la misma lectura:
+  // es de la misma fila y la pantalla la necesita a la vez que el payee.
+  return {
+    payee: rows[0] ? dto.guestPayee(rows[0]) : null,
+    defaultTipPct: Number(rows[0]?.default_tip_pct ?? 10)
+  };
 }
 
 router.get('/bill', authenticateGuest, perSession, async (req, res, next) => {
@@ -115,7 +120,7 @@ router.get('/bill', authenticateGuest, perSession, async (req, res, next) => {
     // ofrece «envíame la factura» y sólo debe ofrecerlo donde se puede cumplir.
     // Es el mismo cálculo que el estado del pago, que sigue haciendo falta
     // allí porque la cuenta deja de leerse en cuanto se cierra.
-    const [items, payee, c2pAvailable, canRequestInvoice, pending, holds] = await Promise.all([
+    const [items, { payee, defaultTipPct }, c2pAvailable, canRequestInvoice, pending, holds] = await Promise.all([
       billItems.listForBill({ restaurantId: req.guest.restaurantId, billId: bill.id }),
       payeeForGuest(req.guest),
       mercantilC2P.c2pAvailable(req.guest.restaurantId),
@@ -130,7 +135,7 @@ router.get('/bill', authenticateGuest, perSession, async (req, res, next) => {
         pendingVes: pending.totalVes, pendingCount: pending.count,
         heldVes: holds.othersVes, heldUntil: holds.othersUntil, myHold: holds.mine
       }),
-      payee, c2pAvailable, canRequestInvoice
+      payee, c2pAvailable, canRequestInvoice, defaultTipPct
     });
   } catch (err) { next(err); }
 });

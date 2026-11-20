@@ -2061,6 +2061,16 @@
             "type": "boolean",
             "description": "Whether this restaurant can issue a fiscal invoice from the app — the same answer as\n`canRequestInvoice` on `GET /guest/payments/{id}`, available here before anything is paid.\n**Offer \"send me the invoice\" on the payment claim only when this is true.**\n\nThe payment status keeps its own copy because the bill stops being readable the moment\nit closes, which is exactly when a manually requested invoice becomes possible."
           },
+          "defaultTipPct": {
+            "type": "integer",
+            "enum": [
+              0,
+              10,
+              15,
+              20
+            ],
+            "description": "The tip to pre-select on the tip step, as a percentage, set by the restaurant. 0 pre-selects \"no tip\". The diner can always change it."
+          },
           "updatedAt": {
             "type": "string",
             "format": "date-time"
@@ -3511,6 +3521,16 @@
             ],
             "format": "uri",
             "description": "Where diners are invited to leave a Google review after rating their meal (R20). Offered to everyone who rates, whatever the stars. Null when not set."
+          },
+          "defaultTipPct": {
+            "type": "integer",
+            "enum": [
+              0,
+              10,
+              15,
+              20
+            ],
+            "description": "The tip a diner finds pre-selected on the bill, as a percentage of their share. 0 means \"no tip\" is pre-selected. The restaurant decides, because whether a tip on top of the service charge fits local custom is its call. 10 until changed."
           },
           "menuCurrency": {
             "type": "string",
@@ -6489,6 +6509,16 @@
               "https://g.page/r/CasaSetentaYDos/review"
             ],
             "description": "The restaurant's Google review page. Only https Google addresses are accepted (g.page, maps.app.goo.gl, google.com, search.google.com, maps.google.com): it is a link a diner's phone opens. The same three states as `fiscalAddress`."
+          },
+          "defaultTipPct": {
+            "type": "integer",
+            "enum": [
+              0,
+              10,
+              15,
+              20
+            ],
+            "description": "The tip diners find pre-selected: one of the four the bill screen offers, since any other value would match no button. 0 pre-selects \"no tip\". Cannot be cleared, only changed."
           }
         }
       },
@@ -17628,7 +17658,7 @@
           "OWNER",
           "MANAGER"
         ],
-        "description": "Roles: OWNER, MANAGER. Partial update; at least one field is required. Omitting a field\nleaves it as it is — in particular, changing the invoicing policy does not require\nresending the name, which is how a restaurant gets renamed by accident.\n\n`name` is what a diner reads on their phone the moment they scan the code on the table,\nabove the table number. It could previously only be set during onboarding, which left\nwhatever was typed that day in front of every customer with no way to correct it.\n\n`fiscalInvoicePolicy` is **OWNER only**, and answers with 403 `FORBIDDEN_ROLE` for a\nMANAGER. It is not profile editing: it decides how the restaurant declares, so it sits\nwith the money decisions and is audited separately as `FISCAL_POLICY_CHANGED`.\n\nMenu currency, charges and the payee each still have their own endpoint, because each is\na different decision with a different reach.",
+        "description": "Roles: OWNER, MANAGER. Partial update; at least one field is required. Omitting a field\nleaves it as it is — in particular, changing the invoicing policy does not require\nresending the name, which is how a restaurant gets renamed by accident.\n\n`name` is what a diner reads on their phone the moment they scan the code on the table,\nabove the table number. It could previously only be set during onboarding, which left\nwhatever was typed that day in front of every customer with no way to correct it.\n\n`fiscalInvoicePolicy` is **OWNER only**, and answers with 403 `FORBIDDEN_ROLE` for a\nMANAGER. It is not profile editing: it decides how the restaurant declares, so it sits\nwith the money decisions and is audited separately as `FISCAL_POLICY_CHANGED`.\n\n`defaultTipPct` is the tip diners find pre-selected on the bill (0 = \"no tip\"). It is\naudited as `DEFAULT_TIP_CHANGED`.\n\nMenu currency, charges and the payee each still have their own endpoint, because each is\na different decision with a different reach.",
         "security": [
           {
             "staffAuth": []

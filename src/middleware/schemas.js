@@ -773,7 +773,10 @@ const restaurantProfileSchema = Joi.object({
   googleReviewUrl: Joi.string().trim().max(500).allow('').custom((value, helpers) => {
     if (value === '' || require('../services/feedback').isGoogleReviewUrl(value)) return value;
     return helpers.error('any.invalid');
-  })
+  }),
+  // La propina que la mesa trae marcada: una de las cuatro de la fila de
+  // botones del comensal, porque otra no saldría marcada en ninguno.
+  defaultTipPct: Joi.number().integer().valid(0, 10, 15, 20)
 }).min(1);
 
 // Lo que opina un comensal después de pagar (R20).
