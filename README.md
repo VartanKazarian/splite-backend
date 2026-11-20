@@ -163,7 +163,8 @@ sign-in — which reads as a broken password rather than a rejected address.
 
 Railway project with three services: this app, Postgres and Redis.
 `railway.json` builds the Dockerfile, health-checks `/health/ready`, and runs
-`npm run migrate` before each release. Migrations are forward-only and
+the migrations as the container starts, before the server listens; the new
+version only takes traffic once it is healthy. Migrations are forward-only and
 serialised by an advisory lock. Merging to `main` deploys.
 
 - Production API: `https://splite-backend-production.up.railway.app`, moving to
