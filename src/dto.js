@@ -618,6 +618,8 @@ function account(row) {
     contactEmail: row.contact_email ?? null,
     // Adónde se invita a dejar una reseña después de pagar (R20).
     googleReviewUrl: row.google_review_url ?? null,
+    // La propina que el comensal encuentra marcada (0 = «Sin propina").
+    defaultTipPct: Number(row.default_tip_pct ?? 10),
     menuCurrency: row.menu_currency,
     vatBps: row.vat_bps,
     serviceChargeBps: row.service_charge_bps,

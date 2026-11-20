@@ -594,6 +594,9 @@ const invitations = {
         'MANAGER. It is not profile editing: it decides how the restaurant declares, so it sits',
         'with the money decisions and is audited separately as `FISCAL_POLICY_CHANGED`.',
         '',
+        '`defaultTipPct` is the tip diners find pre-selected on the bill (0 = "no tip"). It is',
+        'audited as `DEFAULT_TIP_CHANGED`.',
+        '',
         'Menu currency, charges and the payee each still have their own endpoint, because each is',
         'a different decision with a different reach.'
       ].join('\n'),

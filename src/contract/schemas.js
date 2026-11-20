@@ -729,6 +729,10 @@ const schemas = {
           'it closes, which is exactly when a manually requested invoice becomes possible.'
         ].join('\n')
       },
+      defaultTipPct: {
+        type: 'integer', enum: [0, 10, 15, 20],
+        description: 'The tip to pre-select on the tip step, as a percentage, set by the restaurant. 0 pre-selects "no tip". The diner can always change it.'
+      },
       updatedAt: { type: 'string', format: 'date-time' }
     }
   },
@@ -1447,6 +1451,10 @@ const onboardingSchemas = {
       googleReviewUrl: {
         type: ['string', 'null'], format: 'uri',
         description: 'Where diners are invited to leave a Google review after rating their meal (R20). Offered to everyone who rates, whatever the stars. Null when not set.'
+      },
+      defaultTipPct: {
+        type: 'integer', enum: [0, 10, 15, 20],
+        description: 'The tip a diner finds pre-selected on the bill, as a percentage of their share. 0 means "no tip" is pre-selected. The restaurant decides, because whether a tip on top of the service charge fits local custom is its call. 10 until changed.'
       },
       menuCurrency: { type: 'string', enum: ['VES', 'USD', 'EUR'] },
       vatBps: { type: 'integer' },
@@ -2498,6 +2506,10 @@ Object.assign(schemas, {
       googleReviewUrl: {
         type: 'string', maxLength: 500, examples: ['https://g.page/r/CasaSetentaYDos/review'],
         description: 'The restaurant\'s Google review page. Only https Google addresses are accepted (g.page, maps.app.goo.gl, google.com, search.google.com, maps.google.com): it is a link a diner\'s phone opens. The same three states as `fiscalAddress`.'
+      },
+      defaultTipPct: {
+        type: 'integer', enum: [0, 10, 15, 20],
+        description: 'The tip diners find pre-selected: one of the four the bill screen offers, since any other value would match no button. 0 pre-selects "no tip". Cannot be cleared, only changed.'
       }
     }
   },

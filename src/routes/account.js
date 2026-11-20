@@ -41,7 +41,7 @@ router.get('/', async (req, res, next) => {
     const { rows } = await db.query(
       `SELECT id, name, rif, menu_currency, vat_bps, service_charge_bps,
               payout_bank_code, payout_account_number, payout_phone, payout_holder_id,
-              plan_tier, trial_ends_at, fiscal_invoice_policy, fiscal_address, contact_email, google_review_url, created_at
+              plan_tier, trial_ends_at, fiscal_invoice_policy, fiscal_address, contact_email, google_review_url, default_tip_pct, created_at
          FROM restaurants
         WHERE id = $1`,
       [req.user.restaurantId]
@@ -106,14 +106,17 @@ router.patch(
                   WHEN $6 = '' THEN NULL
                   ELSE $6
                 END,
+                -- La propina que la mesa trae marcada. Sin «borrar»: siempre
+                -- hay una, aunque sea 0 («Sin propina»).
+                default_tip_pct = COALESCE($7::SMALLINT, default_tip_pct),
                 updated_at = NOW()
           WHERE id = $1
         RETURNING id, name, rif, menu_currency, vat_bps, service_charge_bps,
                   payout_bank_code, payout_account_number, payout_phone, payout_holder_id,
-                  plan_tier, trial_ends_at, fiscal_invoice_policy, fiscal_address, contact_email, google_review_url, created_at`,
+                  plan_tier, trial_ends_at, fiscal_invoice_policy, fiscal_address, contact_email, google_review_url, default_tip_pct, created_at`,
         [req.user.restaurantId, req.body.name ?? null, req.body.fiscalInvoicePolicy ?? null,
           req.body.fiscalAddress ?? null, req.body.contactEmail ?? null,
-          req.body.googleReviewUrl ?? null]
+          req.body.googleReviewUrl ?? null, req.body.defaultTipPct ?? null]
       );
       if (!rows.length) throw new ApiError('RESTAURANT_NOT_FOUND', 'Restaurant not found');
 
@@ -133,6 +136,17 @@ router.patch(
           resourceType: 'restaurant',
           resourceId: req.user.restaurantId,
           details: { policy: rows[0].fiscal_invoice_policy }
+        });
+      }
+      // Cambia lo que paga cada mesa a partir de ahora: que se pueda responder
+      // «quién lo puso a 20 % y cuándo».
+      if (req.body.defaultTipPct !== undefined) {
+        await logAudit({
+          ...auditContext(req),
+          action: 'DEFAULT_TIP_CHANGED',
+          resourceType: 'restaurant',
+          resourceId: req.user.restaurantId,
+          details: { defaultTipPct: Number(rows[0].default_tip_pct) }
         });
       }
 
@@ -331,7 +345,7 @@ router.put(
           WHERE id = $1
         RETURNING id, name, rif, menu_currency, vat_bps, service_charge_bps,
                   payout_bank_code, payout_account_number, payout_phone, payout_holder_id,
-                  plan_tier, trial_ends_at, fiscal_invoice_policy, fiscal_address, contact_email, google_review_url, created_at`,
+                  plan_tier, trial_ends_at, fiscal_invoice_policy, fiscal_address, contact_email, google_review_url, default_tip_pct, created_at`,
         [req.user.restaurantId, bankCode ?? null, accountNumber ?? null,
          normalisedPhone, holderId ?? null]
       );
