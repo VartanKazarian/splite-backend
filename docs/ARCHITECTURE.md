@@ -3384,9 +3384,19 @@ schema. The live document is also served at `/openapi.json`, with Swagger UI at
 2. Keep PostgreSQL and Redis on private networking; do not publish their ports.
 3. Set `CORS_ORIGINS` to your exact frontend origins. Wildcards are rejected in production.
 4. Set `TRUST_PROXY` to the number of proxy hops in front of the API, otherwise `req.ip` — and with it rate limiting and audit records — is attacker-controlled.
-5. Run `npm run migrate` as a controlled deployment step, not on process boot.
-   On Railway that is `railway.json`'s `preDeployCommand`, which runs before the
-   new version takes traffic; elsewhere it is a release command or a manual step.
+5. Run `npm run migrate` before the new version takes traffic. On Railway it is
+   the first half of `railway.json`'s `startCommand`
+   (`node scripts/migrate.js && exec node src/server.js`): the new container
+   migrates, then listens, and Railway only switches traffic once
+   `/health/ready` answers, so the old version keeps serving until then. If a
+   migration fails the server never starts and the old version stays live.
+   It used to be a `preDeployCommand`, a separate step. That step pulls the
+   image from Railway's registry a second time, and in November 2026 that pull
+   failed on every deploy — even redeploying a build that had worked — while
+   the same image started fine as a service. Running it at boot is safe here
+   because there is one replica and the advisory lock serialises any overlap;
+   with several replicas each would wait its turn on the lock and find nothing
+   left to apply. Elsewhere it can be a release command or a manual step.
 6. Commit `package-lock.json`; the image build and CI both depend on it for reproducibility.
 7. **When a deploy never becomes healthy, read stderr first.** A container that
    dies before `app.listen` shows up in a hosting dashboard as repeated

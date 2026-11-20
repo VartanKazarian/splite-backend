@@ -5,8 +5,7 @@
     "dockerfilePath": "Dockerfile"
   },
   "deploy": {
-    "startCommand": "node src/server.js",
-    "preDeployCommand": "npm run migrate",
+    "startCommand": "sh -c 'node scripts/migrate.js && exec node src/server.js'",
     "healthcheckPath": "/health/ready",
     "healthcheckTimeout": 60,
     "restartPolicyType": "ON_FAILURE",
