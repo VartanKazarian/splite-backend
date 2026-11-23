@@ -1818,7 +1818,30 @@ Object.assign(schemas, {
       balanceUsd: minorUnits,
       lastActivityAt: { type: ['string', 'null'], format: 'date-time', description: 'When the restaurant last opened a bill.' },
       createdAt: { type: 'string', format: 'date-time' },
-      notes: { type: ['string', 'null'] }
+      notes: { type: ['string', 'null'] },
+      activity30d: {
+        type: ['object', 'null'],
+        description: 'How the restaurant used Splite in the last 30 days. Amounts in bolívar céntimos, except `volumeUsd` (US dollar cents, each payment at its own bill\'s rate).',
+        properties: {
+          volumeVes: minorUnits,
+          volumeUsd: minorUnits,
+          previousVolumeVes: { ...minorUnits, description: 'The 30 days before, to compare.' },
+          bills: { type: 'integer' },
+          activeDays: { type: 'integer', description: 'Days with at least one bill opened.' },
+          payments: { type: 'integer' },
+          guestShareBps: { type: ['integer', 'null'], description: 'Share of payments the diner made from the QR, in basis points.' },
+          failedPayments: { type: 'integer' }
+        }
+      },
+      health: {
+        type: ['object', 'null'],
+        description: 'A 0–100 score with the reasons that lowered it. Null for a cancelled client.',
+        properties: {
+          score: { type: 'integer', minimum: 0, maximum: 100 },
+          level: { type: 'string', enum: ['GOOD', 'WATCH', 'RISK'] },
+          reasons: { type: 'array', items: { type: 'string', enum: ['INACTIVE_14D', 'INACTIVE_7D', 'VOLUME_DROP_50', 'VOLUME_DROP_25', 'OVERDUE', 'SUSPENDED', 'TRIAL_EXPIRED', 'NO_TABLES', 'NO_MENU', 'NO_BANK', 'PAYMENT_FAILURES'] } }
+        }
+      }
     }
   },
 

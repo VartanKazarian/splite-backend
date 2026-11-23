@@ -98,7 +98,7 @@ const auth = {
         { name: 'state', in: 'query', schema: { type: 'string', enum: ['TRIAL', 'TRIAL_EXPIRED', 'ACTIVE', 'OVERDUE', 'SUSPENDED', 'CANCELLED'] } }
       ],
       responses: {
-        200: { description: 'Clients.', content: { 'application/json': { schema: { type: 'object', properties: { data: { type: 'array', items: ref('AdminClient') }, summary: { type: 'object', properties: { total: { type: 'integer' }, byState: { type: 'object' }, monthlyRecurringUsd: minorUnits, outstandingUsd: minorUnits } } } } } } },
+        200: { description: 'Clients.', content: { 'application/json': { schema: { type: 'object', properties: { data: { type: 'array', items: ref('AdminClient') }, summary: { type: 'object', properties: { total: { type: 'integer' }, byState: { type: 'object' }, monthlyRecurringUsd: minorUnits, outstandingUsd: minorUnits, byHealth: { type: 'object', properties: { GOOD: { type: 'integer' }, WATCH: { type: 'integer' }, RISK: { type: 'integer' } } } } } } } } } },
         403: response('Forbidden'), ...commonErrors
       }
     }
@@ -115,6 +115,12 @@ const auth = {
           client: ref('AdminClient'),
           charges: { type: 'array', items: ref('AdminCharge') },
           payments: { type: 'array', items: ref('AdminPayment') },
+          trend: { type: 'object', description: 'The last 30 days, Caracas days.', properties: {
+            daily: { type: 'array', items: { type: 'object', properties: { date: { type: 'string', format: 'date' }, bills: { type: 'integer' }, volumeVes: minorUnits } } },
+            methods: { type: 'array', items: { type: 'object', properties: { method: { type: 'string' }, payments: { type: 'integer' }, volumeVes: minorUnits } } },
+            tipsVes: minorUnits,
+            averageBillVes: { ...minorUnits, type: ['string', 'null'] }
+          } },
           usage: { type: 'object', properties: { bills30d: { type: 'integer' }, collectedVes30d: minorUnits, tables: { type: 'integer' }, staff: { type: 'integer' }, products: { type: 'integer' }, bankConnections: { type: 'integer' } } },
           setup: { type: 'object', properties: { menuLoaded: { type: 'boolean' }, tablesCreated: { type: 'boolean' }, rifSet: { type: 'boolean' }, bankConnected: { type: 'boolean' } } },
           history: { type: 'array', items: { type: 'object', properties: { action: { type: 'string' }, details: { type: ['object', 'null'] }, operatorEmail: { type: ['string', 'null'] }, at: { type: 'string', format: 'date-time' } } } }
@@ -320,7 +326,7 @@ const notices = {
   '/api/v1/admin/metrics': {
     get: {
       tags: ['Operator console'], summary: 'How the business is doing', operationId: 'adminMetrics',
-      description: 'ADMIN and SUPPORT. Recurring revenue, outstanding, clients per state, trial-to-paid conversion over 180 days, cancellations in the last 30, and six months of new clients, charged and collected (US dollar cents). `rateBps` is basis points: 2500 = 25 %.',
+      description: 'ADMIN and SUPPORT. Recurring revenue, outstanding, clients per state, trial-to-paid conversion over 180 days, cancellations in the last 30, client health, the signup funnel, overdue charges by age, what went through Splite, and six months of new clients, charged, collected and processed (US dollar cents). `rateBps` is basis points: 2500 = 25 %.',
       security: operator, 'x-required-roles': ['ADMIN', 'SUPPORT'],
       responses: {
         200: { description: 'Metrics.', content: { 'application/json': { schema: { type: 'object', properties: {
@@ -328,7 +334,13 @@ const notices = {
           pendingNotices: { type: 'integer' },
           trialConversion: { type: 'object', properties: { windowDays: { type: 'integer' }, started: { type: 'integer' }, paying: { type: 'integer' }, rateBps: { type: ['integer', 'null'] } } },
           cancelledLast30Days: { type: 'integer' },
-          months: { type: 'array', items: { type: 'object', properties: { month: { type: 'string' }, newClients: { type: 'integer' }, chargedUsd: minorUnits, collectedUsd: minorUnits } } }
+          byHealth: { type: 'object', properties: { GOOD: { type: 'integer' }, WATCH: { type: 'integer' }, RISK: { type: 'integer' } } },
+          payingClients: { type: 'integer' },
+          averageRevenueUsd: { ...minorUnits, type: ['string', 'null'], description: 'Monthly recurring revenue per paying client.' },
+          processed30d: { type: 'object', description: 'What went through Splite in the last 30 days, at each bill\'s rate.', properties: { volumeUsd: minorUnits, previousVolumeUsd: minorUnits, payments: { type: 'integer' }, guestShareBps: { type: ['integer', 'null'] } } },
+          funnel: { type: 'object', description: 'Of the restaurants that signed up in the window, how many reached each step.', properties: { windowDays: { type: 'integer' }, signedUp: { type: 'integer' }, setUp: { type: 'integer' }, firstBill: { type: 'integer' }, firstQrPayment: { type: 'integer' }, paying: { type: 'integer' } } },
+          aging: { type: 'object', description: 'Open subscription charges by days past due.', properties: { currentUsd: minorUnits, days1to30Usd: minorUnits, days31to60Usd: minorUnits, days61PlusUsd: minorUnits } },
+          months: { type: 'array', items: { type: 'object', properties: { month: { type: 'string' }, newClients: { type: 'integer' }, chargedUsd: minorUnits, collectedUsd: minorUnits, processedUsd: minorUnits, activeRestaurants: { type: 'integer' }, guestShareBps: { type: ['integer', 'null'] } } } }
         } } } } },
         403: response('Forbidden'), ...commonErrors
       }

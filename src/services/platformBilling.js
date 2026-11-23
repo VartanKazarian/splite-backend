@@ -5,6 +5,7 @@ const fx = require('./fx');
 const money = require('./money');
 const plans = require('./plans');
 const operators = require('./operators');
+const health = require('./clientHealth');
 
 /**
  * Lo que Splite le cobra a cada restaurante, y el estado de cada cliente.
@@ -134,14 +135,17 @@ async function listClients({ q = null, state = null } = {}) {
       ORDER BY r.name`,
     [today, q]
   );
-  const all = rows.map(r => clientView(r, today));
+  const activity = await health.activityByRestaurant();
+  const all = rows.map(r => withHealth(clientView(r, today), activity.get(r.id)));
   const counts = {};
+  const byHealth = { GOOD: 0, WATCH: 0, RISK: 0 };
   let mrr = 0n;
   let owed = 0n;
   for (const c of all) {
     counts[c.state] = (counts[c.state] || 0) + 1;
     if ((c.state === 'ACTIVE' || c.state === 'OVERDUE') && c.monthlyValueUsd) mrr += BigInt(c.monthlyValueUsd);
     owed += BigInt(c.balanceUsd);
+    if (c.health) byHealth[c.health.level] += 1;
   }
   return {
     data: state ? all.filter(c => c.state === state) : all,
@@ -149,9 +153,15 @@ async function listClients({ q = null, state = null } = {}) {
       total: all.length,
       byState: counts,
       monthlyRecurringUsd: String(mrr),
-      outstandingUsd: String(owed)
+      outstandingUsd: String(owed),
+      byHealth
     }
   };
+}
+
+/** Uso de los últimos 30 días y la nota de salud, sobre la vista de facturación. */
+function withHealth(client, activityRow) {
+  return { ...client, activity30d: health.activityView(activityRow), health: health.healthOf(client, activityRow) };
 }
 
 function chargeView(row) {
@@ -206,7 +216,11 @@ async function getClient(restaurantId) {
   const today = fx.caracasToday();
   const { rows } = await db.query(`${CLIENT_SQL} WHERE r.id = $2`, [today, restaurantId]);
   if (!rows.length) throw new ApiError('RESTAURANT_NOT_FOUND', 'Restaurant not found');
-  const client = clientView(rows[0], today);
+  const [activity, trend] = await Promise.all([
+    health.activityByRestaurant(restaurantId),
+    health.trendFor(restaurantId)
+  ]);
+  const client = withHealth(clientView(rows[0], today), activity.get(restaurantId));
 
   const [charges, payments, usage, history] = await Promise.all([
     db.query(`${CHARGE_SQL} WHERE c.restaurant_id = $1 ORDER BY c.period_start DESC`, [restaurantId]),
@@ -245,6 +259,7 @@ async function getClient(restaurantId) {
     client,
     charges: charges.rows.map(chargeView),
     payments: payments.rows.map(paymentView),
+    trend,
     usage: {
       bills30d: u.bills_30d,
       collectedVes30d: String(u.collected_ves_30d),
