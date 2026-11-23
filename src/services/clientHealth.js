@@ -117,7 +117,8 @@ function healthOf(client, row, now = Date.now()) {
   if (client.state === 'SUSPENDED') hit('SUSPENDED', 30);
   if (client.state === 'TRIAL_EXPIRED') hit('TRIAL_EXPIRED', 15);
 
-  if (!row.has_tables) hit('NO_TABLES', 15);
+  // Sin mesas no hay QR: no puede usar Splite, así que basta para «vigilar».
+  if (!row.has_tables) hit('NO_TABLES', 20);
   if (!row.has_menu) hit('NO_MENU', 10);
   if (!row.has_bank) hit('NO_BANK', 5);
 
