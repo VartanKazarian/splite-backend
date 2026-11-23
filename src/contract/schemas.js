@@ -1682,6 +1682,45 @@ Object.assign(schemas, {
     }
   },
 
+  PaymentHistory: {
+    type: 'object',
+    required: ['days', 'from', 'totals', 'nextCursor', 'data'],
+    properties: {
+      days: { type: 'integer' },
+      from: { type: 'string', format: 'date-time', description: 'Where the window starts.' },
+      totals: {
+        type: 'object',
+        required: ['count', 'succeededCount', 'succeededVes', 'tipVes'],
+        properties: {
+          count: { type: 'integer', description: 'Every payment in the window, any status.' },
+          succeededCount: { type: 'integer' },
+          succeededVes: minorUnits,
+          tipVes: { ...minorUnits, description: 'Tips on SUCCEEDED payments only.' }
+        }
+      },
+      nextCursor: { type: ['string', 'null'], description: 'Pass back as `cursor` for the next page; `null` when there is none.' },
+      data: {
+        type: 'array',
+        items: {
+          type: 'object',
+          required: ['paymentId', 'at', 'billId', 'amountVes', 'tipVes', 'paymentMethod', 'status'],
+          properties: {
+            paymentId: { type: 'string', format: 'uuid' },
+            at: { type: 'string', format: 'date-time' },
+            billId: { type: 'string', format: 'uuid' },
+            tableId: { type: ['string', 'null'], format: 'uuid' },
+            tableName: { type: ['string', 'null'] },
+            amountVes: minorUnits,
+            tipVes: minorUnits,
+            paymentMethod: { type: 'string', enum: ['CASH', 'CARD', 'TRANSFER', 'PAGO_MOVIL', 'C2P', 'SPLITE', 'OTHER'] },
+            status: { type: 'string', enum: ['PENDING', 'IN_DOUBT', 'AMBIGUOUS', 'SUCCEEDED', 'FAILED', 'CANCELLED', 'REFUNDED', 'PARTIALLY_REFUNDED'] },
+            reference: { type: ['string', 'null'], description: 'The reference the diner declared, for Pago Móvil.' }
+          }
+        }
+      }
+    }
+  },
+
   PaymentDetails: {
     type: 'object',
     description: 'Where restaurants pay Splite. Shown to them on purpose; nothing here is secret.',
