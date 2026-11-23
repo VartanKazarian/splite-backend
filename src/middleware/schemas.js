@@ -533,6 +533,15 @@ const activityQuerySchema = Joi.object({
   limit: Joi.number().integer().min(1).max(200).default(50)
 });
 
+// A rolling window back from now, paged backwards with an opaque cursor.
+// Ninety days is the ceiling, not a guess at what anybody needs: past that the
+// question is an export, not a screen.
+const paymentHistoryQuerySchema = Joi.object({
+  days: Joi.number().integer().min(1).max(90).default(7),
+  cursor: Joi.string().max(200),
+  limit: Joi.number().integer().min(1).max(100).default(50)
+});
+
 const listClaimsQuerySchema = Joi.object({
   billId: uuid,
   // PENDING by default: the queue somebody has to work is the reason this
@@ -1349,6 +1358,7 @@ module.exports = {
   setBillServerSchema,
   dashboardQuerySchema,
   activityQuerySchema,
+  paymentHistoryQuerySchema,
   rejectClaimSchema,
   paymentIdParamSchema,
   webhookProviderParamSchema,

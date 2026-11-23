@@ -127,6 +127,37 @@ const tips = {
 
 const claims = {
 
+  '/api/v1/payments/history': {
+    get: {
+      tags: ['Payments'],
+      summary: 'Every payment of the last few days, newest first',
+      operationId: 'getPaymentHistory',
+      description: [
+        'Any authenticated staff role. A rolling window of `days` × 24 h back from now (default 7,',
+        'at most 90), every method and every status, newest first.',
+        '',
+        'Page with `nextCursor`: pass it back as `cursor` until it comes back `null`. The cursor is',
+        'opaque; an unreadable one returns the first page.',
+        '',
+        '`totals` cover the **whole window**, not the page, and count only `SUCCEEDED` money — so',
+        'the figure at the top does not move as more pages load.'
+      ].join('\n'),
+      security: staff,
+      parameters: [
+        { name: 'days', in: 'query', required: false, schema: { type: 'integer', minimum: 1, maximum: 90, default: 7 } },
+        { name: 'cursor', in: 'query', required: false, schema: { type: 'string', maxLength: 200 } },
+        { name: 'limit', in: 'query', required: false, schema: { type: 'integer', minimum: 1, maximum: 100, default: 50 } }
+      ],
+      responses: {
+        200: {
+          description: 'One page of the window, newest first, with the window\'s totals.',
+          content: { 'application/json': { schema: ref('PaymentHistory') } }
+        },
+        ...commonErrors
+      }
+    }
+  },
+
   '/api/v1/payments/claims/summary': {
     get: {
       tags: ['Payments'],

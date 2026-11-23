@@ -4140,6 +4140,157 @@
           }
         }
       },
+      "PaymentHistory": {
+        "type": "object",
+        "required": [
+          "days",
+          "from",
+          "totals",
+          "nextCursor",
+          "data"
+        ],
+        "properties": {
+          "days": {
+            "type": "integer"
+          },
+          "from": {
+            "type": "string",
+            "format": "date-time",
+            "description": "Where the window starts."
+          },
+          "totals": {
+            "type": "object",
+            "required": [
+              "count",
+              "succeededCount",
+              "succeededVes",
+              "tipVes"
+            ],
+            "properties": {
+              "count": {
+                "type": "integer",
+                "description": "Every payment in the window, any status."
+              },
+              "succeededCount": {
+                "type": "integer"
+              },
+              "succeededVes": {
+                "type": "string",
+                "pattern": "^[0-9]+$",
+                "description": "Integer minor units (céntimos) as a string, so values beyond 2^53 survive JSON.",
+                "examples": [
+                  "756710"
+                ]
+              },
+              "tipVes": {
+                "type": "string",
+                "pattern": "^[0-9]+$",
+                "description": "Tips on SUCCEEDED payments only.",
+                "examples": [
+                  "756710"
+                ]
+              }
+            }
+          },
+          "nextCursor": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Pass back as `cursor` for the next page; `null` when there is none."
+          },
+          "data": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "required": [
+                "paymentId",
+                "at",
+                "billId",
+                "amountVes",
+                "tipVes",
+                "paymentMethod",
+                "status"
+              ],
+              "properties": {
+                "paymentId": {
+                  "type": "string",
+                  "format": "uuid"
+                },
+                "at": {
+                  "type": "string",
+                  "format": "date-time"
+                },
+                "billId": {
+                  "type": "string",
+                  "format": "uuid"
+                },
+                "tableId": {
+                  "type": [
+                    "string",
+                    "null"
+                  ],
+                  "format": "uuid"
+                },
+                "tableName": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "amountVes": {
+                  "type": "string",
+                  "pattern": "^[0-9]+$",
+                  "description": "Integer minor units (céntimos) as a string, so values beyond 2^53 survive JSON.",
+                  "examples": [
+                    "756710"
+                  ]
+                },
+                "tipVes": {
+                  "type": "string",
+                  "pattern": "^[0-9]+$",
+                  "description": "Integer minor units (céntimos) as a string, so values beyond 2^53 survive JSON.",
+                  "examples": [
+                    "756710"
+                  ]
+                },
+                "paymentMethod": {
+                  "type": "string",
+                  "enum": [
+                    "CASH",
+                    "CARD",
+                    "TRANSFER",
+                    "PAGO_MOVIL",
+                    "C2P",
+                    "SPLITE",
+                    "OTHER"
+                  ]
+                },
+                "status": {
+                  "type": "string",
+                  "enum": [
+                    "PENDING",
+                    "IN_DOUBT",
+                    "AMBIGUOUS",
+                    "SUCCEEDED",
+                    "FAILED",
+                    "CANCELLED",
+                    "REFUNDED",
+                    "PARTIALLY_REFUNDED"
+                  ]
+                },
+                "reference": {
+                  "type": [
+                    "string",
+                    "null"
+                  ],
+                  "description": "The reference the diner declared, for Pago Móvil."
+                }
+              }
+            }
+          }
+        }
+      },
       "PaymentDetails": {
         "type": "object",
         "description": "Where restaurants pay Splite. Shown to them on purpose; nothing here is secret.",
@@ -12920,6 +13071,78 @@
           },
           "409": {
             "$ref": "#/components/responses/Conflict"
+          },
+          "429": {
+            "$ref": "#/components/responses/TooManyRequests"
+          },
+          "500": {
+            "$ref": "#/components/responses/ServerError"
+          }
+        }
+      }
+    },
+    "/api/v1/payments/history": {
+      "get": {
+        "tags": [
+          "Payments"
+        ],
+        "summary": "Every payment of the last few days, newest first",
+        "operationId": "getPaymentHistory",
+        "description": "Any authenticated staff role. A rolling window of `days` × 24 h back from now (default 7,\nat most 90), every method and every status, newest first.\n\nPage with `nextCursor`: pass it back as `cursor` until it comes back `null`. The cursor is\nopaque; an unreadable one returns the first page.\n\n`totals` cover the **whole window**, not the page, and count only `SUCCEEDED` money — so\nthe figure at the top does not move as more pages load.",
+        "security": [
+          {
+            "staffAuth": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "days",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 90,
+              "default": 7
+            }
+          },
+          {
+            "name": "cursor",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string",
+              "maxLength": 200
+            }
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 100,
+              "default": 50
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "One page of the window, newest first, with the window's totals.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PaymentHistory"
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
           },
           "429": {
             "$ref": "#/components/responses/TooManyRequests"

@@ -3,6 +3,7 @@ const claims = require('../services/paymentClaims');
 const mercantilC2P = require('../services/mercantilC2P');
 const tips = require('../services/tips');
 const dashboard = require('../services/dashboard');
+const history = require('../services/paymentHistory');
 const { authenticateToken, requireRole } = require('../middleware/auth');
 const { logAudit, auditContext } = require('../services/audit');
 const dto = require('../dto');
@@ -11,7 +12,7 @@ const {
   listClaimsQuerySchema, rejectClaimSchema, paymentIdParamSchema,
   listUnresolvedC2PQuerySchema,
   tipsReportQuerySchema,
-  dashboardQuerySchema, activityQuerySchema
+  dashboardQuerySchema, activityQuerySchema, paymentHistoryQuerySchema
 } = require('../middleware/schemas');
 
 /**
@@ -67,6 +68,23 @@ router.get('/activity', validateQuery(activityQuerySchema), async (req, res, nex
     res.json(await dashboard.activitySince({
       restaurantId: req.user.restaurantId,
       since: req.query.since ?? null,
+      limit: req.query.limit
+    }));
+  } catch (err) { next(err); }
+});
+
+/**
+ * Every payment of the last `days` days, newest first, in every state.
+ *
+ * Any authenticated role, like the activity feed it extends backwards: the
+ * same rows, further back. Seven days by default; up to ninety.
+ */
+router.get('/history', validateQuery(paymentHistoryQuerySchema), async (req, res, next) => {
+  try {
+    res.json(await history.paymentHistory({
+      restaurantId: req.user.restaurantId,
+      days: req.query.days,
+      cursor: req.query.cursor ?? null,
       limit: req.query.limit
     }));
   } catch (err) { next(err); }
