@@ -4699,6 +4699,100 @@
               "string",
               "null"
             ]
+          },
+          "activity30d": {
+            "type": [
+              "object",
+              "null"
+            ],
+            "description": "How the restaurant used Splite in the last 30 days. Amounts in bolívar céntimos, except `volumeUsd` (US dollar cents, each payment at its own bill's rate).",
+            "properties": {
+              "volumeVes": {
+                "type": "string",
+                "pattern": "^[0-9]+$",
+                "description": "Integer minor units (céntimos) as a string, so values beyond 2^53 survive JSON.",
+                "examples": [
+                  "756710"
+                ]
+              },
+              "volumeUsd": {
+                "type": "string",
+                "pattern": "^[0-9]+$",
+                "description": "Integer minor units (céntimos) as a string, so values beyond 2^53 survive JSON.",
+                "examples": [
+                  "756710"
+                ]
+              },
+              "previousVolumeVes": {
+                "type": "string",
+                "pattern": "^[0-9]+$",
+                "description": "The 30 days before, to compare.",
+                "examples": [
+                  "756710"
+                ]
+              },
+              "bills": {
+                "type": "integer"
+              },
+              "activeDays": {
+                "type": "integer",
+                "description": "Days with at least one bill opened."
+              },
+              "payments": {
+                "type": "integer"
+              },
+              "guestShareBps": {
+                "type": [
+                  "integer",
+                  "null"
+                ],
+                "description": "Share of payments the diner made from the QR, in basis points."
+              },
+              "failedPayments": {
+                "type": "integer"
+              }
+            }
+          },
+          "health": {
+            "type": [
+              "object",
+              "null"
+            ],
+            "description": "A 0–100 score with the reasons that lowered it. Null for a cancelled client.",
+            "properties": {
+              "score": {
+                "type": "integer",
+                "minimum": 0,
+                "maximum": 100
+              },
+              "level": {
+                "type": "string",
+                "enum": [
+                  "GOOD",
+                  "WATCH",
+                  "RISK"
+                ]
+              },
+              "reasons": {
+                "type": "array",
+                "items": {
+                  "type": "string",
+                  "enum": [
+                    "INACTIVE_14D",
+                    "INACTIVE_7D",
+                    "VOLUME_DROP_50",
+                    "VOLUME_DROP_25",
+                    "OVERDUE",
+                    "SUSPENDED",
+                    "TRIAL_EXPIRED",
+                    "NO_TABLES",
+                    "NO_MENU",
+                    "NO_BANK",
+                    "PAYMENT_FAILURES"
+                  ]
+                }
+              }
+            }
           }
         }
       },
@@ -14383,6 +14477,20 @@
                           "examples": [
                             "756710"
                           ]
+                        },
+                        "byHealth": {
+                          "type": "object",
+                          "properties": {
+                            "GOOD": {
+                              "type": "integer"
+                            },
+                            "WATCH": {
+                              "type": "integer"
+                            },
+                            "RISK": {
+                              "type": "integer"
+                            }
+                          }
                         }
                       }
                     }
@@ -14458,6 +14566,76 @@
                       "type": "array",
                       "items": {
                         "$ref": "#/components/schemas/AdminPayment"
+                      }
+                    },
+                    "trend": {
+                      "type": "object",
+                      "description": "The last 30 days, Caracas days.",
+                      "properties": {
+                        "daily": {
+                          "type": "array",
+                          "items": {
+                            "type": "object",
+                            "properties": {
+                              "date": {
+                                "type": "string",
+                                "format": "date"
+                              },
+                              "bills": {
+                                "type": "integer"
+                              },
+                              "volumeVes": {
+                                "type": "string",
+                                "pattern": "^[0-9]+$",
+                                "description": "Integer minor units (céntimos) as a string, so values beyond 2^53 survive JSON.",
+                                "examples": [
+                                  "756710"
+                                ]
+                              }
+                            }
+                          }
+                        },
+                        "methods": {
+                          "type": "array",
+                          "items": {
+                            "type": "object",
+                            "properties": {
+                              "method": {
+                                "type": "string"
+                              },
+                              "payments": {
+                                "type": "integer"
+                              },
+                              "volumeVes": {
+                                "type": "string",
+                                "pattern": "^[0-9]+$",
+                                "description": "Integer minor units (céntimos) as a string, so values beyond 2^53 survive JSON.",
+                                "examples": [
+                                  "756710"
+                                ]
+                              }
+                            }
+                          }
+                        },
+                        "tipsVes": {
+                          "type": "string",
+                          "pattern": "^[0-9]+$",
+                          "description": "Integer minor units (céntimos) as a string, so values beyond 2^53 survive JSON.",
+                          "examples": [
+                            "756710"
+                          ]
+                        },
+                        "averageBillVes": {
+                          "type": [
+                            "string",
+                            "null"
+                          ],
+                          "pattern": "^[0-9]+$",
+                          "description": "Integer minor units (céntimos) as a string, so values beyond 2^53 survive JSON.",
+                          "examples": [
+                            "756710"
+                          ]
+                        }
                       }
                     },
                     "usage": {
@@ -16085,7 +16263,7 @@
         ],
         "summary": "How the business is doing",
         "operationId": "adminMetrics",
-        "description": "ADMIN and SUPPORT. Recurring revenue, outstanding, clients per state, trial-to-paid conversion over 180 days, cancellations in the last 30, and six months of new clients, charged and collected (US dollar cents). `rateBps` is basis points: 2500 = 25 %.",
+        "description": "ADMIN and SUPPORT. Recurring revenue, outstanding, clients per state, trial-to-paid conversion over 180 days, cancellations in the last 30, client health, the signup funnel, overdue charges by age, what went through Splite, and six months of new clients, charged, collected and processed (US dollar cents). `rateBps` is basis points: 2500 = 25 %.",
         "security": [
           {
             "operatorAuth": []
@@ -16151,6 +16329,127 @@
                     "cancelledLast30Days": {
                       "type": "integer"
                     },
+                    "byHealth": {
+                      "type": "object",
+                      "properties": {
+                        "GOOD": {
+                          "type": "integer"
+                        },
+                        "WATCH": {
+                          "type": "integer"
+                        },
+                        "RISK": {
+                          "type": "integer"
+                        }
+                      }
+                    },
+                    "payingClients": {
+                      "type": "integer"
+                    },
+                    "averageRevenueUsd": {
+                      "type": [
+                        "string",
+                        "null"
+                      ],
+                      "pattern": "^[0-9]+$",
+                      "description": "Monthly recurring revenue per paying client.",
+                      "examples": [
+                        "756710"
+                      ]
+                    },
+                    "processed30d": {
+                      "type": "object",
+                      "description": "What went through Splite in the last 30 days, at each bill's rate.",
+                      "properties": {
+                        "volumeUsd": {
+                          "type": "string",
+                          "pattern": "^[0-9]+$",
+                          "description": "Integer minor units (céntimos) as a string, so values beyond 2^53 survive JSON.",
+                          "examples": [
+                            "756710"
+                          ]
+                        },
+                        "previousVolumeUsd": {
+                          "type": "string",
+                          "pattern": "^[0-9]+$",
+                          "description": "Integer minor units (céntimos) as a string, so values beyond 2^53 survive JSON.",
+                          "examples": [
+                            "756710"
+                          ]
+                        },
+                        "payments": {
+                          "type": "integer"
+                        },
+                        "guestShareBps": {
+                          "type": [
+                            "integer",
+                            "null"
+                          ]
+                        }
+                      }
+                    },
+                    "funnel": {
+                      "type": "object",
+                      "description": "Of the restaurants that signed up in the window, how many reached each step.",
+                      "properties": {
+                        "windowDays": {
+                          "type": "integer"
+                        },
+                        "signedUp": {
+                          "type": "integer"
+                        },
+                        "setUp": {
+                          "type": "integer"
+                        },
+                        "firstBill": {
+                          "type": "integer"
+                        },
+                        "firstQrPayment": {
+                          "type": "integer"
+                        },
+                        "paying": {
+                          "type": "integer"
+                        }
+                      }
+                    },
+                    "aging": {
+                      "type": "object",
+                      "description": "Open subscription charges by days past due.",
+                      "properties": {
+                        "currentUsd": {
+                          "type": "string",
+                          "pattern": "^[0-9]+$",
+                          "description": "Integer minor units (céntimos) as a string, so values beyond 2^53 survive JSON.",
+                          "examples": [
+                            "756710"
+                          ]
+                        },
+                        "days1to30Usd": {
+                          "type": "string",
+                          "pattern": "^[0-9]+$",
+                          "description": "Integer minor units (céntimos) as a string, so values beyond 2^53 survive JSON.",
+                          "examples": [
+                            "756710"
+                          ]
+                        },
+                        "days31to60Usd": {
+                          "type": "string",
+                          "pattern": "^[0-9]+$",
+                          "description": "Integer minor units (céntimos) as a string, so values beyond 2^53 survive JSON.",
+                          "examples": [
+                            "756710"
+                          ]
+                        },
+                        "days61PlusUsd": {
+                          "type": "string",
+                          "pattern": "^[0-9]+$",
+                          "description": "Integer minor units (céntimos) as a string, so values beyond 2^53 survive JSON.",
+                          "examples": [
+                            "756710"
+                          ]
+                        }
+                      }
+                    },
                     "months": {
                       "type": "array",
                       "items": {
@@ -16176,6 +16475,23 @@
                             "description": "Integer minor units (céntimos) as a string, so values beyond 2^53 survive JSON.",
                             "examples": [
                               "756710"
+                            ]
+                          },
+                          "processedUsd": {
+                            "type": "string",
+                            "pattern": "^[0-9]+$",
+                            "description": "Integer minor units (céntimos) as a string, so values beyond 2^53 survive JSON.",
+                            "examples": [
+                              "756710"
+                            ]
+                          },
+                          "activeRestaurants": {
+                            "type": "integer"
+                          },
+                          "guestShareBps": {
+                            "type": [
+                              "integer",
+                              "null"
                             ]
                           }
                         }
